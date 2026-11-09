@@ -112,7 +112,8 @@ elseif ($Action -eq "Clean" -or $Action -eq "Uninstall") {
         (Join-Path $deadlockCfgDir "td_postload.cfg"),
         (Join-Path $deadlockCfgDir "td_scaling.cfg"),
         (Join-Path $deadlockCfgDir "td_wave_tick.cfg"),
-        (Join-Path $deadlockCfgDir "td_grant_tome.cfg")
+        (Join-Path $deadlockCfgDir "td_grant_tome.cfg"),
+        (Join-Path $deadlockCfgDir "td_rearm_tome.cfg")
     )
     if (Test-Path $manifestPath) {
         $fromManifest = Get-Content $manifestPath | ConvertFrom-Json
