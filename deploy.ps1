@@ -22,7 +22,7 @@ if ($Action -eq "Install") {
     $installedFiles = @()
 
     # 1. Remove legacy test cfg files if present
-    foreach ($legacyCfg in @("listenserver.cfg", "custom_1v1_loot.cfg", "start_1v1_loot.cfg")) {
+    foreach ($legacyCfg in @("listenserver.cfg", "custom_1v1_loot.cfg", "start_1v1_loot.cfg", "td_grant_tome.cfg", "td_rearm_tome.cfg")) {
         $legacyPath = Join-Path $deadlockCfgDir $legacyCfg
         if (Test-Path $legacyPath) {
             Remove-Item -Path $legacyPath -Force

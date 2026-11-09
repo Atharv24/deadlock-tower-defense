@@ -20,7 +20,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.25
+				m_value = 0.125
 			},
 		]
 	}
@@ -34,7 +34,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.35
+				m_value = 0.175
 			},
 		]
 	}
@@ -48,7 +48,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.45
+				m_value = 0.225
 			},
 		]
 	}
@@ -62,7 +62,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.55
+				m_value = 0.275
 			},
 		]
 	}
@@ -76,7 +76,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.65
+				m_value = 0.325
 			},
 		]
 	}
@@ -90,15 +90,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 6.0
+				m_value = 3.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 0.8
+				m_value = 0.4
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 5.0
+				m_value = 2.5
 			},
 		]
 	}
@@ -112,15 +112,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 9.0
+				m_value = 4.5
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 1.0
+				m_value = 0.5
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 7.5
+				m_value = 3.75
 			},
 		]
 	}
@@ -134,15 +134,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 14.0
+				m_value = 7.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 1.5
+				m_value = 0.75
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 10.0
+				m_value = 5.0
 			},
 		]
 	}
@@ -156,15 +156,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 20.0
+				m_value = 10.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 2.0
+				m_value = 1.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 15.0
+				m_value = 7.5
 			},
 		]
 	}
@@ -178,156 +178,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 30.0
+				m_value = 15.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 3.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 20.0
-			},
-		]
-	}
-	td_tome_spirit = 
-	{
-		_class = "modifier_base"
-		_my_subclass_name = "td_tome_spirit"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
-		m_bIsHidden = true
-		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
-		m_vecScriptValues = 
-		[
-			{
-				m_eModifierValue = "MODIFIER_VALUE_TECH_POWER"
-				m_value = 8.0
-			},
-		]
-	}
-	td_tome_weapon = 
-	{
-		_class = "modifier_base"
-		_my_subclass_name = "td_tome_weapon"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
-		m_bIsHidden = true
-		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
-		m_vecScriptValues = 
-		[
-			{
-				m_eModifierValue = "MODIFIER_VALUE_WEAPON_DAMAGE_INCREASE"
-				m_value = 10.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_AMMO_CLIP_SIZE_PERCENT"
-				m_value = 6.0
-			},
-		]
-	}
-	td_tome_firerate = 
-	{
-		_class = "modifier_base"
-		_my_subclass_name = "td_tome_firerate"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
-		m_bIsHidden = true
-		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
-		m_vecScriptValues = 
-		[
-			{
-				m_eModifierValue = "MODIFIER_VALUE_FIRE_RATE"
-				m_value = 5.0
-			},
-		]
-	}
-	td_tome_health = 
-	{
-		_class = "modifier_base"
-		_my_subclass_name = "td_tome_health"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
-		m_bIsHidden = true
-		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
-		m_vecScriptValues = 
-		[
-			{
-				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 80.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_HEALTH_REGEN_PER_SECOND"
-				m_value = 2.0
-			},
-		]
-	}
-	td_tome_cooldown = 
-	{
-		_class = "modifier_base"
-		_my_subclass_name = "td_tome_cooldown"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
-		m_bIsHidden = true
-		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
-		m_vecScriptValues = 
-		[
-			{
-				m_eModifierValue = "MODIFIER_VALUE_COOLDOWN_REDUCTION_PERCENTAGE"
-				m_value = 3.0
-			},
-		]
-	}
-	td_tome_range = 
-	{
-		_class = "modifier_base"
-		_my_subclass_name = "td_tome_range"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
-		m_bIsHidden = true
-		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
-		m_vecScriptValues = 
-		[
-			{
-				m_eModifierValue = "MODIFIER_VALUE_TECH_RANGE_PERCENT"
-				m_value = 4.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_TECH_RADIUS_PERCENT"
-				m_value = 4.0
-			},
-		]
-	}
-	td_tome_omni = 
-	{
-		_class = "modifier_base"
-		_my_subclass_name = "td_tome_omni"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
-		m_bIsHidden = true
-		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
-		m_vecScriptValues = 
-		[
-			{
-				m_eModifierValue = "MODIFIER_VALUE_TECH_POWER"
-				m_value = 4.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_WEAPON_DAMAGE_INCREASE"
-				m_value = 5.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_FIRE_RATE"
-				m_value = 2.5
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 40.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_COOLDOWN_REDUCTION_PERCENTAGE"
 				m_value = 1.5
 			},
 			{
-				m_eModifierValue = "MODIFIER_VALUE_TECH_RANGE_PERCENT"
-				m_value = 2.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_TECH_RADIUS_PERCENT"
-				m_value = 2.0
+				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
+				m_value = 10.0
 			},
 		]
 	}
@@ -336,14 +195,13 @@ $customModifiersKv3 = @"
 $modInsertPos = $modTxt.LastIndexOf("}")
 $modPatchedTxt = $modTxt.Substring(0, $modInsertPos) + $customModifiersKv3 + "`n}`n"
 
-# 2. Patch npc_units.vdata_c.txt so modifier_citadel_trooper_shrine_down_buff has high visible growth
-# and troopers have +45% DPS growth per minute
+# 2. Patch npc_units.vdata_c.txt with halved scaling values
 $npcTxtPath = Join-Path $scratchDir "npc_units.vdata_c.txt"
 $npcTxt = [System.IO.File]::ReadAllText($npcTxtPath)
 
-$npcPatchedTxt = [regex]::Replace($npcTxt, '(_class = "modifier_citadel_trooper_shrine_down_buff"\s+_my_subclass_name = "modifier_citadel_trooper_shrine_down_buff"\s+)m_flModelScale = 1\.1\s+m_flHealthScale = 1\.4\s+m_flDamageScale = 60\.0', '${1}m_flModelScale = 1.15' + "`n`t`t`t" + 'm_flHealthScale = 1.04' + "`n`t`t`t" + 'm_flDamageScale = 6.0')
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 0\.0', 'm_flDPSPctGrowthPerMinute = 4.5'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 3\.0', 'm_flDPSPctGrowthPerMinute = 4.5'
+$npcPatchedTxt = [regex]::Replace($npcTxt, '(_class = "modifier_citadel_trooper_shrine_down_buff"\s+_my_subclass_name = "modifier_citadel_trooper_shrine_down_buff"\s+)m_flModelScale = 1\.1\s+m_flHealthScale = 1\.4\s+m_flDamageScale = 60\.0', '${1}m_flModelScale = 1.075' + "`n`t`t`t" + 'm_flHealthScale = 1.02' + "`n`t`t`t" + 'm_flDamageScale = 3.0')
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 0\.0', 'm_flDPSPctGrowthPerMinute = 2.25'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 3\.0', 'm_flDPSPctGrowthPerMinute = 2.25'
 
 $code = @"
 using System;

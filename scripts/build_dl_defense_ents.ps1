@@ -58,14 +58,6 @@ Replace-EntityValuesBlock ([ref]$text) 14019 {
 }
 Write-Output "Converted compile_source_id = 14019 (boss_rebel_t1_blue) to direct npc_boss_tier1 entity in Center Lane."
 
-# Ensure Team 2 Friendly Patron (compile_source_id = 14050) also carries targetname = "[PR#]rebels_t2_boss_blue"
-# so all Friendly Towers/Walkers/Shrines/Patron match our two activator name filters.
-Replace-EntityValuesBlock ([ref]$text) 14050 {
-    param($c)
-    $c = $c -replace 'targetname = ""', 'targetname = "[PR#]rebels_t2_boss_blue"'
-    return $c
-}
-
 # 1B. Disable all remaining Team 2 (Amber) info_super_trooper_spawn (14015, 14016, 14290, 14299, 14300)
 # and all 12 Team 2 info_trooper_spawn (14291..14298, 14301..14304) so 0 friendly lane creeps spawn
 # and no Team 2 info_super_trooper_spawn ever calls SpawnWave with 0 trooper spawners.
@@ -114,14 +106,9 @@ $text = $text -replace 'classname = "point_template"', 'classname = "info_target
 $text = [regex]::Replace($text, '(graph_def = resource_name:"pulse/maps/prefabs/gameplay/(?:souls_dealer|basketball_hoop)\.vpulse"[\s\S]{1,200}?)classname = "point_pulse"', '$1classname = "info_target_server_only"')
 Write-Output "Disabled point_template and souls_dealer/basketball_hoop point_pulse entities."
 
-# 5. Add point_servercommand, [PR#]td_filter_no_walker, [PR#]td_filter_no_guardian, [PR#]td_tome_gate, and logic_auto:
+# 5. Add point_servercommand and logic_auto:
 # - Runs exec td_postload at 1.0s
 # - Runs exec td_wave_tick every 20s via [PR#]td_servercmd (zero FCVAR warnings)
-# - Hooks every spawned npc_trooper every 4s via direct Entity IO AddOutput:
-#     OnDeath>[PR#]td_filter_no_walker>TestActivator>>0>1
-#   When a creep dies, CNPC_Trooper::Event_Killed passes info.GetAttacker() as !activator to OnDeath.
-#   If killed by Friendly Towers ([PR#]rebels_t2_boss_blue or [PR#]boss_rebel_t1_blue), the filter matches (OnPass)
-#   and stops. Only when killed by the Player Hero does OnFail pass through both filters to trigger [PR#]td_tome_gate!
 $waveTickConnections = ""
 for ($w = 1; $w -le 90; $w++) {
     $delay = "{0:F1}" -f ($w * 20.0)
@@ -140,23 +127,6 @@ for ($w = 1; $w -le 90; $w++) {
 "@
 }
 
-for ($t = 4; $t -le 1800; $t += 4) {
-    $bDelay = "{0:F1}" -f [double]$t
-    $waveTickConnections += @"
-				{
-					m_outputName = "OnMapSpawn"
-					m_targetType = 7
-					m_targetName = "npc_trooper"
-					m_inputName = "AddOutput"
-					m_overrideParam = "OnDeath>[PR#]td_filter_no_walker>TestActivator>>0>1"
-					m_flDelay = $bDelay
-					m_nTimesToFire = 1
-					m_paramMap = null
-				},
-
-"@
-}
-
 $autoEnts = @"
 		{
 			m_connections = [  ]
@@ -168,138 +138,6 @@ $autoEnts = @"
 				{
 					targetname = "[PR#]td_servercmd"
 					classname = "point_servercommand"
-					origin = [ 0.0, 0.0, 500.0 ]
-					angles = [ 0.0, 0.0, 0.0 ]
-					scales = [ 1.0, 1.0, 1.0 ]
-				}
-				attributes = 
-				{
-				}
-			}
-		},
-		{
-			m_connections = 
-			[
-				{
-					m_outputName = "OnFail"
-					m_targetType = 7
-					m_targetName = "[PR#]td_filter_no_guardian"
-					m_inputName = "TestActivator"
-					m_overrideParam = ""
-					m_flDelay = 0.0
-					m_nTimesToFire = -1
-					m_paramMap = null
-				},
-			]
-			m_keyValuesData = #[  ]
-			keyValues3Data = 
-			{
-				version = 1
-				values = 
-				{
-					targetname = "[PR#]td_filter_no_walker"
-					filtername = "[PR#]rebels_t2_boss_blue"
-					Negated = false
-					classname = "filter_activator_name"
-					origin = [ 0.0, 0.0, 500.0 ]
-					angles = [ 0.0, 0.0, 0.0 ]
-					scales = [ 1.0, 1.0, 1.0 ]
-				}
-				attributes = 
-				{
-				}
-			}
-		},
-		{
-			m_connections = 
-			[
-				{
-					m_outputName = "OnFail"
-					m_targetType = 7
-					m_targetName = "[PR#]td_tome_gate"
-					m_inputName = "Trigger"
-					m_overrideParam = ""
-					m_flDelay = 0.0
-					m_nTimesToFire = -1
-					m_paramMap = null
-				},
-			]
-			m_keyValuesData = #[  ]
-			keyValues3Data = 
-			{
-				version = 1
-				values = 
-				{
-					targetname = "[PR#]td_filter_no_guardian"
-					filtername = "[PR#]boss_rebel_t1_blue"
-					Negated = false
-					classname = "filter_activator_name"
-					origin = [ 0.0, 0.0, 500.0 ]
-					angles = [ 0.0, 0.0, 0.0 ]
-					scales = [ 1.0, 1.0, 1.0 ]
-				}
-				attributes = 
-				{
-				}
-			}
-		},
-		{
-			m_connections = 
-			[
-				{
-					m_outputName = "OnTrigger"
-					m_targetType = 7
-					m_targetName = "[PR#]td_tome_gate"
-					m_inputName = "Disable"
-					m_overrideParam = ""
-					m_flDelay = 0.0
-					m_nTimesToFire = -1
-					m_paramMap = null
-				},
-				{
-					m_outputName = "OnTrigger"
-					m_targetType = 7
-					m_targetName = "[PR#]td_servercmd"
-					m_inputName = "Command"
-					m_overrideParam = "exec td_grant_tome"
-					m_flDelay = 0.0
-					m_nTimesToFire = -1
-					m_paramMap = null
-				},
-				{
-					m_outputName = "OnTrigger"
-					m_targetType = 7
-					m_targetName = "[PR#]td_tome_gate"
-					m_inputName = "Enable"
-					m_overrideParam = ""
-					m_flDelay = 0.05
-					m_nTimesToFire = -1
-					m_paramMap = null
-				},
-				{
-					m_outputName = "OnTrigger"
-					m_targetType = 7
-					m_targetName = "[PR#]td_servercmd"
-					m_inputName = "Command"
-					m_overrideParam = "exec td_rearm_tome"
-					m_flDelay = 0.05
-					m_nTimesToFire = -1
-					m_paramMap = null
-				},
-			]
-			m_keyValuesData = #[  ]
-			keyValues3Data = 
-			{
-				version = 1
-				values = 
-				{
-					vscripts = ""
-					targetname = "[PR#]td_tome_gate"
-					StartDisabled = false
-					TriggerOnce = false
-					FastRetrigger = true
-					PassthroughCaller = false
-					classname = "logic_relay"
 					origin = [ 0.0, 0.0, 500.0 ]
 					angles = [ 0.0, 0.0, 0.0 ]
 					scales = [ 1.0, 1.0, 1.0 ]
