@@ -48,15 +48,15 @@ function Replace-EntityValuesBlock([ref]$fullTextRef, [int]$compileId, [scriptbl
 }
 
 # 1A. Convert Team 2 Center Lane (Lane 4) Friendly Blue T1 Guardian spawner (compile_source_id = 14019)
-# directly into npc_boss_tier1 so our Friendly Blue T1 Guardian spawns at [0.0, -1792.0, 384.0]
-# WITHOUT registering an empty-wave info_super_trooper_spawn (which caused idiv by 0 at server.dll+0xD4AE53).
+# directly into npc_trooper_boss (subclass_name = "npc_boss_tier1") so our Friendly Blue T1 Guardian
+# spawns at [0.0, -1792.0, 384.0] WITHOUT registering an empty-wave info_super_trooper_spawn.
 Replace-EntityValuesBlock ([ref]$text) 14019 {
     param($c)
     $c = $c -replace 'targetname = ""', 'targetname = "[PR#]boss_rebel_t1_blue"'
-    $c = $c -replace 'classname = "info_super_trooper_spawn"', "LagCompensate = true`n`t`t`t`t`tspawnflags = `"1024`"`n`t`t`t`t`tclassname = `"npc_boss_tier1`""
+    $c = $c -replace 'classname = "info_super_trooper_spawn"', "LagCompensate = true`n`t`t`t`t`tspawnflags = `"1024`"`n`t`t`t`t`tsubclass_name = `"npc_boss_tier1`"`n`t`t`t`t`tclassname = `"npc_trooper_boss`""
     return $c
 }
-Write-Output "Converted compile_source_id = 14019 (boss_rebel_t1_blue) to direct npc_boss_tier1 entity in Center Lane."
+Write-Output "Converted compile_source_id = 14019 (boss_rebel_t1_blue) to direct npc_trooper_boss (subclass_name = npc_boss_tier1) in Center Lane."
 
 # 1B. Disable all remaining Team 2 (Amber) info_super_trooper_spawn (14015, 14016, 14290, 14299, 14300)
 # and all 12 Team 2 info_trooper_spawn (14291..14298, 14301..14304) so 0 friendly lane creeps spawn
@@ -85,19 +85,19 @@ foreach ($id in $team3SideLanesDisableIds) {
 Write-Output "Disabled $($team3SideLanesDisableIds.Count) Team 3 side-lane (Lane 1 & Lane 6) super/trooper spawners."
 
 # 3. Relocate all info_team_spawn entities (Team 2: 14288, 14289, 14329, 14424, 14425, 14426; Team 1: 14047; Team 3: 14308..14313)
-# to the Center of the Map [0.0, 0.0, 0.0] facing North [0.0, 90.0, 0.0] in Center Lane (LaneNum = "4")
-# so selecting a hero or respawning always places the player in the center of the map instead of in Base!
+# to the Center Lane surface [0.0, -1950.0, 390.0] right behind our Friendly Blue T1 Guardian ([0.0, -1792.0, 384.0])
+# facing North [0.0, 90.0, 0.0] in Center Lane (LaneNum = "4") instead of inside the subterranean Mid-Boss pit.
 $teamSpawnIds = @(14047, 14288, 14289, 14329, 14424, 14425, 14426, 14308, 14309, 14310, 14311, 14312, 14313)
 foreach ($id in $teamSpawnIds) {
     Replace-EntityValuesBlock ([ref]$text) $id {
         param($c)
-        $c = $c -replace 'origin = \[[^\]]+\]', 'origin = [ 0.0, 0.0, 0.0 ]'
+        $c = $c -replace 'origin = \[[^\]]+\]', 'origin = [ 0.0, -1950.0, 390.0 ]'
         $c = $c -replace 'angles = \[[^\]]+\]', 'angles = [ 0.0, 90.0, 0.0 ]'
         $c = $c -replace 'LaneNum = "\d+"', 'LaneNum = "4"'
         return $c
     }
 }
-Write-Output "Relocated all $($teamSpawnIds.Count) info_team_spawn entities to Center Lane [0.0, 0.0, 0.0]."
+Write-Output "Relocated all $($teamSpawnIds.Count) info_team_spawn entities to Center Lane surface [0.0, -1950.0, 390.0]."
 
 # 4. Disable the 6 point_template entities and their basketball_hoop.vpulse / souls_dealer.vpulse callers
 # so CPointTemplate never attempts to spawn nonresident child-lump props (e.g. caution_tape_02.vmdl) at Curtime=2.03s.
