@@ -106,8 +106,8 @@ $text = $text -replace 'classname = "point_template"', 'classname = "info_target
 $text = [regex]::Replace($text, '(graph_def = resource_name:"pulse/maps/prefabs/gameplay/(?:souls_dealer|basketball_hoop)\.vpulse"[\s\S]{1,200}?)classname = "point_pulse"', '$1classname = "info_target_server_only"')
 Write-Output "Disabled point_template and souls_dealer/basketball_hoop point_pulse entities."
 
-# 5. Add point_servercommand and logic_auto to run td_postload after client connects
-# and fire exec td_wave_tick every 20 seconds (waves 1..90 = 30 minutes of escalating survival)
+# 5. Add point_servercommand, point_broadcastclientcommand, and logic_auto to run td_postload
+# and fire td_wave_tick every 20 seconds + td_apply_creep_buffs every 5 seconds
 $waveTickConnections = ""
 for ($w = 1; $w -le 90; $w++) {
     $delay = "{0:F1}" -f ($w * 20.0)
@@ -115,10 +115,37 @@ for ($w = 1; $w -le 90; $w++) {
 				{
 					m_outputName = "OnMapSpawn"
 					m_targetType = 7
+					m_targetName = "[PR#]td_clientcmd"
+					m_inputName = "Command"
+					m_overrideParam = "td_wave_tick_client"
+					m_flDelay = $delay
+					m_nTimesToFire = 1
+					m_paramMap = null
+				},
+				{
+					m_outputName = "OnMapSpawn"
+					m_targetType = 7
 					m_targetName = "[PR#]td_servercmd"
 					m_inputName = "Command"
 					m_overrideParam = "exec td_wave_tick"
 					m_flDelay = $delay
+					m_nTimesToFire = 1
+					m_paramMap = null
+				},
+
+"@
+}
+
+for ($t = 6; $t -le 1800; $t += 5) {
+    $bDelay = "{0:F1}" -f [double]$t
+    $waveTickConnections += @"
+				{
+					m_outputName = "OnMapSpawn"
+					m_targetType = 7
+					m_targetName = "[PR#]td_clientcmd"
+					m_inputName = "Command"
+					m_overrideParam = "td_apply_creep_buffs"
+					m_flDelay = $bDelay
 					m_nTimesToFire = 1
 					m_paramMap = null
 				},
@@ -137,6 +164,25 @@ $autoEnts = @"
 				{
 					targetname = "[PR#]td_servercmd"
 					classname = "point_servercommand"
+					origin = [ 0.0, 0.0, 500.0 ]
+					angles = [ 0.0, 0.0, 0.0 ]
+					scales = [ 1.0, 1.0, 1.0 ]
+				}
+				attributes = 
+				{
+				}
+			}
+		},
+		{
+			m_connections = [  ]
+			m_keyValuesData = #[  ]
+			keyValues3Data = 
+			{
+				version = 1
+				values = 
+				{
+					targetname = "[PR#]td_clientcmd"
+					classname = "point_broadcastclientcommand"
 					origin = [ 0.0, 0.0, 500.0 ]
 					angles = [ 0.0, 0.0, 0.0 ]
 					scales = [ 1.0, 1.0, 1.0 ]

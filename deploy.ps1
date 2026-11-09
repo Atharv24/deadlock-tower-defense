@@ -9,9 +9,10 @@ $srcCfgDir        = Join-Path $PSScriptRoot "src\cfg"
 $buildDir         = Join-Path $PSScriptRoot "build"
 $backupDir        = Join-Path $PSScriptRoot "backups"
 $manifestPath     = Join-Path $backupDir "installed_manifest.json"
-$deadlockCfgDir   = Join-Path $DeadlockDir "game\citadel\cfg"
-$deadlockMapsDir  = Join-Path $DeadlockDir "game\citadel\maps"
-$deadlockAddonDir = Join-Path $DeadlockDir "game\citadel\addons"
+$deadlockCfgDir     = Join-Path $DeadlockDir "game\citadel\cfg"
+$deadlockMapsDir    = Join-Path $DeadlockDir "game\citadel\maps"
+$deadlockAddonDir   = Join-Path $DeadlockDir "game\citadel\addons"
+$deadlockScriptsDir = Join-Path $DeadlockDir "game\citadel\scripts"
 
 if (-not (Test-Path $backupDir)) {
     New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
@@ -67,7 +68,7 @@ if ($Action -eq "Install") {
         Write-Host "[Installed Map VPK] dl_defense.vpk -> $mapVpkDst" -ForegroundColor Green
     }
 
-    # 3. Install custom addon VPK (pak20_dir.vpk) if present (Phase 2+)
+    # 3. Install custom addon VPK (pak20_dir.vpk) and loose VData overrides (Phase 2+)
     $addonVpkSrc = Join-Path $buildDir "pak20_dir.vpk"
     if (Test-Path $addonVpkSrc) {
         if (-not (Test-Path $deadlockAddonDir)) {
@@ -77,13 +78,18 @@ if ($Action -eq "Install") {
         Copy-Item -Path $addonVpkSrc -Destination $addonVpkDst -Force
         $installedFiles += $addonVpkDst
         Write-Host "[Installed Addon VPK] pak20_dir.vpk -> $addonVpkDst" -ForegroundColor Green
-    } else {
-        foreach ($oldVpk in @("pak02_dir.vpk", "pak20_dir.vpk")) {
-            $oldPath = Join-Path $deadlockAddonDir $oldVpk
-            if (Test-Path $oldPath) {
-                Remove-Item -Path $oldPath -Force
-                Write-Host "[Cleaned Old Addon VPK] $oldPath" -ForegroundColor Yellow
-            }
+    }
+
+    $buildScriptsDir = Join-Path $buildDir "scripts"
+    if (Test-Path $buildScriptsDir) {
+        if (-not (Test-Path $deadlockScriptsDir)) {
+            New-Item -ItemType Directory -Path $deadlockScriptsDir -Force | Out-Null
+        }
+        foreach ($vdataFile in Get-ChildItem -Path $buildScriptsDir -Filter "*.vdata_c") {
+            $dstVdata = Join-Path $deadlockScriptsDir $vdataFile.Name
+            Copy-Item -Path $vdataFile.FullName -Destination $dstVdata -Force
+            $installedFiles += $dstVdata
+            Write-Host "[Installed VData] $($vdataFile.Name) -> $dstVdata" -ForegroundColor Green
         }
     }
 
@@ -95,6 +101,8 @@ elseif ($Action -eq "Clean" -or $Action -eq "Uninstall") {
     $candidates = @(
         (Join-Path $deadlockMapsDir "dl_defense.vpk"),
         (Join-Path $deadlockAddonDir "pak20_dir.vpk"),
+        (Join-Path $deadlockScriptsDir "modifiers.vdata_c"),
+        (Join-Path $deadlockScriptsDir "npc_units.vdata_c"),
         (Join-Path $deadlockCfgDir "start_td.cfg"),
         (Join-Path $deadlockCfgDir "td_postload.cfg"),
         (Join-Path $deadlockCfgDir "td_scaling.cfg"),
