@@ -1,0 +1,13 @@
+# Compiled VPKs and binary outputs
+build/
+backups/
+*.vpk
+*.vents_c
+*.vrman_c
+*.vmap_c
+*.mdmp
+
+# Large decompiled stock reference dump and external CLI binaries
+reference/
+tools/*.exe
+tools/*.dll
