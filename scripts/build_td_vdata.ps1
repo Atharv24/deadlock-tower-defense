@@ -20,7 +20,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = -0.15
+				m_value = -0.05
 			},
 		]
 	}
@@ -34,7 +34,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.10
+				m_value = 0.20
 			},
 		]
 	}
@@ -48,7 +48,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.10
+				m_value = 0.20
 			},
 		]
 	}
@@ -62,7 +62,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.15
+				m_value = 0.25
 			},
 		]
 	}
@@ -76,7 +76,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.15
+				m_value = 0.25
 			},
 		]
 	}
@@ -90,7 +90,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.20
+				m_value = 0.30
 			},
 		]
 	}
@@ -104,7 +104,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.20
+				m_value = 0.30
 			},
 		]
 	}
@@ -118,7 +118,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.25
+				m_value = 0.35
 			},
 		]
 	}
@@ -132,7 +132,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.25
+				m_value = 0.35
 			},
 		]
 	}
@@ -146,7 +146,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.25
+				m_value = 0.35
 			},
 		]
 	}
@@ -168,7 +168,7 @@ $customModifiersKv3 = @"
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = -50.0
+				m_value = -20.0
 			},
 		]
 	}
@@ -176,50 +176,6 @@ $customModifiersKv3 = @"
 	{
 		_class = "modifier_base"
 		_my_subclass_name = "td_creep_strength_2"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
-		m_bIsHidden = true
-		m_vecScriptValues = 
-		[
-			{
-				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 20.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 10.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = -25.0
-			},
-		]
-	}
-	td_creep_strength_3 = 
-	{
-		_class = "modifier_base"
-		_my_subclass_name = "td_creep_strength_3"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
-		m_bIsHidden = true
-		m_vecScriptValues = 
-		[
-			{
-				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 50.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 25.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 0.0
-			},
-		]
-	}
-	td_creep_strength_4 = 
-	{
-		_class = "modifier_base"
-		_my_subclass_name = "td_creep_strength_4"
 		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
 		m_bIsHidden = true
 		m_vecScriptValues = 
@@ -234,7 +190,51 @@ $customModifiersKv3 = @"
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 30.0
+				m_value = 25.0
+			},
+		]
+	}
+	td_creep_strength_3 = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_creep_strength_3"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 250.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
+				m_value = 125.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
+				m_value = 100.0
+			},
+		]
+	}
+	td_creep_strength_4 = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_creep_strength_4"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 500.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
+				m_value = 250.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
+				m_value = 200.0
 			},
 		]
 	}
@@ -248,15 +248,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 180.0
+				m_value = 900.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 85.0
+				m_value = 425.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 70.0
+				m_value = 350.0
 			},
 		]
 	}
@@ -270,15 +270,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 300.0
+				m_value = 1500.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 130.0
+				m_value = 650.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 120.0
+				m_value = 550.0
 			},
 		]
 	}
@@ -292,15 +292,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 480.0
+				m_value = 2400.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 190.0
+				m_value = 950.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 180.0
+				m_value = 850.0
 			},
 		]
 	}
@@ -314,15 +314,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 750.0
+				m_value = 3750.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 270.0
+				m_value = 1350.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 260.0
+				m_value = 1250.0
 			},
 		]
 	}
@@ -336,15 +336,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 1150.0
+				m_value = 5750.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 380.0
+				m_value = 1900.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 360.0
+				m_value = 1800.0
 			},
 		]
 	}
@@ -358,15 +358,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 1750.0
+				m_value = 8750.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 520.0
+				m_value = 2600.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 500.0
+				m_value = 2500.0
 			},
 		]
 	}
@@ -375,24 +375,24 @@ $customModifiersKv3 = @"
 $modInsertPos = $modTxt.LastIndexOf("}")
 $modPatchedTxt = $modTxt.Substring(0, $modInsertPos) + $customModifiersKv3 + "`n}`n"
 
-# 2. Patch npc_units.vdata_c.txt with weaker initial stats + fast per-minute growth + Phase 4 Graves Zombies & Neutral Creeps
+# 2. Patch npc_units.vdata_c.txt with slightly higher initial stats + 5x faster per-minute growth + Phase 4 Graves Zombies & Neutral Creeps
 $npcTxtPath = Join-Path $scratchDir "npc_units.vdata_c.txt"
 $npcTxt = [System.IO.File]::ReadAllText($npcTxtPath)
 
-$npcPatchedTxt = [regex]::Replace($npcTxt, '(_class = "modifier_citadel_trooper_shrine_down_buff"\s+_my_subclass_name = "modifier_citadel_trooper_shrine_down_buff"\s+)m_flModelScale = 1\.1\s+m_flHealthScale = 1\.4\s+m_flDamageScale = 60\.0', '${1}m_flModelScale = 1.075' + "`n`t`t`t" + 'm_flHealthScale = 1.10' + "`n`t`t`t" + 'm_flDamageScale = 10.0')
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 0\.0', 'm_flDPSPctGrowthPerMinute = 20.0'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 3\.0', 'm_flDPSPctGrowthPerMinute = 20.0'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDamageGrowthPctPerMin = 0\.5', 'm_flDamageGrowthPctPerMin = 20.0'
+$npcPatchedTxt = [regex]::Replace($npcTxt, '(_class = "modifier_citadel_trooper_shrine_down_buff"\s+_my_subclass_name = "modifier_citadel_trooper_shrine_down_buff"\s+)m_flModelScale = 1\.1\s+m_flHealthScale = 1\.4\s+m_flDamageScale = 60\.0', '${1}m_flModelScale = 1.15' + "`n`t`t`t" + 'm_flHealthScale = 1.50' + "`n`t`t`t" + 'm_flDamageScale = 50.0')
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 0\.0', 'm_flDPSPctGrowthPerMinute = 100.0'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 3\.0', 'm_flDPSPctGrowthPerMinute = 100.0'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDamageGrowthPctPerMin = 0\.5', 'm_flDamageGrowthPctPerMin = 100.0'
 
-# Lower initial base health & base DPS of troopers and neutral creeps so Wave 1 is much weaker
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_nMaxHealth = 300', 'm_nMaxHealth = 80'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_nMaxHealth = 350', 'm_nMaxHealth = 80'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_nMaxHealth = 354', 'm_nMaxHealth = 80'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_nMaxHealth = 142', 'm_nMaxHealth = 70'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_nMaxHealth = 400', 'm_nMaxHealth = 95'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flBaseDPS = 28\.0', 'm_flBaseDPS = 10.0'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flBulletDamage = 36', 'm_flBulletDamage = 12'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flBulletDamage = 61\.8', 'm_flBulletDamage = 18.0'
+# Set initial base health (120 HP) & base DPS of troopers and neutral creeps
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_nMaxHealth = 300', 'm_nMaxHealth = 120'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_nMaxHealth = 350', 'm_nMaxHealth = 120'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_nMaxHealth = 354', 'm_nMaxHealth = 120'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_nMaxHealth = 142', 'm_nMaxHealth = 105'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_nMaxHealth = 400', 'm_nMaxHealth = 140'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flBaseDPS = 28\.0', 'm_flBaseDPS = 15.0'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flBulletDamage = 36', 'm_flBulletDamage = 18'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flBulletDamage = 61\.8', 'm_flBulletDamage = 26.0'
 $npcPatchedTxt = [regex]::Replace($npcPatchedTxt, '(m_eModifierValue = "MODIFIER_VALUE_BULLET_DAMAGE_REDUCTION_PERCENT"\s+m_value = )\d+(\.\d+)?', '${1}0.0')
 $npcPatchedTxt = [regex]::Replace($npcPatchedTxt, '(m_eModifierValue = "MODIFIER_VALUE_ABILITY_DAMAGE_REDUCTION_PERCENT"\s+m_value = )\d+(\.\d+)?', '${1}0.0')
 

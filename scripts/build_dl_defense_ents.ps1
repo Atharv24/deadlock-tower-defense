@@ -115,10 +115,25 @@ Write-Output "Disabled stock side-lane/vault info_neutral_trooper_camp and info_
 # 5. Add Center Lane neutral creep camp ([PR#]td_lane_neutrals + 4 info_neutral_trooper_spawn points),
 # point_servercommand, and logic_auto:
 # - Runs exec td_postload at 1.0s
+# - Runs exec td_apply_buffs at 13.5s (8.5s after initial 5s wave spawns, right when zipline capsule lands)
 # - Runs exec td_wave_tick every 20s via [PR#]td_servercmd (zero FCVAR warnings)
-$waveTickConnections = ""
+# - Runs exec td_apply_buffs 8.5s after each 20s wave tick so newly landed zipline troopers get their tier's HP/Size/Strength
+$waveTickConnections = @"
+				{
+					m_outputName = "OnMapSpawn"
+					m_targetType = 7
+					m_targetName = "[PR#]td_servercmd"
+					m_inputName = "Command"
+					m_overrideParam = "exec td_apply_buffs"
+					m_flDelay = 13.5
+					m_nTimesToFire = 1
+					m_paramMap = null
+				},
+
+"@
 for ($w = 1; $w -le 90; $w++) {
     $delay = "{0:F1}" -f ($w * 20.0)
+    $landDelay = "{0:F1}" -f ($w * 20.0 + 8.5)
     $waveTickConnections += @"
 				{
 					m_outputName = "OnMapSpawn"
@@ -127,6 +142,16 @@ for ($w = 1; $w -le 90; $w++) {
 					m_inputName = "Command"
 					m_overrideParam = "exec td_wave_tick"
 					m_flDelay = $delay
+					m_nTimesToFire = 1
+					m_paramMap = null
+				},
+				{
+					m_outputName = "OnMapSpawn"
+					m_targetType = 7
+					m_targetName = "[PR#]td_servercmd"
+					m_inputName = "Command"
+					m_overrideParam = "exec td_apply_buffs"
+					m_flDelay = $landDelay
 					m_nTimesToFire = 1
 					m_paramMap = null
 				},

@@ -109,6 +109,7 @@ elseif ($Action -eq "Clean" -or $Action -eq "Uninstall") {
         (Join-Path $deadlockScriptsDir "modifiers.vdata_c"),
         (Join-Path $deadlockScriptsDir "npc_units.vdata_c"),
         (Join-Path $deadlockCfgDir "start_td.cfg"),
+        (Join-Path $deadlockCfgDir "td_apply_buffs.cfg"),
         (Join-Path $deadlockCfgDir "td_postload.cfg"),
         (Join-Path $deadlockCfgDir "td_scaling.cfg"),
         (Join-Path $deadlockCfgDir "td_wave_tick.cfg"),
