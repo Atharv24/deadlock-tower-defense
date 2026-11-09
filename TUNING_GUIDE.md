@@ -91,7 +91,7 @@ Controlled entirely in **`src/cfg/td_scaling.cfg` (lines 21 & 84–93)** — no 
 
 ### E. Player Boon / Tome Rewards & Drop Probability
 1. **Boon Drop Probability (`src/cfg/td_scaling.cfg`, line 104) — No recompile needed:**
-   * A 10-step counter (`td_boon_rng_1` -> `td_boon_rng_10`) advances by 1 each time a creep dies within `1.0s` of taking damage from your hero. Step 10 grants a Boon and resets the counter via `td_boon_reset`.
+   * A 10-step counter (`td_boon_rng_1` -> `td_boon_rng_10`) advances by 1 each time a creep is killed by your hero (Friendly Tower kills are filtered out via `[PR#]td_filter_no_walker` and `[PR#]td_filter_no_guardian`). Step 10 grants a Boon and resets the counter via `td_boon_reset`.
    * Edit `td_boon_reset` on line 104 to change the drop chance:
      * **10% (1 in 10 kills — Default):** `alias td_boon_reset "alias td_try_grant_tome td_boon_rng_1"`
      * **20% (1 in 5 kills):** `alias td_boon_reset "alias td_try_grant_tome td_boon_rng_6"`
@@ -116,12 +116,12 @@ Controlled in **`scripts/build_dl_defense_ents.ps1`** — Requires Map Entity + 
 * **Wave Scaling Interval (`line 120`):**
   * `$delay = "{0:F1}" -f ($w * 20.0)` (for `$w = 1..90`)
   * Executes `exec td_wave_tick` every **20 seconds** for 30 minutes (`1800s`). Change `20.0` to make waves scale faster or slower.
-* **Trooper Hook Interval (`line 136`):**
+* **Trooper Hook Interval (`line 145`):**
   * `for ($t = 4; $t -le 1800; $t += 4)`
-  * Every **4 seconds**, attaches `OnDamagedByPlayer` and `OnDeath` outputs to newly spawned `npc_trooper` entities.
-* **Player-Damage Boon Window (`line 154`):**
-  * `m_overrideParam = "OnDamagedByPlayer>[PR#]td_tome_gate>Disable>>1.0>-1"`
-  * When you damage a creep, `[PR#]td_tome_gate` opens for **1.0 second**. If the creep dies within 1.0s of your hit, it counts as a player kill and rolls for a Boon.
+  * Every **4 seconds**, attaches `OnDeath>[PR#]td_filter_no_walker>TestActivator>>0>1` to newly spawned `npc_trooper` entities.
+* **Player-Kill Filter Chain (`lines 185–240`):**
+  * When a creep dies, `CNPC_Trooper::Event_Killed` passes the killer entity (`info.GetAttacker()`) as `!activator` to `OnDeath`.
+  * `[PR#]td_filter_no_walker` and `[PR#]td_filter_no_guardian` (`filter_activator_name`) block Friendly Tower kills (`[PR#]rebels_t2_boss_blue` and `[PR#]boss_rebel_t1_blue`) and only forward `OnFail` (Player Hero kills) to `[PR#]td_tome_gate`.
 
 ---
 
