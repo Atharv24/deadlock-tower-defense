@@ -106,7 +106,14 @@ $text = $text -replace 'classname = "point_template"', 'classname = "info_target
 $text = [regex]::Replace($text, '(graph_def = resource_name:"pulse/maps/prefabs/gameplay/(?:souls_dealer|basketball_hoop)\.vpulse"[\s\S]{1,200}?)classname = "point_pulse"', '$1classname = "info_target_server_only"')
 Write-Output "Disabled point_template and souls_dealer/basketball_hoop point_pulse entities."
 
-# 5. Add point_servercommand and logic_auto:
+# 4B. Disable stock side-lane / underground info_neutral_trooper_camp and info_neutral_trooper_spawn entities
+# so only our Center Lane neutral camp ([PR#]td_lane_neutrals) spawns neutral creeps.
+$text = $text -replace 'classname = "info_neutral_trooper_camp"', 'classname = "info_target_server_only"'
+$text = $text -replace 'classname = "info_neutral_trooper_spawn"', 'classname = "info_target_server_only"'
+Write-Output "Disabled stock side-lane/vault info_neutral_trooper_camp and info_neutral_trooper_spawn entities."
+
+# 5. Add Center Lane neutral creep camp ([PR#]td_lane_neutrals + 4 info_neutral_trooper_spawn points),
+# point_servercommand, and logic_auto:
 # - Runs exec td_postload at 1.0s
 # - Runs exec td_wave_tick every 20s via [PR#]td_servercmd (zero FCVAR warnings)
 $waveTickConnections = ""
@@ -128,6 +135,117 @@ for ($w = 1; $w -le 90; $w++) {
 }
 
 $autoEnts = @"
+		{
+			m_connections = [  ]
+			m_keyValuesData = #[  ]
+			keyValues3Data = 
+			{
+				version = 1
+				values = 
+				{
+					TetherRadiusOverride = 1200.0
+					targetname = "[PR#]td_lane_neutrals"
+					vscripts = ""
+					subclass_name = "neutral_camp_medium"
+					CampName = ""
+					classname = "info_neutral_trooper_camp"
+					origin = [ 0.0, -1350.0, 140.0 ]
+					angles = [ 0.0, 270.0, 0.0 ]
+					scales = [ 1.0, 1.0, 1.0 ]
+				}
+				attributes = 
+				{
+				}
+			}
+		},
+		{
+			m_connections = [  ]
+			m_keyValuesData = #[  ]
+			keyValues3Data = 
+			{
+				version = 1
+				values = 
+				{
+					NeutralSubclass = "neutral_drain_creature_normal"
+					ENeutralTrooperType = "-1"
+					CampName = "[PR#]td_lane_neutrals"
+					teamnumber = "4"
+					classname = "info_neutral_trooper_spawn"
+					origin = [ -160.0, -1400.0, 140.0 ]
+					angles = [ 0.0, 270.0, 0.0 ]
+					scales = [ 1.0, 1.0, 1.0 ]
+				}
+				attributes = 
+				{
+				}
+			}
+		},
+		{
+			m_connections = [  ]
+			m_keyValuesData = #[  ]
+			keyValues3Data = 
+			{
+				version = 1
+				values = 
+				{
+					NeutralSubclass = "neutral_underground_normal"
+					ENeutralTrooperType = "-1"
+					CampName = "[PR#]td_lane_neutrals"
+					teamnumber = "4"
+					classname = "info_neutral_trooper_spawn"
+					origin = [ 160.0, -1400.0, 140.0 ]
+					angles = [ 0.0, 270.0, 0.0 ]
+					scales = [ 1.0, 1.0, 1.0 ]
+				}
+				attributes = 
+				{
+				}
+			}
+		},
+		{
+			m_connections = [  ]
+			m_keyValuesData = #[  ]
+			keyValues3Data = 
+			{
+				version = 1
+				values = 
+				{
+					NeutralSubclass = "neutral_lantern_normal"
+					ENeutralTrooperType = "-1"
+					CampName = "[PR#]td_lane_neutrals"
+					teamnumber = "4"
+					classname = "info_neutral_trooper_spawn"
+					origin = [ -160.0, -1200.0, 140.0 ]
+					angles = [ 0.0, 270.0, 0.0 ]
+					scales = [ 1.0, 1.0, 1.0 ]
+				}
+				attributes = 
+				{
+				}
+			}
+		},
+		{
+			m_connections = [  ]
+			m_keyValuesData = #[  ]
+			keyValues3Data = 
+			{
+				version = 1
+				values = 
+				{
+					NeutralSubclass = "neutral_specimen_normal"
+					ENeutralTrooperType = "-1"
+					CampName = "[PR#]td_lane_neutrals"
+					teamnumber = "4"
+					classname = "info_neutral_trooper_spawn"
+					origin = [ 160.0, -1200.0, 140.0 ]
+					angles = [ 0.0, 270.0, 0.0 ]
+					scales = [ 1.0, 1.0, 1.0 ]
+				}
+				attributes = 
+				{
+				}
+			}
+		},
 		{
 			m_connections = [  ]
 			m_keyValuesData = #[  ]

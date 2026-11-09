@@ -195,13 +195,78 @@ $customModifiersKv3 = @"
 $modInsertPos = $modTxt.LastIndexOf("}")
 $modPatchedTxt = $modTxt.Substring(0, $modInsertPos) + $customModifiersKv3 + "`n}`n"
 
-# 2. Patch npc_units.vdata_c.txt with halved scaling values
+# 2. Patch npc_units.vdata_c.txt with halved scaling values + Phase 4 Graves Zombies & Neutral Creeps
 $npcTxtPath = Join-Path $scratchDir "npc_units.vdata_c.txt"
 $npcTxt = [System.IO.File]::ReadAllText($npcTxtPath)
 
 $npcPatchedTxt = [regex]::Replace($npcTxt, '(_class = "modifier_citadel_trooper_shrine_down_buff"\s+_my_subclass_name = "modifier_citadel_trooper_shrine_down_buff"\s+)m_flModelScale = 1\.1\s+m_flHealthScale = 1\.4\s+m_flDamageScale = 60\.0', '${1}m_flModelScale = 1.075' + "`n`t`t`t" + 'm_flHealthScale = 1.02' + "`n`t`t`t" + 'm_flDamageScale = 3.0')
 $npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 0\.0', 'm_flDPSPctGrowthPerMinute = 2.25'
 $npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 3\.0', 'm_flDPSPctGrowthPerMinute = 2.25'
+
+# Helper to transform a top-level unit block in npc_units.vdata_c.txt
+function Update-UnitBlock([string]$fullText, [string]$unitName, [scriptblock]$transform) {
+    $marker = "`n`t$unitName = `n`t{"
+    $idx = $fullText.IndexOf($marker)
+    if ($idx -lt 0) {
+        $marker = "`r`n`t$unitName = `r`n`t{"
+        $idx = $fullText.IndexOf($marker)
+    }
+    if ($idx -lt 0) { throw "Could not find unit block: $unitName" }
+    $braceStart = $fullText.IndexOf("{", $idx)
+    $depth = 0
+    $pos = $braceStart
+    while ($pos -lt $fullText.Length) {
+        $c = $fullText[$pos]
+        if ($c -eq '{') { $depth++ }
+        elseif ($c -eq '}') {
+            $depth--
+            if ($depth -eq 0) {
+                $blk = $fullText.Substring($braceStart, $pos + 1 - $braceStart)
+                $newBlk = & $transform $blk
+                return $fullText.Substring(0, $braceStart) + $newBlk + $fullText.Substring($pos + 1)
+            }
+        }
+        $pos++
+    }
+    throw "Unclosed unit block: $unitName"
+}
+
+# 2A. Convert trooper_melee into Graves's Zombie (necro_shambler.vmdl) so every wave spawns Graves's zombies charging down Center Lane with troopers
+$npcPatchedTxt = Update-UnitBlock $npcPatchedTxt "trooper_melee" {
+    param($b)
+    $b = $b -replace 'models/npc_units/troopers/amber_trooper_01_melee/amber_trooper_01_melee\.vmdl', 'models/heroes_wip/necro/necro_shambler.vmdl'
+    $b = $b -replace 'models/npc_units/troopers/sapphire_trooper_01_melee/sapphire_trooper_01_melee\.vmdl', 'models/heroes_wip/necro/necro_shambler.vmdl'
+    $b = $b -replace 'm_sDefaultMaterialGroupName = "Friendly"', 'm_sDefaultMaterialGroupName = ""'
+    $b = $b -replace 'm_sEnemyMaterialGroupName = "Enemy"', 'm_sEnemyMaterialGroupName = ""'
+    $b = $b -replace 'm_sTeam1MaterialGroupName = "Amber"', 'm_sTeam1MaterialGroupName = ""'
+    $b = $b -replace 'm_sTeam2MaterialGroupName = "Sapphire"', 'm_sTeam2MaterialGroupName = ""'
+    $b = $b -replace 'm_DeathParticle = resource_name:"particles/trooper/trooper_death_sn\.vpcf"', 'm_DeathParticle = resource_name:"particles/abilities/necro/necro_ghoul_death.vpcf"'
+    $b = $b -replace 'm_DeathSound = soundevent:"Damage\.Receive\.Lethal\.NPC"', 'm_DeathSound = soundevent:"Necro.Shambler.Destroy"'
+    $b = $b -replace 'm_bSpawnBreakablesOnDeath = true', 'm_bSpawnBreakablesOnDeath = false'
+    return $b
+}
+
+# 2B. Convert trooper_medic into a marching Neutral Creep (neutral_underhand_01.vmdl) so every wave squad includes a Neutral Creep alongside Troopers & Graves's Zombies
+$npcPatchedTxt = Update-UnitBlock $npcPatchedTxt "trooper_medic" {
+    param($b)
+    $b = $b -replace 'models/npc_units/troopers/amber_medic_01/amber_medic_01\.vmdl', 'models/npc_units/neutral_underhand_01/neutral_underhand_01.vmdl'
+    $b = $b -replace 'models/npc_units/troopers/sapphire_medic_01/sapphire_medic_01\.vmdl', 'models/npc_units/neutral_underhand_01/neutral_underhand_01.vmdl'
+    $b = $b -replace 'm_sDefaultMaterialGroupName = "FriendlyMedic"', 'm_sDefaultMaterialGroupName = "Neutral_Normal"'
+    $b = $b -replace 'm_sEnemyMaterialGroupName = "EnemyMedic"', 'm_sEnemyMaterialGroupName = "Neutral_Normal"'
+    $b = $b -replace 'm_sTeam1MaterialGroupName = "Amber"', 'm_sTeam1MaterialGroupName = "Neutral_Normal"'
+    $b = $b -replace 'm_sTeam2MaterialGroupName = "Sapphire"', 'm_sTeam2MaterialGroupName = "Neutral_Normal"'
+    $b = $b -replace 'm_szBulletTravelTracerParticle = resource_name:"particles/weapon_fx/trooper/trooper_bullet_travel\.vpcf"', 'm_szBulletTravelTracerParticle = resource_name:"particles/npc/neutrals/generic_neutral/neutral_small_projectile.vpcf"'
+    $b = $b -replace 'm_szMuzzleFlashEffectName = resource_name:"particles/weapon_fx/trooper/trooper_muzzle_flash\.vpcf"', 'm_szMuzzleFlashEffectName = resource_name:"particles/npc/neutrals/generic_neutral/neutral_muzzle_flash_small.vpcf"'
+    $b = $b -replace 'm_strShootSound = soundevent:"TrooperRifle\.Fire"', 'm_strShootSound = soundevent:"Neutral.Camp.Bullet.Fire"'
+    $b = $b -replace 'm_DeathParticle = resource_name:"particles/trooper/trooper_death_sn\.vpcf"', 'm_DeathParticle = resource_name:"particles/npc/neutral_trooper_death.vpcf"'
+    $b = $b -replace 'm_bSpawnBreakablesOnDeath = true', 'm_bSpawnBreakablesOnDeath = false'
+    return $b
+}
+
+# 2C. Make neutral camp creeps (npc_trooper_neutral) active in Center Lane (larger tether radius, not ignored by NPC targeting, unlocked facing)
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_nEnabledStateMask = "MODIFIER_STATE_IGNORED_BY_NPC_TARGETING"', 'm_nEnabledStateMask = ""'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_nEnabledStateMask = "MODIFIER_STATE_LOCK_ENTITY_FACING"', 'm_nEnabledStateMask = ""'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flSpawnTetherRadius = 300\.0', 'm_flSpawnTetherRadius = 1200.0'
 
 $code = @"
 using System;

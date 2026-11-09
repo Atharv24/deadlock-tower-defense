@@ -90,9 +90,29 @@ Controlled entirely in **`src/cfg/td_scaling.cfg` (lines 20 & 82–91)** — no 
 
 ---
 
-### E. Wave Interval & Map Entity Timers
+### E. Phase 4: Mixed Horde (Troopers + Graves's Zombies + Neutral Creeps)
+Every Center Lane wave now spawns a mixed horde of **Troopers**, **Graves's Zombies**, and **Neutral Creeps** across two systems:
+
+1. **Marching Wave Squads (`scripts/build_td_vdata.ps1`, lines 234–264):**
+   * Each 4-unit lane squad (`citadel_spawn_trooper_wave`) spawns upon landing from the Center Lane zipline capsule (`trooper_zipline_container`):
+     * **2x Ranged Troopers (`trooper_normal`):** Standard enemy troopers.
+     * **1x Graves's Zombie (`trooper_melee`):** Uses Graves's Zombie model (`models/heroes_wip/necro/necro_shambler.vmdl`), death particle (`particles/abilities/necro/necro_ghoul_death.vpcf`), and death sound (`Necro.Shambler.Destroy`). Charges directly into melee combat and attacks the player and Friendly Blue T1 Guardian.
+     * **1x Marching Neutral Creep (`trooper_medic`):** Uses the Neutral Underhand creep model (`models/npc_units/neutral_underhand_01/neutral_underhand_01.vmdl`), neutral projectile tracer (`neutral_small_projectile.vpcf`), neutral muzzle flash (`neutral_muzzle_flash_small.vpcf`), and neutral fire sound (`Neutral.Camp.Bullet.Fire`). Marches down Center Lane alongside Troopers and Graves's Zombies.
+   * *Why `trooper_melee` instead of raw `npc_necro_skele`?* In `server.dll`, `CNPC_NecroSkele` checks `m_hOwningAbility` (`[this + 0x1568]`) in `CNPC_NecroSkele::Spawn`; without a live Graves ability handle, `m_flSpawnDuration` remains `0.0` and the entity immediately self-destructs on its first Think tick. Running `necro_shambler.vmdl` on `trooper_melee` (`CNPC_Trooper`, which shares `CAI_CitadelNPC_GraphController`) gives full lane pathfinding, melee charge AI, and wave scaling without self-destructing.
+2. **Center Lane Neutral Creep Camp (`scripts/build_dl_defense_ents.ps1`, lines 118–202 & `src/cfg/td_scaling.cfg`):**
+   * All side-lane and underground `info_neutral_trooper_camp` / `info_neutral_trooper_spawn` entities are disabled so `npc_trooper_neutral` commands only affect Center Lane.
+   * A custom `info_neutral_trooper_camp` (`[PR#]td_lane_neutrals`, `TetherRadiusOverride = 1200.0`) with 4 `info_neutral_trooper_spawn` points is placed directly in the Center Lane combat zone (`y = -1400..-1200`, `z = 140.0`) right in front of the Friendly Blue T1 Guardian (`[0.0, -1792.0, 384.0]`):
+     * `neutral_drain_creature_normal` at `[-160.0, -1400.0, 140.0]`
+     * `neutral_underground_normal` at `[160.0, -1400.0, 140.0]`
+     * `neutral_lantern_normal` at `[-160.0, -1200.0, 140.0]`
+     * `neutral_specimen_normal` at `[160.0, -1200.0, 140.0]`
+   * Every 20s wave tick (`td_wave_tick_client` in `src/cfg/td_scaling.cfg`), `ent_fire info_neutral_trooper_camp SpawnNeutrals` respawns the camp and applies the active `td_size_tier1..5` and `td_strength_tier1..5` modifiers to both `npc_trooper` and `npc_trooper_neutral`.
+
+---
+
+### F. Wave Interval & Map Entity Timers
 Controlled in **`scripts/build_dl_defense_ents.ps1`** — Requires Map Entity + VPK recompile:
-* **Wave Scaling Interval (`line 113`):**
+* **Wave Scaling Interval (`line 206`):**
   * `$delay = "{0:F1}" -f ($w * 20.0)` (for `$w = 1..90`)
   * Executes `exec td_wave_tick` every **20 seconds** for 30 minutes (`1800s`). Change `20.0` to make waves scale faster or slower.
 
