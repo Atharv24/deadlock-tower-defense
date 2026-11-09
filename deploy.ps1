@@ -96,7 +96,9 @@ elseif ($Action -eq "Clean" -or $Action -eq "Uninstall") {
         (Join-Path $deadlockMapsDir "dl_defense.vpk"),
         (Join-Path $deadlockAddonDir "pak20_dir.vpk"),
         (Join-Path $deadlockCfgDir "start_td.cfg"),
-        (Join-Path $deadlockCfgDir "td_postload.cfg")
+        (Join-Path $deadlockCfgDir "td_postload.cfg"),
+        (Join-Path $deadlockCfgDir "td_scaling.cfg"),
+        (Join-Path $deadlockCfgDir "td_wave_tick.cfg")
     )
     if (Test-Path $manifestPath) {
         $fromManifest = Get-Content $manifestPath | ConvertFrom-Json

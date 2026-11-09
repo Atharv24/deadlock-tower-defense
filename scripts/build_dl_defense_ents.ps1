@@ -107,6 +107,25 @@ $text = [regex]::Replace($text, '(graph_def = resource_name:"pulse/maps/prefabs/
 Write-Output "Disabled point_template and souls_dealer/basketball_hoop point_pulse entities."
 
 # 5. Add point_servercommand and logic_auto to run td_postload after client connects
+# and fire exec td_wave_tick every 20 seconds (waves 1..90 = 30 minutes of escalating survival)
+$waveTickConnections = ""
+for ($w = 1; $w -le 90; $w++) {
+    $delay = "{0:F1}" -f ($w * 20.0)
+    $waveTickConnections += @"
+				{
+					m_outputName = "OnMapSpawn"
+					m_targetType = 7
+					m_targetName = "[PR#]td_servercmd"
+					m_inputName = "Command"
+					m_overrideParam = "exec td_wave_tick"
+					m_flDelay = $delay
+					m_nTimesToFire = 1
+					m_paramMap = null
+				},
+
+"@
+}
+
 $autoEnts = @"
 		{
 			m_connections = [  ]
@@ -140,7 +159,7 @@ $autoEnts = @"
 					m_nTimesToFire = 1
 					m_paramMap = null
 				},
-			]
+$waveTickConnections			]
 			m_keyValuesData = #[  ]
 			keyValues3Data = 
 			{
