@@ -75,9 +75,14 @@ if ($Action -eq "Install") {
             New-Item -ItemType Directory -Path $deadlockAddonDir -Force | Out-Null
         }
         $addonVpkDst = Join-Path $deadlockAddonDir "pak20_dir.vpk"
-        Copy-Item -Path $addonVpkSrc -Destination $addonVpkDst -Force
-        $installedFiles += $addonVpkDst
-        Write-Host "[Installed Addon VPK] pak20_dir.vpk -> $addonVpkDst" -ForegroundColor Green
+        try {
+            Copy-Item -Path $addonVpkSrc -Destination $addonVpkDst -Force -ErrorAction Stop
+            $installedFiles += $addonVpkDst
+            Write-Host "[Installed Addon VPK] pak20_dir.vpk -> $addonVpkDst" -ForegroundColor Green
+        } catch {
+            Write-Host "[Note] pak20_dir.vpk is currently mounted by a running Deadlock process; loose VData overrides in game\citadel\scripts will be updated instead." -ForegroundColor Yellow
+            $installedFiles += $addonVpkDst
+        }
     }
 
     $buildScriptsDir = Join-Path $buildDir "scripts"
@@ -106,7 +111,8 @@ elseif ($Action -eq "Clean" -or $Action -eq "Uninstall") {
         (Join-Path $deadlockCfgDir "start_td.cfg"),
         (Join-Path $deadlockCfgDir "td_postload.cfg"),
         (Join-Path $deadlockCfgDir "td_scaling.cfg"),
-        (Join-Path $deadlockCfgDir "td_wave_tick.cfg")
+        (Join-Path $deadlockCfgDir "td_wave_tick.cfg"),
+        (Join-Path $deadlockCfgDir "td_grant_tome.cfg")
     )
     if (Test-Path $manifestPath) {
         $fromManifest = Get-Content $manifestPath | ConvertFrom-Json

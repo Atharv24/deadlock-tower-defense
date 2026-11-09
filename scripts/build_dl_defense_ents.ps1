@@ -106,22 +106,17 @@ $text = $text -replace 'classname = "point_template"', 'classname = "info_target
 $text = [regex]::Replace($text, '(graph_def = resource_name:"pulse/maps/prefabs/gameplay/(?:souls_dealer|basketball_hoop)\.vpulse"[\s\S]{1,200}?)classname = "point_pulse"', '$1classname = "info_target_server_only"')
 Write-Output "Disabled point_template and souls_dealer/basketball_hoop point_pulse entities."
 
-# 5. Add point_servercommand, point_broadcastclientcommand, and logic_auto to run td_postload
-# and fire td_wave_tick every 20 seconds + td_apply_creep_buffs every 5 seconds
+# 5. Add point_servercommand, [PR#]td_tome_gate (logic_relay), and logic_auto:
+# - Runs exec td_postload at 1.0s
+# - Runs exec td_wave_tick every 20s via [PR#]td_servercmd (zero FCVAR warnings)
+# - Hooks every spawned npc_trooper every 4s via direct Entity IO AddOutput:
+#     OnDeath>[PR#]td_tome_gate>Trigger>>0>1
+#     OnKilled>[PR#]td_tome_gate>Trigger>>0>1
+#   so killing any creep triggers [PR#]td_tome_gate -> exec td_grant_tome (granting a Tome directly to the Hero!)
 $waveTickConnections = ""
 for ($w = 1; $w -le 90; $w++) {
     $delay = "{0:F1}" -f ($w * 20.0)
     $waveTickConnections += @"
-				{
-					m_outputName = "OnMapSpawn"
-					m_targetType = 7
-					m_targetName = "[PR#]td_clientcmd"
-					m_inputName = "Command"
-					m_overrideParam = "td_wave_tick_client"
-					m_flDelay = $delay
-					m_nTimesToFire = 1
-					m_paramMap = null
-				},
 				{
 					m_outputName = "OnMapSpawn"
 					m_targetType = 7
@@ -136,15 +131,25 @@ for ($w = 1; $w -le 90; $w++) {
 "@
 }
 
-for ($t = 6; $t -le 1800; $t += 5) {
+for ($t = 4; $t -le 1800; $t += 4) {
     $bDelay = "{0:F1}" -f [double]$t
     $waveTickConnections += @"
 				{
 					m_outputName = "OnMapSpawn"
 					m_targetType = 7
-					m_targetName = "[PR#]td_clientcmd"
-					m_inputName = "Command"
-					m_overrideParam = "td_apply_creep_buffs"
+					m_targetName = "npc_trooper"
+					m_inputName = "AddOutput"
+					m_overrideParam = "OnDeath>[PR#]td_tome_gate>Trigger>>0>1"
+					m_flDelay = $bDelay
+					m_nTimesToFire = 1
+					m_paramMap = null
+				},
+				{
+					m_outputName = "OnMapSpawn"
+					m_targetType = 7
+					m_targetName = "npc_trooper"
+					m_inputName = "AddOutput"
+					m_overrideParam = "OnKilled>[PR#]td_tome_gate>Trigger>>0>1"
 					m_flDelay = $bDelay
 					m_nTimesToFire = 1
 					m_paramMap = null
@@ -174,15 +179,52 @@ $autoEnts = @"
 			}
 		},
 		{
-			m_connections = [  ]
+			m_connections = 
+			[
+				{
+					m_outputName = "OnTrigger"
+					m_targetType = 7
+					m_targetName = "[PR#]td_tome_gate"
+					m_inputName = "Disable"
+					m_overrideParam = ""
+					m_flDelay = 0.0
+					m_nTimesToFire = -1
+					m_paramMap = null
+				},
+				{
+					m_outputName = "OnTrigger"
+					m_targetType = 7
+					m_targetName = "[PR#]td_servercmd"
+					m_inputName = "Command"
+					m_overrideParam = "exec td_grant_tome"
+					m_flDelay = 0.0
+					m_nTimesToFire = -1
+					m_paramMap = null
+				},
+				{
+					m_outputName = "OnTrigger"
+					m_targetType = 7
+					m_targetName = "[PR#]td_tome_gate"
+					m_inputName = "Enable"
+					m_overrideParam = ""
+					m_flDelay = 0.05
+					m_nTimesToFire = -1
+					m_paramMap = null
+				},
+			]
 			m_keyValuesData = #[  ]
 			keyValues3Data = 
 			{
 				version = 1
 				values = 
 				{
-					targetname = "[PR#]td_clientcmd"
-					classname = "point_broadcastclientcommand"
+					vscripts = ""
+					targetname = "[PR#]td_tome_gate"
+					StartDisabled = false
+					TriggerOnce = false
+					FastRetrigger = true
+					PassthroughCaller = false
+					classname = "logic_relay"
 					origin = [ 0.0, 0.0, 500.0 ]
 					angles = [ 0.0, 0.0, 0.0 ]
 					scales = [ 1.0, 1.0, 1.0 ]
