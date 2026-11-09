@@ -90,11 +90,11 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 600.0
+				m_value = 60.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 80.0
+				m_value = 8.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
@@ -112,11 +112,11 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 900.0
+				m_value = 90.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 100.0
+				m_value = 10.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
@@ -134,11 +134,11 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 1400.0
+				m_value = 140.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 150.0
+				m_value = 15.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
@@ -156,11 +156,11 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 2000.0
+				m_value = 200.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 200.0
+				m_value = 20.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
@@ -178,11 +178,11 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 3000.0
+				m_value = 300.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 300.0
+				m_value = 30.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
@@ -341,7 +341,7 @@ $modPatchedTxt = $modTxt.Substring(0, $modInsertPos) + $customModifiersKv3 + "`n
 $npcTxtPath = Join-Path $scratchDir "npc_units.vdata_c.txt"
 $npcTxt = [System.IO.File]::ReadAllText($npcTxtPath)
 
-$npcPatchedTxt = [regex]::Replace($npcTxt, '(_class = "modifier_citadel_trooper_shrine_down_buff"\s+_my_subclass_name = "modifier_citadel_trooper_shrine_down_buff"\s+)m_flModelScale = 1\.1\s+m_flHealthScale = 1\.4\s+m_flDamageScale = 60\.0', '${1}m_flModelScale = 1.45' + "`n`t`t`t" + 'm_flHealthScale = 2.0' + "`n`t`t`t" + 'm_flDamageScale = 100.0')
+$npcPatchedTxt = [regex]::Replace($npcTxt, '(_class = "modifier_citadel_trooper_shrine_down_buff"\s+_my_subclass_name = "modifier_citadel_trooper_shrine_down_buff"\s+)m_flModelScale = 1\.1\s+m_flHealthScale = 1\.4\s+m_flDamageScale = 60\.0', '${1}m_flModelScale = 1.45' + "`n`t`t`t" + 'm_flHealthScale = 1.1' + "`n`t`t`t" + 'm_flDamageScale = 100.0')
 $npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 0\.0', 'm_flDPSPctGrowthPerMinute = 45.0'
 $npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 3\.0', 'm_flDPSPctGrowthPerMinute = 45.0'
 
