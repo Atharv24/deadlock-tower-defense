@@ -90,7 +90,26 @@ Every Center Lane wave now spawns a mixed horde of **Troopers**, **Graves's Zomb
 
 ---
 
-### F. Wave Interval & Map Entity Timers
+### F. Phase 5: Giant Enemy Hero Boss Waves (Every 10th Wave)
+Every **10th wave** (Wave 10 at `200s`, Wave 20 at `400s`, Wave 30 at `600s`, Wave 40 at `800s`, Wave 50+ at `1000s+`), a **Giant Enemy Hero Boss** (`CCitadelPlayerPawn` on Team 3 Sapphire with all 4 hero abilities unlocked and Hard AI active) spawns into Center Lane:
+
+1. **Where the Boss Roster & 10-Wave Cycle Are Controlled (`src/cfg/td_scaling.cfg`, lines 127–172):**
+   * Uses `citadel_create_unit <hero_name> enemy` (which works on custom map `dl_defense` without the `dl_midtown` map-name restriction of `citadel_spawn_practice_bots` and initializes the bot brain `[bot + 0x4BA0] = 1`).
+   * Applies the Giant Boss modifier exclusively to the Enemy Hero Boss by firing `ent_fire player AddModifier td_boss_hero_stats_<1..5>` followed immediately in the same tick by `ent_fire !player RemoveModifier td_boss_hero_stats_<1..5>`.
+   * **Boss Progression Roster:**
+     * **Wave 10 (`td_boss_wave_10`):** Giant **Abrams (`hero_atlas`)** — `1.65x` Scale, `+2,500` HP (`~3,200+` total HP), `+20` HP/s Regen, `+100%` Gun Damage, `+60` Spirit Power, `+50%` Outgoing Damage.
+     * **Wave 20 (`td_boss_wave_20`):** Giant **Warden (`hero_warden`)** — `1.75x` Scale, `+5,500` HP (`~6,200+` total HP), `+35` HP/s Regen, `+175%` Gun Damage, `+110` Spirit Power, `+100%` Outgoing Damage.
+     * **Wave 30 (`td_boss_wave_30`):** Giant **Seven (`hero_gigawatt`)** — `1.85x` Scale, `+10,000` HP (`~10,700+` total HP), `+50` HP/s Regen, `+250%` Gun Damage, `+170` Spirit Power, `+160%` Outgoing Damage.
+     * **Wave 40 (`td_boss_wave_40`):** Giant **Bebop (`hero_bebop`)** — `1.95x` Scale, `+16,000` HP (`~16,700+` total HP), `+70` HP/s Regen, `+350%` Gun Damage, `+240` Spirit Power, `+225%` Outgoing Damage.
+     * **Wave 50+ (`td_boss_wave_50`):** Colossal **Mo & Krill (`hero_krill`)** — `2.10x` Scale, `+25,000` HP (`~25,700+` total HP), `+100` HP/s Regen, `+500%` Gun Damage, `+350` Spirit Power, `+300%` Outgoing Damage.
+   * **Manual Console Test Commands:**
+     * Run `td_spawn_boss` in the console at any time to immediately spawn the next Giant Enemy Hero Boss tier, or run `td_boss_wave_10`, `td_boss_wave_20`, `td_boss_wave_30`, `td_boss_wave_40`, or `td_boss_wave_50` directly.
+2. **Where the Boss Size, HP & Damage Numbers Are Controlled (`scripts/build_td_vdata.ps1`, lines 373–542):**
+   * Defined in `td_boss_hero_stats_1` through `td_boss_hero_stats_5` inside `modifiers.vdata_c`.
+
+---
+
+### G. Wave Interval & Map Entity Timers
 Controlled in **`scripts/build_dl_defense_ents.ps1`** — Requires Map Entity + VPK recompile:
 * **Wave Scaling Interval (`line 206`):**
   * `$delay = "{0:F1}" -f ($w * 20.0)` (for `$w = 1..90`)

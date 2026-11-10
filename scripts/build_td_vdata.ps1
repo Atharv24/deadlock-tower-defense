@@ -370,6 +370,176 @@ $customModifiersKv3 = @"
 			},
 		]
 	}
+	td_boss_hero_stats_1 = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_boss_hero_stats_1"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT"
+		m_bIsHidden = true
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
+				m_value = 0.65
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 2500.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_REGEN_PER_SECOND"
+				m_value = 20.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_WEAPON_DAMAGE_INCREASE"
+				m_value = 100.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_POWER"
+				m_value = 60.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
+				m_value = 50.0
+			},
+		]
+	}
+	td_boss_hero_stats_2 = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_boss_hero_stats_2"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT"
+		m_bIsHidden = true
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
+				m_value = 0.75
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 5500.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_REGEN_PER_SECOND"
+				m_value = 35.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_WEAPON_DAMAGE_INCREASE"
+				m_value = 175.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_POWER"
+				m_value = 110.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
+				m_value = 100.0
+			},
+		]
+	}
+	td_boss_hero_stats_3 = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_boss_hero_stats_3"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT"
+		m_bIsHidden = true
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
+				m_value = 0.85
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 10000.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_REGEN_PER_SECOND"
+				m_value = 50.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_WEAPON_DAMAGE_INCREASE"
+				m_value = 250.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_POWER"
+				m_value = 170.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
+				m_value = 160.0
+			},
+		]
+	}
+	td_boss_hero_stats_4 = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_boss_hero_stats_4"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT"
+		m_bIsHidden = true
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
+				m_value = 0.95
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 16000.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_REGEN_PER_SECOND"
+				m_value = 70.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_WEAPON_DAMAGE_INCREASE"
+				m_value = 350.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_POWER"
+				m_value = 240.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
+				m_value = 225.0
+			},
+		]
+	}
+	td_boss_hero_stats_5 = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_boss_hero_stats_5"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT"
+		m_bIsHidden = true
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
+				m_value = 1.10
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 25000.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_REGEN_PER_SECOND"
+				m_value = 100.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_WEAPON_DAMAGE_INCREASE"
+				m_value = 500.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_POWER"
+				m_value = 350.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
+				m_value = 300.0
+			},
+		]
+	}
 "@
 
 $modInsertPos = $modTxt.LastIndexOf("}")
