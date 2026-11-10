@@ -26,21 +26,21 @@ Creep HP and damage are controlled by a combination of **Layer 1 (`src/cfg/td_sc
    * `citadel_trooper_health_mult_gametime 9999`
    * Prevents vanilla Deadlock from multiplying creep HP by `3.0x` until 9,999 seconds into the match.
 2. **Base VData Stats (`scripts/build_td_vdata.ps1`, lines 385–396):**
-   * Sets initial Wave 1 base health (`m_nMaxHealth = 120` for troopers/neutrals, `140` for melee zombies), sets initial base DPS (`m_flBaseDPS = 15.0`), zeroes out the 50% bullet / 45% ability armor on neutral creeps, and boosts passive DPS growth to `+100%` per minute (`m_flDPSPctGrowthPerMinute = 100.0`).
+   * Sets initial Wave 1 base health (`m_nMaxHealth = 150` for troopers/neutrals, `180` for melee zombies), sets initial base DPS (`m_flBaseDPS = 20.0`), zeroes out the 50% bullet / 45% ability armor on neutral creeps, and boosts passive DPS growth to `+500%` per minute (`m_flDPSPctGrowthPerMinute = 500.0`).
 3. **10-Tier Base HP Overrides (`src/cfg/td_scaling.cfg`, lines 50–59):**
-   * Starts at **`120 HP`** on Tier 1 and scales **5x faster** per wave tick up to **`14,720 HP`** on Tier 10:
+   * Uses `CAI_BaseNPC_API::OverrideHealth` + `SetHealth`, starting at **`150 HP`** on Tier 1 and scaling **5x faster again** up to **`73,150 HP`** on Tier 10:
      ```cfg
-     alias td_hp_tier1 "ent_fire npc_trooper SetMaxHealth 120; ent_fire npc_trooper SetHealth 120; ent_fire npc_trooper_neutral SetMaxHealth 120; ent_fire npc_trooper_neutral SetHealth 120"
-     alias td_hp_tier2 "ent_fire npc_trooper SetMaxHealth 320; ent_fire npc_trooper SetHealth 320; ent_fire npc_trooper_neutral SetMaxHealth 320; ent_fire npc_trooper_neutral SetHealth 320"
+     alias td_hp_tier1 "ent_fire npc_trooper OverrideHealth 150; ent_fire npc_trooper SetHealth 150; ent_fire npc_trooper_neutral OverrideHealth 150; ent_fire npc_trooper_neutral SetHealth 150"
+     alias td_hp_tier2 "ent_fire npc_trooper OverrideHealth 1150; ent_fire npc_trooper SetHealth 1150; ent_fire npc_trooper_neutral OverrideHealth 1150; ent_fire npc_trooper_neutral SetHealth 1150"
      ...
-     alias td_hp_tier10 "ent_fire npc_trooper SetMaxHealth 14720; ent_fire npc_trooper SetHealth 14720; ent_fire npc_trooper_neutral SetMaxHealth 14720; ent_fire npc_trooper_neutral SetHealth 14720"
+     alias td_hp_tier10 "ent_fire npc_trooper OverrideHealth 73150; ent_fire npc_trooper SetHealth 73150; ent_fire npc_trooper_neutral OverrideHealth 73150; ent_fire npc_trooper_neutral SetHealth 73150"
      ```
-   * **Tip:** You can edit those numbers (`120`, `320`, `620`, `1070`, `1720`, `2720`, `4220`, `6470`, `9720`, `14720`) directly in `src/cfg/td_scaling.cfg` without recompiling VData or the map!
-4. **10-Tier Strength Modifiers (`scripts/build_td_vdata.ps1`, lines 153–372):**
-   * Applied by `td_strength_tier1..10` (`AddModifier td_creep_strength_1..10`).
-   * Starts at `-20%` outgoing damage on Tier 1 and scales 5x faster up to `+8750` flat HP, `+2600%` Max HP, and `+2500%` outgoing damage by Tier 10.
+   * **Tip:** You can edit those numbers (`150`, `1150`, `2650`, `4900`, `8150`, `13150`, `20650`, `31900`, `48150`, `73150`) directly in `src/cfg/td_scaling.cfg` without recompiling VData or the map!
+4. **10-Tier Cumulative Strength Modifiers (`scripts/build_td_vdata.ps1`, lines 153–372 & `src/cfg/td_scaling.cfg`):**
+   * Applied cumulatively by `td_strength_mod1..10` (`AddModifier td_creep_strength_1..10` + `modifier_citadel_trooper_shrine_down_buff`).
+   * Scales 5x faster up to `+43,750` flat HP, `+13,000%` Max HP, and `+12,500%` outgoing damage by Tier 10.
 5. **Post-Zipline Landing Buff Trigger (`src/cfg/td_apply_buffs.cfg` & `scripts/build_dl_defense_ents.ps1`):**
-   * Because `citadel_spawn_trooper_wave` spawns a `trooper_zipline_container` that rides the zipline for ~8s before deploying the actual `npc_trooper` entities on the ground, `logic_auto` also fires `exec td_apply_buffs` (`td_apply_creep_buffs`) `8.5s` after each wave tick so newly landed troopers immediately receive their tier's HP, Size, and Strength.
+   * Because `citadel_spawn_trooper_wave` spawns a `trooper_zipline_container` that rides the zipline for ~11s before deploying the actual `npc_trooper` entities on the ground, `logic_auto` fires `exec td_apply_buffs` (`td_apply_creep_buffs`) `12.5s` after each wave tick so newly landed troopers immediately receive their tier's `OverrideHealth`, Size, and Strength.
 
 ---
 
@@ -53,13 +53,13 @@ Creep HP and damage are controlled by a combination of **Layer 1 (`src/cfg/td_sc
 ---
 
 ### C. Souls / Economy Scaling
-Controlled entirely in **`src/cfg/td_scaling.cfg` (lines 90–94)** — no recompile needed:
+Controlled entirely in **`src/cfg/td_scaling.cfg` (lines 103–107)** — no recompile needed:
 * **Starting Soul Bounty per Creep:**
-  `citadel_trooper_gold_reward 200`
+  `citadel_trooper_gold_reward 250`
 * **Passive Soul Bounty Growth per Minute:**
-  `citadel_trooper_gold_reward_bonus_per_minute 500`
+  `citadel_trooper_gold_reward_bonus_per_minute 2500`
 * **Per-Wave Soul Bounty Growth (every 20s wave tick):**
-  `alias td_grow_souls "incrementvar citadel_trooper_gold_reward 100 25000 250"`
+  `alias td_grow_souls "incrementvar citadel_trooper_gold_reward 100 100000 1250"`
 
 ---
 
