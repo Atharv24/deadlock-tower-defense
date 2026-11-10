@@ -424,7 +424,7 @@ function Update-UnitBlock([string]$fullText, [string]$unitName, [scriptblock]$tr
     throw "Unclosed unit block: $unitName"
 }
 
-# 2A. Convert trooper_melee into Graves's Zombie (necro_shambler.vmdl) so every wave spawns Graves's zombies charging down Center Lane with troopers
+# 2A. Convert trooper_melee into Graves's Zombie (necro_shambler.vmdl) with proximity + melee + death Corpse Explosion
 $npcPatchedTxt = Update-UnitBlock $npcPatchedTxt "trooper_melee" {
     param($b)
     $b = $b -replace 'models/npc_units/troopers/amber_trooper_01_melee/amber_trooper_01_melee\.vmdl', 'models/heroes_wip/necro/necro_shambler.vmdl'
@@ -433,9 +433,83 @@ $npcPatchedTxt = Update-UnitBlock $npcPatchedTxt "trooper_melee" {
     $b = $b -replace 'm_sEnemyMaterialGroupName = "Enemy"', 'm_sEnemyMaterialGroupName = ""'
     $b = $b -replace 'm_sTeam1MaterialGroupName = "Amber"', 'm_sTeam1MaterialGroupName = ""'
     $b = $b -replace 'm_sTeam2MaterialGroupName = "Sapphire"', 'm_sTeam2MaterialGroupName = ""'
-    $b = $b -replace 'm_DeathParticle = resource_name:"particles/trooper/trooper_death_sn\.vpcf"', 'm_DeathParticle = resource_name:"particles/abilities/necro/necro_ghoul_death.vpcf"'
-    $b = $b -replace 'm_DeathSound = soundevent:"Damage\.Receive\.Lethal\.NPC"', 'm_DeathSound = soundevent:"Necro.Shambler.Destroy"'
+    $b = $b -replace 'm_DeathParticle = resource_name:"particles/trooper/trooper_death_sn\.vpcf"', 'm_DeathParticle = resource_name:"particles/abilities/necro/necro_corpse_explosion.vpcf"'
+    $b = $b -replace 'm_DeathSound = soundevent:"Damage\.Receive\.Lethal\.NPC"', 'm_DeathSound = soundevent:"Necro.Shambler.Explode"'
+    $b = $b -replace 'm_MeleeHitSound = soundevent:"Trooper\.Melee\.Damage\.Hit"', 'm_MeleeHitSound = soundevent:"Necro.Shambler.Explode"'
+    $b = $b -replace 'm_strMeleeAttackSound = soundevent:"Trooper\.Super\.Melee\.Swing"', 'm_strMeleeAttackSound = soundevent:"Necro.Shambler.Warning"'
+    $b = $b -replace 'm_MeleeSwingParticle = resource_name:"particles/npc/npc_melee_swing\.vpcf"', 'm_MeleeSwingParticle = resource_name:"particles/abilities/necro/necro_corpse_explosion.vpcf"'
+    $b = $b -replace 'm_MeleeActivateParticle = resource_name:""', 'm_MeleeActivateParticle = resource_name:"particles/abilities/necro/necro_ghoul_warning.vpcf"'
+    $b = $b -replace 'm_flMeleeChargeRange = 1000\.0', 'm_flMeleeChargeRange = 1600.0'
+    $b = $b -replace 'm_flMeleeAttemptRange = 120', 'm_flMeleeAttemptRange = 140'
+    $b = $b -replace 'm_flMeleeHitRange = 120', 'm_flMeleeHitRange = 150'
+    $b = $b -replace 'm_flMaxRange = 700\.0', 'm_flMaxRange = 135.0'
+    $b = $b -replace 'm_flMaxRange = 472\.441', 'm_flMaxRange = 135.0'
     $b = $b -replace 'm_bSpawnBreakablesOnDeath = true', 'm_bSpawnBreakablesOnDeath = false'
+    $zombieModifiers = @"
+		m_vecIntrinsicModifiers = 
+		[
+			subclass:
+			{
+				_class = "modifier_neutral_spore_aura"
+				_my_subclass_name = "necro_zombie_proximity_explode"
+				m_strParticleEffect = resource_name:"particles/abilities/necro/necro_ghoul_warning.vpcf"
+				m_ExplodeParticle = resource_name:"particles/abilities/necro/necro_corpse_explosion.vpcf"
+				m_ExplodeSound = soundevent:"Necro.Shambler.Explode"
+				m_flModifierProvidedByAuraDuration = 3.0
+				m_flAuraRadius = 150.0
+				m_flExplodeDamage = 90.0
+				m_iAuraSearchType = "CITADEL_UNIT_TARGET_ALL_ENEMY"
+				m_bRemoveProvidedModifierOnAuraRemoval = false
+				m_flArmTime = 0.25
+				m_flDetonateTime = 0.25
+				m_modifierProvidedByAura = subclass:
+				{
+					_class = "modifier_neutral_dot_debuff"
+					_my_subclass_name = "necro_zombie_blight_debuff"
+					m_bIsHidden = true
+					m_flDuration = 3.0
+					m_strParticleStatusEffect = resource_name:"particles/status_fx/status_fx_neutral_spore_aura_debuff.vpcf"
+					m_strParticleEffect = resource_name:"particles/npc/neutrals/neutral_mushroom/neutral_spore_aura_tag_enemy.vpcf"
+					m_flTickRate = 0.5
+					m_flDPS = 12
+					m_vecScriptValues = 
+					[
+						{
+							m_eModifierValue = "MODIFIER_VALUE_MOVEMENT_SPEED_SLOW_PERCENT"
+							m_value = 25.0
+						},
+					]
+				}
+			},
+			subclass:
+			{
+				_class = "modifier_neutral_attack_explode_on_death"
+				_my_subclass_name = "necro_zombie_explode_on_death"
+				m_flExplodeDamage = 90.0
+				m_flExplodeRadius = 220.0
+				m_ExplodeParticle = resource_name:"particles/abilities/necro/necro_corpse_explosion.vpcf"
+				m_ExplodeSound = soundevent:"Necro.Shambler.Explode"
+				m_ExplodeDebuffModifier = subclass:
+				{
+					_class = "modifier_base"
+					_my_subclass_name = "necro_zombie_explode_slow"
+					m_bIsHidden = true
+					m_flDuration = 3.0
+					m_strParticleStatusEffect = resource_name:"particles/status_fx/status_fx_inferno_flame_dash_debuff.vpcf"
+					m_strParticleEffect = resource_name:"particles/abilities/inferno/inferno_flame_dash_tag_enemy.vpcf"
+					m_vecScriptValues = 
+					[
+						{
+							m_eModifierValue = "MODIFIER_VALUE_MOVEMENT_SPEED_SLOW_PERCENT"
+							m_value = 30.0
+						},
+					]
+				}
+			},
+		]
+		m_bSpawnBreakablesOnDeath = false
+"@
+    $b = $b -replace 'm_bSpawnBreakablesOnDeath = false', $zombieModifiers.Trim()
     return $b
 }
 
