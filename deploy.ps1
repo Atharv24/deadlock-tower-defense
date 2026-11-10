@@ -63,9 +63,14 @@ if ($Action -eq "Install") {
     $mapVpkSrc = Join-Path $buildDir "dl_defense.vpk"
     if (Test-Path $mapVpkSrc) {
         $mapVpkDst = Join-Path $deadlockMapsDir "dl_defense.vpk"
-        Copy-Item -Path $mapVpkSrc -Destination $mapVpkDst -Force
-        $installedFiles += $mapVpkDst
-        Write-Host "[Installed Map VPK] dl_defense.vpk -> $mapVpkDst" -ForegroundColor Green
+        try {
+            Copy-Item -Path $mapVpkSrc -Destination $mapVpkDst -Force -ErrorAction Stop
+            $installedFiles += $mapVpkDst
+            Write-Host "[Installed Map VPK] dl_defense.vpk -> $mapVpkDst" -ForegroundColor Green
+        } catch {
+            Write-Host "[Note] dl_defense.vpk is currently mounted by a running Deadlock match; existing dl_defense.vpk remains active." -ForegroundColor Yellow
+            $installedFiles += $mapVpkDst
+        }
     }
 
     # 3. Install custom addon VPK (pak20_dir.vpk) and loose VData overrides (Phase 2+)
