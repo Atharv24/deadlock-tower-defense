@@ -84,10 +84,20 @@ describe('Tier 1 — Wave Scaling & Boss Wave Math', () => {
     assert.equal(computeBossTier(25), 5)
     assert.equal(computeBossTier(50), 5)
 
-    const spec = getBossWaveSpec(15)
-    assert.equal(spec.tier, 3)
-    assert.equal(spec.modifier, 'td_boss_hero_stats_3')
-    assert.ok(spec.bonusHp > 7500)
+    const spec5 = getBossWaveSpec(5)
+    const spec10 = getBossWaveSpec(10)
+    const spec15 = getBossWaveSpec(15)
+    const spec25 = getBossWaveSpec(25)
+    const spec30 = getBossWaveSpec(30)
+    assert.equal(spec5.targetScale, 1.55)
+    assert.equal(spec10.targetScale, 1.9)
+    assert.equal(spec15.tier, 3)
+    assert.equal(spec15.modifier, 'td_boss_hero_stats_3')
+    assert.equal(spec15.targetScale, 2.25)
+    assert.ok(spec15.bonusHp > 7500)
+    assert.equal(spec25.targetScale, 2.95)
+    assert.equal(spec30.extraSizeStacks, 1)
+    assert.equal(spec30.targetScale, 3.3)
   })
 
   it('scales creep Damage, Size, Zipline Cadence, and Soul Bounties monotonically across waves', () => {
@@ -376,7 +386,11 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     hero = 1
     pawnEntity = 10
     health = 700
+    maxHealth = 700
     position = { x: 0, y: -1950, z: 390 }
+    abilityList: { name: string; slot: number }[] = [
+      { name: 'citadel_ability_primary', slot: 0 },
+    ]
     constructor(slot: number) {
       this.slot = slot
     }
@@ -386,7 +400,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
         hero: this.hero,
         team: this.team,
         health: this.health,
-        maxHealth: 700,
+        maxHealth: this.maxHealth,
         position: this.position,
         eyeAngles: { pitch: 0, yaw: 90, roll: 0 },
         cameraAngles: { pitch: 0, yaw: 90, roll: 0 },
@@ -416,7 +430,27 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       return true
     }
     giveModifier(mod: string) {
+      if (this.hero === 0 || this.abilityList.length === 0) {
+        return false
+      }
       appliedModifiers.push(mod)
+      if (mod.startsWith('td_boss_hero_stats_')) {
+        const tier = Number(mod.replace('td_boss_hero_stats_', '')) || 1
+        this.maxHealth = 700 + [2500, 5500, 10000, 16000, 25000][tier - 1]
+      }
+      return true
+    }
+    holdModifier(_mod: string, _active?: boolean) {
+      return true
+    }
+    abilities() {
+      return this.abilityList
+    }
+    setAbility(_opts: { ability: string; upgrades?: number }) {
+      return true
+    }
+    heal(amount: number) {
+      this.health = Math.min(this.maxHealth, this.health + amount)
       return true
     }
     sound(_s: string) {
@@ -472,10 +506,11 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     export const ProbeRun = globalThis.__mockModlock.ProbeRun;
     export const players = () => [{ player: globalThis.__mockModlock.defenderPlayer, name: 'Defender', bot: false, ready: true, steamId: 1n, generation: 1, roles: [] }];
     export const addBot = (opts) => {
+      const ent = globalThis.__mockModlock.allocSpawnEntity();
       const p = new globalThis.__mockModlock.MockPlayer(2);
       p.team = opts.team;
-      p.pawnEntity = 999;
-      globalThis.__mockModlock.npcStore.set(999, { health: 2500, maxHealth: 2500, team: opts.team, position: opts.position ?? { x: 0, y: 1200, z: 390 } });
+      p.pawnEntity = ent;
+      globalThis.__mockModlock.npcStore.set(ent, { health: 2500, maxHealth: 2500, team: opts.team, position: opts.position ?? { x: 0, y: 1200, z: 390 } });
       return p;
     };
     export const findEntitiesByName = (name) => name.includes('boss_rebel_t1_blue') ? [700] : [];
@@ -582,7 +617,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   const { TomeManager } = await import('../src/tomes.ts')
   const { TdProbe } = await import('../src/probe.ts')
 
-  it('drives GuardianManager, WaveManager, TomeManager, and TdProbe through all 5 Probe steps to PASS', () => {
+  it('drives GuardianManager, WaveManager, TomeManager, and TdProbe through all 6 Probe steps (including Boss Size scaling) to PASS', () => {
     const guardian = new GuardianManager()
     const tomes = new TomeManager()
     const waves = new WaveManager((w) => tomes.offerMajorBoonForWave(w))
@@ -592,8 +627,8 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     tomes.reset()
     waves.reset(0)
 
-    // Advance the 5 probe steps: world -> defender -> wave_scale -> tome_grant -> boon_and_guardian
-    for (let step = 1; step <= 6 && !probePassed; step++) {
+    // Advance all 6 probe steps: world -> defender -> wave_scale -> tome_grant -> boon_and_guardian -> boss_scale
+    for (let step = 1; step <= 12 && !probePassed; step++) {
       probe.tick(step * 2, waves, guardian, tomes)
       assert.equal(probeFailedReason, '', `TdProbe failed: ${probeFailedReason}`)
     }
@@ -769,6 +804,66 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
 
     // Restore default mock hero
     defenderPlayer.hero = 1
+  })
+
+  it('skips placeholder Boss pawn (hero === 0) and applies scaled HP, Size, and Damage once real Boss hero spawns', () => {
+    appliedModifiers.length = 0
+    scaleStore.clear()
+    npcStore.clear()
+
+    const waves = new WaveManager()
+    waves.reset(0)
+    waves.wave = 9
+
+    // Spawn Wave 10 Boss (Tier 2: +5500 HP, 1.75x Size, 1.35x Damage mult)
+    waves.spawnNextWave(50, true)
+    assert.equal(waves.activeBosses.length, 1)
+    const boss = waves.activeBosses[0]
+
+    // Simulate 1-frame placeholder pawn right after addBot (hero=0, abilities=[], pawnEntity=900)
+    const botMock = boss.bot as unknown as MockPlayer
+    botMock.hero = 0
+    botMock.pawnEntity = 900
+    botMock.abilityList = []
+    botMock.health = 100
+    botMock.maxHealth = 100
+
+    waves.tickActiveBosses()
+    assert.equal(
+      boss.configuredPawnEntity,
+      0,
+      'Must NOT configure placeholder hero=0 pawn',
+    )
+    assert.equal(appliedModifiers.includes('td_boss_hero_stats_2'), false)
+
+    // Real hero pawn spawns 250ms later (hero=6, pawnEntity=999, abilities=[slot 0..3])
+    botMock.hero = 6
+    botMock.pawnEntity = 999
+    botMock.health = 700
+    botMock.maxHealth = 700
+    botMock.abilityList = [
+      { name: 'citadel_ability_bull_charge', slot: 0 },
+      { name: 'citadel_ability_bull_leap', slot: 3 },
+    ]
+
+    waves.tickActiveBosses()
+    assert.equal(boss.configuredPawnEntity, 999)
+    assert.equal(appliedModifiers.includes('td_boss_hero_stats_2'), true)
+    assert.equal(scaleStore.get(999), 1.9)
+    assert.equal(botMock.maxHealth, 6200)
+    assert.equal(botMock.health, 6200)
+
+    // Verify Boss outgoing damage is scaled in modifyIncomingDamage
+    const bossHit = waves.modifyIncomingDamage({
+      victim: 10,
+      attacker: 999,
+      inflictor: 999,
+      ability: 0,
+      flags: 0n,
+      hitGroup: 0,
+      amount: 100,
+    })
+    assert.equal(bossHit?.amount, 135)
   })
 })
 

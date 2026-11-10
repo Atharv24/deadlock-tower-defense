@@ -1,7 +1,11 @@
 $ErrorActionPreference = "Stop"
 
-$scratchDir = "C:\Users\athar\.gemini\antigravity\brain\bc4be04f-aa74-4f2b-b4c1-e6569ea638df\scratch"
-$buildDir = "d:\Projects\deadlock-custom-game\build"
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$scratchDir = Join-Path $repoRoot "reference\vdata_base"
+if (-not (Test-Path $scratchDir)) {
+    $scratchDir = "C:\Users\athar\.gemini\antigravity\brain\bc4be04f-aa74-4f2b-b4c1-e6569ea638df\scratch"
+}
+$buildDir = Join-Path $repoRoot "build"
 $buildScriptsDir = Join-Path $buildDir "scripts"
 if (-not (Test-Path $buildScriptsDir)) { New-Item -ItemType Directory -Path $buildScriptsDir -Force | Out-Null }
 
@@ -374,13 +378,13 @@ $customModifiersKv3 = @"
 	{
 		_class = "modifier_base"
 		_my_subclass_name = "td_boss_hero_stats_1"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
 		m_bIsHidden = true
 		m_vecScriptValues = 
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.65
+				m_value = 0.55
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
@@ -408,13 +412,13 @@ $customModifiersKv3 = @"
 	{
 		_class = "modifier_base"
 		_my_subclass_name = "td_boss_hero_stats_2"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
 		m_bIsHidden = true
 		m_vecScriptValues = 
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.75
+				m_value = 0.90
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
@@ -442,13 +446,13 @@ $customModifiersKv3 = @"
 	{
 		_class = "modifier_base"
 		_my_subclass_name = "td_boss_hero_stats_3"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
 		m_bIsHidden = true
 		m_vecScriptValues = 
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.85
+				m_value = 1.25
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
@@ -476,13 +480,13 @@ $customModifiersKv3 = @"
 	{
 		_class = "modifier_base"
 		_my_subclass_name = "td_boss_hero_stats_4"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
 		m_bIsHidden = true
 		m_vecScriptValues = 
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.95
+				m_value = 1.60
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
@@ -510,13 +514,13 @@ $customModifiersKv3 = @"
 	{
 		_class = "modifier_base"
 		_my_subclass_name = "td_boss_hero_stats_5"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
 		m_bIsHidden = true
 		m_vecScriptValues = 
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 1.10
+				m_value = 1.95
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
@@ -537,6 +541,20 @@ $customModifiersKv3 = @"
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
 				m_value = 300.0
+			},
+		]
+	}
+	td_boss_size_step = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_boss_size_step"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE | MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
+				m_value = 0.35
 			},
 		]
 	}

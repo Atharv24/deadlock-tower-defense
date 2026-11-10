@@ -48,13 +48,22 @@ export interface CreepWaveSpec {
 
 export interface ActiveBoss {
   readonly wave: number
+  readonly tier: number
   readonly bot: Player
   readonly hero: string
   readonly modifier: string
   readonly targetMaxHp: number
+  readonly extraHealthStacks: number
+  readonly extraSizeStacks: number
+  readonly targetScale: number
+  readonly damageMult: number
+  readonly spawnOrigin: { readonly x: number; readonly y: number; readonly z: number }
   pawnEntity: number
-  configured: boolean
+  configuredPawnEntity: number
+  initialHealDone: boolean
 }
+
+const BOSS_SPAWN_X_OFFSETS = [-165, -55, 55, 165] as const
 
 export class WaveManager {
   wave = 0
@@ -307,21 +316,31 @@ export class WaveManager {
     return newlySpawned.length
   }
 
-  /** Scales outgoing damage dealt by enemy wave creeps in Modlock's `onDamage` hook. */
+  /** Scales outgoing damage dealt by enemy wave creeps and Boss Heroes in Modlock's `onDamage` hook. */
   modifyIncomingDamage(hit: DamageEvent): DamageResult | undefined {
     if (hit.attacker <= 0 || hit.amount <= 0) {
       return undefined
     }
     const spec = this.creepSpecs.get(hit.attacker)
-    if (!spec) {
-      return undefined
+    if (spec) {
+      if (Math.abs(spec.damageMult - 1) < 0.001) {
+        return undefined
+      }
+      return {
+        amount: hit.amount * spec.damageMult,
+      }
     }
-    if (Math.abs(spec.damageMult - 1) < 0.001) {
-      return undefined
+    for (const boss of this.activeBosses) {
+      if (boss.pawnEntity > 0 && boss.pawnEntity === hit.attacker) {
+        if (Math.abs(boss.damageMult - 1) < 0.001) {
+          return undefined
+        }
+        return {
+          amount: hit.amount * boss.damageMult,
+        }
+      }
     }
-    return {
-      amount: hit.amount * spec.damageMult,
-    }
+    return undefined
   }
 
   /**
@@ -395,16 +414,23 @@ export class WaveManager {
 
   private spawnBossForWave(wave: number): void {
     const spec = getBossWaveSpec(wave)
+    const bossIndex = Math.max(0, Math.floor(wave / 5) - 1)
+    const spawnOrigin = {
+      x: BOSS_SPAWN_X_OFFSETS[bossIndex % BOSS_SPAWN_X_OFFSETS.length],
+      y: BOSS_SPAWN_ORIGIN.y,
+      z: BOSS_SPAWN_ORIGIN.z,
+    }
     const bot = addBot({
       name: `Wave ${wave} Boss`,
       team: 3,
       hero: spec.hero,
-      position: BOSS_SPAWN_ORIGIN,
+      position: spawnOrigin,
     })
     for (const conn of players()) {
+      if (conn.bot || !conn.ready) continue
       conn.player.announce(
         `BOSS WAVE ${wave}`,
-        `Enemy ${spec.hero.replace('hero_', '').toUpperCase()} enters Center Lane!`,
+        `Enemy ${spec.hero.replace('hero_', '').toUpperCase()} (${spec.targetScale.toFixed(2)}x Size · +${spec.bonusHp} HP) enters Center Lane!`,
       )
     }
     if (!bot) {
@@ -413,38 +439,108 @@ export class WaveManager {
     }
     this.activeBosses.push({
       wave,
+      tier: spec.tier,
       bot,
       hero: spec.hero,
       modifier: spec.modifier,
       targetMaxHp: spec.bonusHp,
+      extraHealthStacks: spec.extraHealthStacks,
+      extraSizeStacks: spec.extraSizeStacks,
+      targetScale: spec.targetScale,
+      damageMult: spec.damageMult,
+      spawnOrigin,
       pawnEntity: 0,
-      configured: false,
+      configuredPawnEntity: 0,
+      initialHealDone: false,
     })
   }
 
-  private tickActiveBosses(): void {
+  /**
+   * Configures newly spawned Boss Hero pawns ONLY after their real hero pawn
+   * (`pawn.hero > 0`) and first ability (`abilities().length > 0`) exist,
+   * avoiding the 1-frame `unknown` placeholder pawn (`hero === 0`).
+   */
+  tickActiveBosses(): void {
     for (let i = this.activeBosses.length - 1; i >= 0; i--) {
       const boss = this.activeBosses[i]
       const pawn = boss.bot.pawn()
-      if (!pawn) {
+      if (!pawn || pawn.hero === 0) {
         continue
       }
       boss.pawnEntity = pawn.entity
-      if (!boss.configured && pawn.health > 0) {
-        boss.bot.teleport(BOSS_SPAWN_ORIGIN, BOSS_SPAWN_ANGLES)
-        boss.bot.giveModifier(boss.modifier, -1)
-        boss.bot.adjustAbilityPoints(15, 4)
-        boss.bot.adjustSouls(boss.wave * 1500, true)
-        new Npc(pawn.entity).setHealth(boss.targetMaxHp, boss.targetMaxHp)
-        boss.configured = true
-      } else if (boss.configured && pawn.health <= 0) {
-        // Boss was defeated!
+
+      if (boss.configuredPawnEntity === pawn.entity && pawn.health <= 0) {
+        // Real Boss hero pawn was defeated!
         boss.bot.removeBot()
         this.activeBosses.splice(i, 1)
         for (const conn of players()) {
+          if (conn.bot || !conn.ready) continue
           conn.player.addMetric('td.bosses_slain', 1)
           toast(conn.player, `Boss defeated! Bonus +400 Souls!`)
           conn.player.adjustSouls(400, false)
+        }
+        continue
+      }
+
+      if (boss.configuredPawnEntity !== pawn.entity && pawn.health > 0) {
+        const abils = boss.bot.abilities()
+        if (abils.length === 0) {
+          continue
+        }
+
+        boss.bot.teleport(boss.spawnOrigin, BOSS_SPAWN_ANGLES)
+        const applied = boss.bot.giveModifier(boss.modifier, -1)
+        boss.bot.holdModifier(boss.modifier, true)
+        if (!applied) {
+          continue
+        }
+
+        for (let s = 0; s < boss.extraHealthStacks; s++) {
+          boss.bot.giveModifier('td_tome_health', -1)
+        }
+        for (let s = 0; s < boss.extraSizeStacks; s++) {
+          boss.bot.giveModifier('td_boss_size_step', -1)
+        }
+
+        boss.bot.adjustAbilityPoints(15, 4)
+        boss.bot.adjustSouls(boss.wave * 2000, true)
+        const upgradeMask =
+          boss.tier === 1 ? 0b001 : boss.tier === 2 ? 0b011 : 0b111
+        for (const abil of abils) {
+          if (abil.slot >= 0 && abil.slot <= 3) {
+            boss.bot.setAbility({ ability: abil.name, upgrades: upgradeMask })
+          }
+        }
+
+        this.applyCreepScale(pawn.entity, boss.targetScale)
+        boss.bot.heal(1_000_000)
+        boss.configuredPawnEntity = pawn.entity
+        boss.initialHealDone = false
+        log(
+          `Configured Wave ${boss.wave} Boss (${boss.hero}, ent=${pawn.entity}, mod=${boss.modifier}, scale=${boss.targetScale}x, dmgMult=${boss.damageMult}x)`,
+        )
+        continue
+      }
+
+      if (boss.configuredPawnEntity === pawn.entity && pawn.health > 0) {
+        // Ensure HP filled to 100% once CCitadelPlayerPawn::GetMaxHealth expands from MODIFIER_VALUE_HEALTH_MAX.
+        if (!boss.initialHealDone) {
+          if (pawn.health < 1500) {
+            boss.bot.heal(1_000_000)
+          }
+          boss.initialHealDone = true
+        }
+        const curScale = readField(
+          pawn.entity,
+          'CGameSceneNode',
+          'm_flScale',
+          'float32',
+        )
+        if (
+          typeof curScale === 'number' &&
+          Math.abs(curScale - boss.targetScale) > 0.05
+        ) {
+          this.applyCreepScale(pawn.entity, boss.targetScale)
         }
       }
     }

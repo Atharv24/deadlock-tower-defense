@@ -35,6 +35,7 @@ for ($i = 1; $i -le 10; $i++) {
 for ($b = 1; $b -le 5; $b++) {
     Assert-True ($modDecomp -match "td_boss_hero_stats_$b\b") "modifiers.vdata_c defines td_boss_hero_stats_$b"
 }
+Assert-True ($modDecomp -match "td_boss_size_step\b") "modifiers.vdata_c defines stackable td_boss_size_step"
 $expectedTomes = @(
     "td_tome_spirit", "td_tome_weapon", "td_tome_firerate", "td_tome_health",
     "td_tome_cooldown", "td_tome_range", "td_tome_omni",

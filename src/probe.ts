@@ -14,6 +14,7 @@ import {
   type Player,
   players,
   ProbeRun,
+  readField,
 } from 'modlock'
 
 import {
@@ -31,6 +32,7 @@ type ProbeStep =
   | 'wave_scale'
   | 'tome_grant'
   | 'boon_and_guardian'
+  | 'boss_scale'
 
 const STEP_WAITS: Record<ProbeStep, string> = {
   world: 'Center Lane world entities and Blue T1 Guardian',
@@ -38,6 +40,7 @@ const STEP_WAITS: Record<ProbeStep, string> = {
   wave_scale: 'enemy creep wave to spawn and pass no-mid-fight-heal check',
   tome_grant: 'player last-hit Tome grant and Guardian-kill rejection',
   boon_and_guardian: '1-of-3 Major Boon selection and Guardian fortification',
+  boss_scale: 'Boss Hero Wave 5 & Wave 10 HP and Size scaling',
 }
 
 export class TdProbe {
@@ -45,6 +48,8 @@ export class TdProbe {
   private step: ProbeStep = 'world'
   private defender?: Player
   private testCreepEntity = 0
+  private bossSpawned = false
+  private bossSettleTicks = 0
 
   tick(
     now: number,
@@ -74,6 +79,8 @@ export class TdProbe {
         return this.checkTomeGrant(waves, guardian, tomes)
       case 'boon_and_guardian':
         return this.checkBoonAndGuardian(guardian, tomes)
+      case 'boss_scale':
+        return this.checkBossScale(now, waves)
     }
   }
 
@@ -249,8 +256,67 @@ export class TdProbe {
     }
 
     log(
-      `Probe: verified Major Boon selection (${chosen.title}) — ALL CHECKS PASSED`,
+      `Probe: verified Major Boon selection (${chosen.title})`,
     )
+    this.step = 'boss_scale'
+    return false
+  }
+
+  private checkBossScale(now: number, waves: WaveManager): boolean | string {
+    if (!this.bossSpawned) {
+      waves.wave = 4
+      waves.spawnNextWave(now, true)
+      waves.wave = 9
+      waves.spawnNextWave(now, true)
+      this.bossSpawned = true
+      return false
+    }
+
+    const b5 = waves.activeBosses.find((b) => b.wave === 5)
+    const b10 = waves.activeBosses.find((b) => b.wave === 10)
+    if (!b5 || !b10 || b5.configuredPawnEntity <= 0 || b10.configuredPawnEntity <= 0) {
+      waves.tickActiveBosses()
+      return false
+    }
+
+    this.bossSettleTicks += 1
+    if (this.bossSettleTicks === 1) {
+      waves.tickActiveBosses()
+      return false
+    }
+    if (this.bossSettleTicks < 3) {
+      return false
+    }
+
+    const p5 = b5.bot.pawn()
+    const p10 = b10.bot.pawn()
+    const scale5 = readField(
+      b5.configuredPawnEntity,
+      'CGameSceneNode',
+      'm_flScale',
+      'float32',
+    )
+    const scale10 = readField(
+      b10.configuredPawnEntity,
+      'CGameSceneNode',
+      'm_flScale',
+      'float32',
+    )
+    log(
+      `Probe: Boss Wave 5 (${b5.hero}) HP=${p5?.health}/${p5?.maxHealth} m_flScale=${scale5} (target=${b5.targetScale}) | Wave 10 (${b10.hero}) HP=${p10?.health}/${p10?.maxHealth} m_flScale=${scale10} (target=${b10.targetScale})`,
+    )
+
+    if (typeof scale5 !== 'number' || typeof scale10 !== 'number') {
+      return `failed to read Boss CGameSceneNode.m_flScale: scale5=${scale5}, scale10=${scale10}`
+    }
+    if (Math.abs(scale5 - b5.targetScale) > 0.1 || Math.abs(scale10 - b10.targetScale) > 0.1) {
+      return `Boss m_flScale mismatch: Wave 5 got ${scale5} (expected ${b5.targetScale}), Wave 10 got ${scale10} (expected ${b10.targetScale})`
+    }
+    if (scale10 - scale5 < 0.25) {
+      return `Boss size growth too slow: scale5=${scale5}, scale10=${scale10}`
+    }
+
+    log('Probe: verified Boss HP & 3x Size scaling — ALL CHECKS PASSED')
     return true
   }
 }

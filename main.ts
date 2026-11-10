@@ -25,6 +25,7 @@ import {
 
 import {
   BOSS_HERO_POOL,
+  BOSS_WAVE_INTERVAL,
   DEFENDER_TEAM,
   deserializeTdHandoff,
   MINOR_TOME_POOL,
@@ -184,12 +185,13 @@ onDamaged((hit) => {
   }
 })
 
-// Fast 250ms pass so newly dismounted zipline creeps get scaled immediately on landing
+// Fast 250ms pass so newly dismounted zipline creeps and Boss Heroes get scaled immediately
 // and newly spawned defender heroes immediately receive Buy Anywhere (`MODIFIER_STATE_IN_SHOP`).
 every(0.25, () => {
   ensureDefenderShopAccess()
   if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
     waves.scaleNewlySpawnedCreeps()
+    waves.tickActiveBosses()
   }
 })
 
@@ -249,6 +251,19 @@ command('skipwave', (player: Player) => {
   }
   const spawnedWave = waves.spawnNextWave(nowSeconds, true)
   toast(player, `Forced Wave ${spawnedWave} early!`)
+  persistHandoff()
+})
+
+command('boss', (player: Player) => {
+  if (guardian.matchState !== 'active') {
+    toast(player, 'Match is not active. Type /restarttd first.')
+    return
+  }
+  const nextBossWave =
+    (Math.floor(waves.wave / BOSS_WAVE_INTERVAL) + 1) * BOSS_WAVE_INTERVAL
+  waves.wave = nextBossWave - 1
+  const spawnedWave = waves.spawnNextWave(nowSeconds, true)
+  toast(player, `Jumped to Boss Wave ${spawnedWave}!`)
   persistHandoff()
 })
 

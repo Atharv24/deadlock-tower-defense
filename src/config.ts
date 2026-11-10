@@ -355,22 +355,46 @@ export function computeBossTier(wave: number): number {
   return Math.min(MAX_BOSS_TIER, bossIndex)
 }
 
-/** Returns the Boss hero name and VData modifier for a Boss wave. */
+const BOSS_TIER_BONUS_HP = [2500, 5500, 10000, 16000, 25000] as const
+const BOSS_TIER_SCALE = [1.55, 1.9, 2.25, 2.6, 2.95] as const
+const BOSS_SCALE_STEP = 0.35
+const MAX_BOSS_EXTRA_SIZE_STACKS = 4
+
+/** Returns the Boss hero name, VData modifier, and scaling parameters for a Boss wave. */
 export function getBossWaveSpec(wave: number): {
   readonly tier: number
   readonly hero: string
   readonly modifier: string
   readonly bonusHp: number
+  readonly extraHealthStacks: number
+  readonly extraSizeStacks: number
+  readonly targetScale: number
+  readonly damageMult: number
 } {
   const tier = computeBossTier(wave)
   const bossIdx = Math.max(0, Math.floor(wave / BOSS_WAVE_INTERVAL) - 1)
   const hero = BOSS_HERO_POOL[bossIdx % BOSS_HERO_POOL.length]
-  const bonusHp = 2500 * tier + computeWaveCreepHp(wave) * 3
+  const wavesBeyondMaxTier =
+    wave > 25 ? Math.floor((wave - 25) / BOSS_WAVE_INTERVAL) : 0
+  const extraHealthStacks = wavesBeyondMaxTier * 40
+  const extraSizeStacks = Math.min(
+    MAX_BOSS_EXTRA_SIZE_STACKS,
+    wavesBeyondMaxTier,
+  )
+  const bonusHp = BOSS_TIER_BONUS_HP[tier - 1] + extraHealthStacks * 80
+  const targetScale = Number(
+    (BOSS_TIER_SCALE[tier - 1] + extraSizeStacks * BOSS_SCALE_STEP).toFixed(2),
+  )
+  const damageMult = Number((1.15 + bossIdx * 0.2).toFixed(3))
   return {
     tier,
     hero,
     modifier: `td_boss_hero_stats_${tier}`,
     bonusHp,
+    extraHealthStacks,
+    extraSizeStacks,
+    targetScale,
+    damageMult,
   }
 }
 
