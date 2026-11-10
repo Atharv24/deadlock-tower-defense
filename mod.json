@@ -1,0 +1,50 @@
+{
+  "slug": "deadlock-td",
+  "name": "Deadlock Tower Defense",
+  "version": "0.4.0",
+  "language": "LANGUAGE_TYPESCRIPT",
+  "map": "hl_defense",
+  "settings": [
+    {
+      "key": "hud_mode",
+      "label": "Tower Defense HUD layout",
+      "kind": "KIND_CHOICE",
+      "choices": [
+        { "value": "full", "label": "Full HUD (Top strip, Guardian HP, Tome tally)" },
+        { "value": "compact", "label": "Compact HUD (Top strip only)" }
+      ],
+      "default": "full"
+    },
+    {
+      "key": "wave_interval",
+      "label": "Wave interval (seconds)",
+      "kind": "KIND_CHOICE",
+      "choices": [
+        { "value": "20", "label": "Standard (20s)" },
+        { "value": "15", "label": "Blitz (15s)" },
+        { "value": "25", "label": "Relaxed (25s)" }
+      ],
+      "default": "20"
+    }
+  ],
+  "metrics": [
+    { "name": "td.waves_cleared", "kind": "KIND_MAX" },
+    { "name": "td.creeps_killed", "kind": "KIND_SUM" },
+    { "name": "td.tomes_earned", "kind": "KIND_SUM" },
+    { "name": "td.bosses_slain", "kind": "KIND_SUM" }
+  ],
+  "boards": [
+    {
+      "name": "td.highest_wave",
+      "label": "Highest Wave Reached",
+      "unit": "UNIT_NUMBER",
+      "order": "ORDER_DESCENDING",
+      "keep": "KEEP_BEST",
+      "windows": ["WINDOW_ALL_TIME", "WINDOW_WEEK"],
+      "lowest": 1,
+      "highest": 999,
+      "version": 1,
+      "hud": "HUD_END_CARD"
+    }
+  ]
+}

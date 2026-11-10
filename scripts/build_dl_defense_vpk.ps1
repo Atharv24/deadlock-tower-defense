@@ -7,7 +7,10 @@ $physVrmanPath = "C:\Users\athar\.gemini\antigravity\brain\bc4be04f-aa74-4f2b-b4
 $vmapPath = "C:\Users\athar\.gemini\antigravity\brain\bc4be04f-aa74-4f2b-b4c1-e6569ea638df\scratch\dl_midtown.vmap_c"
 $buildDir = "d:\Projects\deadlock-custom-game\build"
 if (-not (Test-Path $buildDir)) { New-Item -ItemType Directory -Path $buildDir -Force | Out-Null }
+$mapsDir = "d:\Projects\deadlock-custom-game\maps"
+if (-not (Test-Path $mapsDir)) { New-Item -ItemType Directory -Path $mapsDir -Force | Out-Null }
 $dstVpk = Join-Path $buildDir "dl_defense.vpk"
+$dstHlVpk = Join-Path $mapsDir "hl_defense.vpk"
 
 $code = @"
 using System;
@@ -85,33 +88,34 @@ public class VpkPatcher2 {
         return s;
     }
 
-    public static void BuildDefenseVpk(string srcVpkPath, string newEntsPath, string worldVrmanPath, string physVrmanPath, string vmapPath, string dstVpkPath) {
+    public static void BuildDefenseVpk(string srcVpkPath, string newEntsPath, string worldVrmanPath, string physVrmanPath, string vmapPath, string mapName, string dstVpkPath) {
+        if (mapName.Length != 10) throw new Exception("mapName must be 10 characters to match dl_midtown");
         byte[] newEnts = File.ReadAllBytes(newEntsPath);
         uint newEntsCrc = ComputeCrc32(newEnts);
 
         // Patch world.vrman_c
         byte[] worldVrman = File.ReadAllBytes(worldVrmanPath);
-        Array.Copy(BitConverter.GetBytes(CalcResourceHash("maps/dl_defense/world.vwrld")), 0, worldVrman, 0x40, 8);
-        Array.Copy(BitConverter.GetBytes(CalcResourceHash("maps/dl_defense/world_physics.vrman")), 0, worldVrman, 0x50, 8);
-        Array.Copy(BitConverter.GetBytes(CalcResourceHash("maps/dl_defense/world_visibility.vvis")), 0, worldVrman, 0x60, 8);
-        ReplaceAsciiInPlace(worldVrman, "dl_midtown", "dl_defense");
+        Array.Copy(BitConverter.GetBytes(CalcResourceHash("maps/" + mapName + "/world.vwrld")), 0, worldVrman, 0x40, 8);
+        Array.Copy(BitConverter.GetBytes(CalcResourceHash("maps/" + mapName + "/world_physics.vrman")), 0, worldVrman, 0x50, 8);
+        Array.Copy(BitConverter.GetBytes(CalcResourceHash("maps/" + mapName + "/world_visibility.vvis")), 0, worldVrman, 0x60, 8);
+        ReplaceAsciiInPlace(worldVrman, "dl_midtown", mapName);
         uint worldVrmanCrc = ComputeCrc32(worldVrman);
 
         // Patch world_physics.vrman_c
         byte[] physVrman = File.ReadAllBytes(physVrmanPath);
-        Array.Copy(BitConverter.GetBytes(CalcResourceHash("maps/dl_defense/world_physics.vmdl")), 0, physVrman, 0x40, 8);
-        ReplaceAsciiInPlace(physVrman, "dl_midtown", "dl_defense");
+        Array.Copy(BitConverter.GetBytes(CalcResourceHash("maps/" + mapName + "/world_physics.vmdl")), 0, physVrman, 0x40, 8);
+        ReplaceAsciiInPlace(physVrman, "dl_midtown", mapName);
         uint physVrmanCrc = ComputeCrc32(physVrman);
 
         // Patch dl_midtown.vmap_c RERL entries [984..989]
         byte[] vmap = File.ReadAllBytes(vmapPath);
         string[] vmapNewPaths = new string[] {
-            "maps/dl_defense/pve_nav_cache.vdata",
-            "maps/dl_defense/world.vrman",
-            "maps/dl_defense/world.vwrld",
-            "maps/dl_defense/world_physics.vmdl",
-            "maps/dl_defense/world_physics.vrman",
-            "maps/dl_defense/world_visibility.vvis"
+            "maps/" + mapName + "/pve_nav_cache.vdata",
+            "maps/" + mapName + "/world.vrman",
+            "maps/" + mapName + "/world.vwrld",
+            "maps/" + mapName + "/world_physics.vmdl",
+            "maps/" + mapName + "/world_physics.vrman",
+            "maps/" + mapName + "/world_visibility.vvis"
         };
         for (int k = 0; k < 6; k++) {
             int idx = 984 + k;
@@ -159,7 +163,7 @@ public class VpkPatcher2 {
                     if (path.Length == 0) break;
 
                     if (path == "maps/dl_midtown") {
-                        byte[] replPath = Encoding.UTF8.GetBytes("maps/dl_defense");
+                        byte[] replPath = Encoding.UTF8.GetBytes("maps/" + mapName);
                         Array.Copy(replPath, 0, tree, pathStart, replPath.Length);
                         renamedDirCount++;
                     }
@@ -170,7 +174,7 @@ public class VpkPatcher2 {
                         if (name.Length == 0) break;
 
                         if (path == "maps" && name.StartsWith("dl_midtown")) {
-                            byte[] repl = Encoding.UTF8.GetBytes("dl_defense");
+                            byte[] repl = Encoding.UTF8.GetBytes(mapName);
                             Array.Copy(repl, 0, tree, nameStart, repl.Length);
                             renamedTopCount++;
                         }
@@ -215,7 +219,7 @@ public class VpkPatcher2 {
             if (!patchedEnts || !patchedWorldVrman || !patchedPhysVrman || !patchedVmap) {
                 throw new Exception("Missing expected VPK entries during patch!");
             }
-            Console.WriteLine("Renamed " + renamedTopCount + " top-level files, " + renamedDirCount + " maps/dl_defense dir entries, and patched default_ents.vents_c + world.vrman_c + world_physics.vrman_c + dl_defense.vmap_c.");
+            Console.WriteLine("[" + mapName + "] Renamed " + renamedTopCount + " top-level files, " + renamedDirCount + " maps/" + mapName + " dir entries, and patched default_ents.vents_c + world.vrman_c + world_physics.vrman_c + " + mapName + ".vmap_c.");
 
             using (FileStream fsOut = new FileStream(dstVpkPath, FileMode.Create, FileAccess.Write, FileShare.None, 16 * 1024 * 1024))
             using (BinaryWriter bw = new BinaryWriter(fsOut)) {
@@ -250,5 +254,9 @@ public class VpkPatcher2 {
 
 Add-Type -TypeDefinition $code
 Write-Output "Building $dstVpk..."
-[VpkPatcher2]::BuildDefenseVpk($srcVpk, $newEntsPath, $worldVrmanPath, $physVrmanPath, $vmapPath, $dstVpk)
+[VpkPatcher2]::BuildDefenseVpk($srcVpk, $newEntsPath, $worldVrmanPath, $physVrmanPath, $vmapPath, "dl_defense", $dstVpk)
 Write-Output "Successfully built $dstVpk ($((Get-Item $dstVpk).Length) bytes)."
+
+Write-Output "Building $dstHlVpk..."
+[VpkPatcher2]::BuildDefenseVpk($srcVpk, $newEntsPath, $worldVrmanPath, $physVrmanPath, $vmapPath, "hl_defense", $dstHlVpk)
+Write-Output "Successfully built $dstHlVpk ($((Get-Item $dstHlVpk).Length) bytes)."

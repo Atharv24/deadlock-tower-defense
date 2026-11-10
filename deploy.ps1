@@ -1,24 +1,49 @@
 param(
-    [ValidateSet("Install", "Clean", "Uninstall", "Status")]
+    [ValidateSet("Build", "Test", "Install", "Dev", "Clean", "Uninstall", "Status")]
     [string]$Action = "Install",
-    [string]$DeadlockDir = "D:\SteamLibrary\steamapps\common\Deadlock"
+    [string]$DeadlockDir = "D:\SteamLibrary\steamapps\common\Deadlock",
+    [switch]$Probe
 )
 
 $ErrorActionPreference = "Stop"
-$srcCfgDir        = Join-Path $PSScriptRoot "src\cfg"
-$buildDir         = Join-Path $PSScriptRoot "build"
-$backupDir        = Join-Path $PSScriptRoot "backups"
-$manifestPath     = Join-Path $backupDir "installed_manifest.json"
+$env:DEADLOCK_DIR   = $DeadlockDir
+$srcCfgDir          = Join-Path $PSScriptRoot "src\cfg"
+$buildDir           = Join-Path $PSScriptRoot "build"
+$mapsDir            = Join-Path $PSScriptRoot "maps"
+$backupDir          = Join-Path $PSScriptRoot "backups"
+$manifestPath       = Join-Path $backupDir "installed_manifest.json"
+$modlockExe         = Join-Path $PSScriptRoot "tools\modlock.exe"
 $deadlockCfgDir     = Join-Path $DeadlockDir "game\citadel\cfg"
 $deadlockMapsDir    = Join-Path $DeadlockDir "game\citadel\maps"
 $deadlockAddonDir   = Join-Path $DeadlockDir "game\citadel\addons"
 $deadlockScriptsDir = Join-Path $DeadlockDir "game\citadel\scripts"
+$gameInfoPath       = Join-Path $DeadlockDir "game\citadel\gameinfo.gi"
 
 if (-not (Test-Path $backupDir)) {
     New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
 }
 
-if ($Action -eq "Install") {
+function Invoke-BuildAll {
+    Write-Host "=== [1/4] Building Binary KV3 VData (pak20_dir.vpk) ===" -ForegroundColor Cyan
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "scripts\build_td_vdata.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "build_td_vdata.ps1 failed" }
+
+    Write-Host "=== [2/4] Compiling Patched Map Entities (dl_defense_default_ents.vents_c) ===" -ForegroundColor Cyan
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "scripts\build_dl_defense_ents.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "build_dl_defense_ents.ps1 failed" }
+
+    Write-Host "=== [3/4] Packaging Map VPKs (build/dl_defense.vpk & maps/hl_defense.vpk) ===" -ForegroundColor Cyan
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "scripts\build_dl_defense_vpk.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "build_dl_defense_vpk.ps1 failed" }
+
+    Write-Host "=== [4/4] Building Modlock TypeScript Bundle (build/mod.js) ===" -ForegroundColor Cyan
+    & $modlockExe build
+    if ($LASTEXITCODE -ne 0) { throw "modlock build failed" }
+
+    Write-Host "=== Build Complete! ===" -ForegroundColor Green
+}
+
+function Invoke-InstallFiles {
     $installedFiles = @()
 
     # 1. Remove legacy test cfg files if present
@@ -59,21 +84,25 @@ if ($Action -eq "Install") {
         }
     }
 
-    # 2. Install custom map VPK (dl_defense.vpk)
-    $mapVpkSrc = Join-Path $buildDir "dl_defense.vpk"
-    if (Test-Path $mapVpkSrc) {
-        $mapVpkDst = Join-Path $deadlockMapsDir "dl_defense.vpk"
-        try {
-            Copy-Item -Path $mapVpkSrc -Destination $mapVpkDst -Force -ErrorAction Stop
-            $installedFiles += $mapVpkDst
-            Write-Host "[Installed Map VPK] dl_defense.vpk -> $mapVpkDst" -ForegroundColor Green
-        } catch {
-            Write-Host "[Note] dl_defense.vpk is currently mounted by a running Deadlock match; existing dl_defense.vpk remains active." -ForegroundColor Yellow
-            $installedFiles += $mapVpkDst
+    # 3. Install custom map VPKs (dl_defense.vpk and hl_defense.vpk)
+    foreach ($mapPair in @(
+        @{ Src = (Join-Path $buildDir "dl_defense.vpk"); Name = "dl_defense.vpk" },
+        @{ Src = (Join-Path $mapsDir "hl_defense.vpk"); Name = "hl_defense.vpk" }
+    )) {
+        if (Test-Path $mapPair.Src) {
+            $mapVpkDst = Join-Path $deadlockMapsDir $mapPair.Name
+            try {
+                Copy-Item -Path $mapPair.Src -Destination $mapVpkDst -Force -ErrorAction Stop
+                $installedFiles += $mapVpkDst
+                Write-Host "[Installed Map VPK] $($mapPair.Name) -> $mapVpkDst" -ForegroundColor Green
+            } catch {
+                Write-Host "[Note] $($mapPair.Name) is currently mounted by a running Deadlock match; existing file remains active." -ForegroundColor Yellow
+                $installedFiles += $mapVpkDst
+            }
         }
     }
 
-    # 3. Install custom addon VPK (pak20_dir.vpk) and loose VData overrides (Phase 2+)
+    # 4. Install custom addon VPK (pak20_dir.vpk) and loose VData overrides
     $addonVpkSrc = Join-Path $buildDir "pak20_dir.vpk"
     if (Test-Path $addonVpkSrc) {
         if (-not (Test-Path $deadlockAddonDir)) {
@@ -107,9 +136,42 @@ if ($Action -eq "Install") {
     Write-Host "`nDone! All stock game files (dl_midtown.vpk, pak01_dir.vpk, DLLs) are 100% untouched." -ForegroundColor Cyan
     Write-Host "To remove all custom files before Ranked, run: .\deploy.ps1 -Action Clean" -ForegroundColor Cyan
 }
+
+if ($Action -eq "Build") {
+    Invoke-BuildAll
+}
+elseif ($Action -eq "Test") {
+    Write-Host "=== Running Tier 1 & Tier 1B TypeScript Unit & Probe Integration Tests ===" -ForegroundColor Cyan
+    & node --experimental-strip-types --test (Join-Path $PSScriptRoot "test\td.test.ts")
+    if ($LASTEXITCODE -ne 0) { throw "Tier 1 TypeScript tests failed!" }
+
+    Write-Host "`n=== Running Modlock Build & Typecheck ===" -ForegroundColor Cyan
+    & $modlockExe build
+    if ($LASTEXITCODE -ne 0) { throw "Modlock build failed!" }
+
+    Write-Host "`n=== Running Tier 2 Binary KV3 VData & Map VPK Asset Verification ===" -ForegroundColor Cyan
+    & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "scripts\test_assets.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "Tier 2 asset verification failed!" }
+
+    Write-Host "`n=== ALL TEST SUITES PASSED! ===" -ForegroundColor Green
+}
+elseif ($Action -eq "Install") {
+    Invoke-InstallFiles
+}
+elseif ($Action -eq "Dev") {
+    Invoke-InstallFiles
+    if ($Probe) {
+        Write-Host "`nLaunching Modlock Dev Session in Automated Probe Mode (modlock dev --arg probe)..." -ForegroundColor Cyan
+        & $modlockExe dev --arg probe
+    } else {
+        Write-Host "`nLaunching Modlock Play Session with Live Hot-Reload (modlock play)..." -ForegroundColor Cyan
+        & $modlockExe play
+    }
+}
 elseif ($Action -eq "Clean" -or $Action -eq "Uninstall") {
     $candidates = @(
         (Join-Path $deadlockMapsDir "dl_defense.vpk"),
+        (Join-Path $deadlockMapsDir "hl_defense.vpk"),
         (Join-Path $deadlockAddonDir "pak20_dir.vpk"),
         (Join-Path $deadlockScriptsDir "modifiers.vdata_c"),
         (Join-Path $deadlockScriptsDir "npc_units.vdata_c"),
@@ -131,6 +193,15 @@ elseif ($Action -eq "Clean" -or $Action -eq "Uninstall") {
         if (Test-Path $filePath) {
             Remove-Item -Path $filePath -Force
             Write-Host "[Removed] $filePath" -ForegroundColor Yellow
+        }
+    }
+    # Clean any // MODLOCK DEV lines from gameinfo.gi if left behind by an interrupted session
+    if (Test-Path $gameInfoPath) {
+        $giLines = Get-Content $gameInfoPath
+        $filtered = $giLines | Where-Object { $_ -notmatch "MODLOCK DEV" }
+        if ($filtered.Count -lt $giLines.Count) {
+            $filtered | Set-Content -Path $gameInfoPath -Encoding UTF8
+            Write-Host "[Cleaned MODLOCK DEV entries] $gameInfoPath" -ForegroundColor Yellow
         }
     }
     if (Test-Path $manifestPath) {

@@ -542,8 +542,294 @@ $customModifiersKv3 = @"
 	}
 "@
 
+$tomeAndGuardianModifiersKv3 = @"
+
+	td_tome_spirit = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_spirit"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_POWER"
+				m_value = 8.0
+			},
+		]
+	}
+	td_tome_weapon_dmg = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_weapon_dmg"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_WEAPON_DAMAGE_INCREASE"
+				m_value = 10.0
+			},
+		]
+	}
+	td_tome_weapon = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_weapon"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_WEAPON_DAMAGE_INCREASE"
+				m_value = 10.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_AMMO_CLIP_SIZE_PERCENT"
+				m_value = 6.0
+			},
+		]
+	}
+	td_tome_fire_rate = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_fire_rate"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_FIRE_RATE"
+				m_value = 5.0
+			},
+		]
+	}
+	td_tome_firerate = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_firerate"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_FIRE_RATE"
+				m_value = 5.0
+			},
+		]
+	}
+	td_tome_ammo = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_ammo"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_AMMO_CLIP_SIZE_PERCENT"
+				m_value = 8.0
+			},
+		]
+	}
+	td_tome_max_hp = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_max_hp"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 80.0
+			},
+		]
+	}
+	td_tome_hp_regen = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_hp_regen"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_REGEN_PER_SECOND"
+				m_value = 3.0
+			},
+		]
+	}
+	td_tome_health = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_health"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 80.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_REGEN_PER_SECOND"
+				m_value = 2.0
+			},
+		]
+	}
+	td_tome_cdr = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_cdr"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_COOLDOWN_REDUCTION_PERCENTAGE"
+				m_value = 3.0
+			},
+		]
+	}
+	td_tome_cooldown = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_cooldown"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_COOLDOWN_REDUCTION_PERCENTAGE"
+				m_value = 3.0
+			},
+		]
+	}
+	td_tome_tech_range = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_tech_range"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_RANGE_PERCENT"
+				m_value = 4.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_RADIUS_PERCENT"
+				m_value = 4.0
+			},
+		]
+	}
+	td_tome_range = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_range"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_RANGE_PERCENT"
+				m_value = 4.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_RADIUS_PERCENT"
+				m_value = 4.0
+			},
+		]
+	}
+	td_tome_omni = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_tome_omni"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_sStartSound = soundevent:"Powerup.Pickup.Generic"
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_POWER"
+				m_value = 4.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_WEAPON_DAMAGE_INCREASE"
+				m_value = 5.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_FIRE_RATE"
+				m_value = 2.5
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 40.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_COOLDOWN_REDUCTION_PERCENTAGE"
+				m_value = 1.5
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_RANGE_PERCENT"
+				m_value = 2.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_RADIUS_PERCENT"
+				m_value = 2.0
+			},
+		]
+	}
+	td_guardian_armor_buff = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_guardian_armor_buff"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 1200.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_REGEN_PER_SECOND"
+				m_value = 15.0
+			},
+		]
+	}
+	td_guardian_damage_buff = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_guardian_damage_buff"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE|MODIFIER_ATTRIBUTE_PERMANENT|MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
+				m_value = 35.0
+			},
+		]
+	}
+"@
+
 $modInsertPos = $modTxt.LastIndexOf("}")
-$modPatchedTxt = $modTxt.Substring(0, $modInsertPos) + $customModifiersKv3 + "`n}`n"
+$modPatchedTxt = $modTxt.Substring(0, $modInsertPos) + $customModifiersKv3 + $tomeAndGuardianModifiersKv3 + "`n}`n"
 
 # 2. Patch npc_units.vdata_c.txt with 150 HP initial stats + halved per-minute growth (1.38%/min) + Phase 4 Graves Zombies & Neutral Creeps
 $npcTxtPath = Join-Path $scratchDir "npc_units.vdata_c.txt"

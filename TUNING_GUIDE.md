@@ -5,15 +5,16 @@ For a detailed log of the Creep-Death Boon / Tome experiments (what worked vs. w
 
 ---
 
-## 1. Architecture Overview: The 3 Layers
+## 1. Architecture Overview: The Hybrid 3-Layer Stack
 
-Values in this custom game mode are picked up from three places, ordered from fastest to edit to deepest:
+Values in this custom game mode are organized across three complementary layers:
 
 | Layer | Source File(s) | Compiled Output | Needs Recompile? | When Does It Take Effect? |
 | :--- | :--- | :--- | :--- | :--- |
-| **1. Config (`.cfg`)** | `src/cfg/td_scaling.cfg`<br>`src/cfg/td_postload.cfg`<br>`src/cfg/td_wave_tick.cfg` | None (plain text copied to `game/citadel/cfg/`) | **No** (just run `.\deploy.ps1 -Action Install`) | Immediately on `exec start_td` (or live mid-match via `exec td_scaling`) |
-| **2. VData (`pak20_dir.vpk`)** | `scripts/build_td_vdata.ps1` | `build/scripts/modifiers.vdata_c`<br>`build/scripts/npc_units.vdata_c`<br>`build/pak20_dir.vpk` | **Yes (~2 sec)** via `build_td_vdata.ps1` | Requires restarting Deadlock (VData is loaded at game startup) |
-| **3. Map Entities (`dl_defense.vpk`)** | `scripts/build_dl_defense_ents.ps1` | `build/dl_defense.vpk` | **Yes (~5 sec)** via `build_dl_defense_ents.ps1` + `build_dl_defense_vpk.ps1` | On next map load (`exec start_td`) |
+| **1. Modlock TypeScript Runtime** | `src/config.ts`<br>`src/wave.ts`<br>`src/tomes.ts`<br>`src/guardian.ts`<br>`src/hud.tsx`<br>`src/probe.ts`<br>`main.ts` | `build/mod.js`<br>`build/mod.json` | **Fast (~1 sec)** via `.\tools\modlock.exe build` | Immediately hot-reloads in `modlock run` (preserving state via `handoff()`) |
+| **2. Binary KV3 VData (`pak20_dir.vpk`)** | `scripts/build_td_vdata.ps1` | `build/scripts/modifiers.vdata_c`<br>`build/scripts/npc_units.vdata_c`<br>`build/pak20_dir.vpk` | **Yes (~2 sec)** via `build_td_vdata.ps1` | Requires restarting Deadlock (VData is loaded at game startup) |
+| **3. Map Entities (`hl_defense.vpk` / `dl_defense.vpk`)** | `scripts/build_dl_defense_ents.ps1` | `maps/hl_defense.vpk`<br>`build/dl_defense.vpk` | **Yes (~5 sec)** via `build_dl_defense_ents.ps1` + `build_dl_defense_vpk.ps1` | On next map load (`hl_defense` / `dl_defense`) |
+| **4. Legacy Console Fallback (`.cfg`)** | `src/cfg/td_scaling.cfg`<br>`src/cfg/td_postload.cfg`<br>`src/cfg/td_wave_tick.cfg` | None (plain text copied to `game/citadel/cfg/`) | **No** (just run `.\deploy.ps1 -Action Install`) | When running standalone `exec start_td` without Modlock |
 
 ---
 
@@ -117,32 +118,30 @@ Controlled in **`scripts/build_dl_defense_ents.ps1`** — Requires Map Entity + 
 
 ---
 
-## 3. How to Recompile & Deploy After Editing
+## 3. How to Build, Test, & Deploy
 
 Run these commands from PowerShell in `d:\Projects\deadlock-custom-game`:
 
-### Scenario 1: You only edited `src/cfg/*.cfg` (Fastest — 1 second)
+### Full Build (VData + Map VPKs + Modlock TypeScript Bundle)
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "d:\Projects\deadlock-custom-game\deploy.ps1" -Action Install
+powershell -NoProfile -ExecutionPolicy Bypass -File "d:\Projects\deadlock-custom-game\deploy.ps1" -Action Build
 ```
-*(No game restart needed — just run `exec start_td` or `exec td_scaling` in the Deadlock console).*
 
-### Scenario 2: You edited modifier or unit values in `scripts/build_td_vdata.ps1` (~2 seconds)
+### Run All Automated Tests (Tier 1 Unit + Tier 1B Probe Integration + Tier 2 Binary KV3/VPK Verification)
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "d:\Projects\deadlock-custom-game\scripts\build_td_vdata.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "d:\Projects\deadlock-custom-game\deploy.ps1" -Action Install
+powershell -NoProfile -ExecutionPolicy Bypass -File "d:\Projects\deadlock-custom-game\deploy.ps1" -Action Test
 ```
-*(Restart Deadlock so it reloads `pak20_dir.vpk` / `modifiers.vdata_c`).*
 
-### Scenario 3: You edited map entities or timers in `scripts/build_dl_defense_ents.ps1` (~5 seconds)
+### Launch Live Modlock Dev Session (or In-Engine Tier 3 Probe Self-Test)
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "d:\Projects\deadlock-custom-game\scripts\build_dl_defense_ents.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "d:\Projects\deadlock-custom-game\scripts\build_dl_defense_vpk.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "d:\Projects\deadlock-custom-game\deploy.ps1" -Action Install
-```
-*(No game restart needed if at the main menu — just run `exec start_td` in the console).*
+# Live hot-reload dev session:
+powershell -NoProfile -ExecutionPolicy Bypass -File "d:\Projects\deadlock-custom-game\deploy.ps1" -Action Dev
 
-### Scenario 4: Clean up before playing normal/Ranked Deadlock
+# Automated in-engine Tier 3 ProbeRun verification:
+powershell -NoProfile -ExecutionPolicy Bypass -File "d:\Projects\deadlock-custom-game\deploy.ps1" -Action Dev -Probe
+```
+
+### Clean Up Before Playing Normal/Ranked Deadlock
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "d:\Projects\deadlock-custom-game\deploy.ps1" -Action Clean
 ```

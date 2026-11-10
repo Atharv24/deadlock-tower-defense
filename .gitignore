@@ -11,3 +11,8 @@ backups/
 reference/
 tools/*.exe
 tools/*.dll
+
+# Modlock & Node build artifacts
+node_modules/
+.modlock/
+maps/*.vpk
