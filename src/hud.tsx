@@ -33,6 +33,7 @@ import {
   GUARDIAN_REPAIR_AMOUNT_HP,
   GUARDIAN_REPAIR_COST_SOULS,
   isBossWave,
+  shouldFreeHudCursor,
   type MajorBoonDef,
   MINOR_TOME_POOL,
 } from './config'
@@ -104,10 +105,11 @@ export function renderTdHud(
       (!isPickingInFlight && !hasSpawnedOnce && (!pawn || pawn.hero === 0))
 
     const pendingBoons = tomes.pendingBoonChoices.get(player.slot)
-    const needsCursor =
-      needsHeroPick ||
-      Boolean(pendingBoons) ||
-      guardian.matchState === 'defeat'
+    const needsCursor = shouldFreeHudCursor({
+      needsHeroPick,
+      hasPendingBoons: Boolean(pendingBoons),
+      matchState: guardian.matchState,
+    })
     const cursorKey = needsCursor ? `true:${pawn?.entity ?? 0}` : 'false'
     if (lastCursorKeyBySlot.get(player.slot) !== cursorKey) {
       lastCursorKeyBySlot.set(player.slot, cursorKey)
@@ -563,7 +565,7 @@ function MajorBoonModal(props: {
           MILESTONE MAJOR BOON (PICK 1 OF 3)
         </Text>
         <label style={{ fontSize: 13, color: '#94a3b8', margin: [2, 0, 6, 0] }}>
-          Click a blessing below or type /boon 1, /boon 2, /boon 3
+          Hold TAB to click a blessing or type /boon 1, /boon 2, /boon 3
         </label>
         {boons.map((boon, idx) => (
           <panel style={{ flow: 'down', width: 'fill', margin: [4, 0, 4, 0] }}>

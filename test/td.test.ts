@@ -31,6 +31,7 @@ import {
   pickThreeMajorBoons,
   selectUnscaledCreeps,
   serializeTdHandoff,
+  shouldFreeHudCursor,
   TD_SERVER_CVARS,
   type TdHandoffState,
   TOME_DROP_CHANCE,
@@ -288,6 +289,32 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
       assert.notEqual(b2.id, b3.id)
       assert.notEqual(b1.id, b3.id)
     }
+
+    // Major Boon UI appearing mid-wave MUST NOT unlock mouse camera aiming
+    assert.equal(
+      shouldFreeHudCursor({
+        needsHeroPick: false,
+        hasPendingBoons: true,
+        matchState: 'active',
+      }),
+      false,
+    )
+    assert.equal(
+      shouldFreeHudCursor({
+        needsHeroPick: true,
+        hasPendingBoons: false,
+        matchState: 'active',
+      }),
+      true,
+    )
+    assert.equal(
+      shouldFreeHudCursor({
+        needsHeroPick: false,
+        hasPendingBoons: false,
+        matchState: 'defeat',
+      }),
+      true,
+    )
   })
 
   it('validates Guardian repair Soul cost, full-HP guard, and max-HP clamping', () => {

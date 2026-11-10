@@ -344,6 +344,19 @@ export function getWaveCreepModifiers(wave: number): {
   }
 }
 
+/**
+ * Decides whether the mod should force-unlock the player's mouse cursor without
+ * holding TAB. Milestone Major Boon prompts appear mid-combat on Boss waves and
+ * MUST NOT unlock the mouse cursor (players hold TAB to click or use /boon 1..3).
+ */
+export function shouldFreeHudCursor(opts: {
+  readonly needsHeroPick: boolean
+  readonly hasPendingBoons: boolean
+  readonly matchState: string
+}): boolean {
+  return opts.needsHeroPick || opts.matchState === 'defeat'
+}
+
 /** Reports whether the given 1-indexed wave number is a Boss Hero wave. */
 export function isBossWave(wave: number): boolean {
   return wave >= BOSS_WAVE_INTERVAL && wave % BOSS_WAVE_INTERVAL === 0
