@@ -34,7 +34,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.20
+				m_value = 0.10
 			},
 		]
 	}
@@ -48,7 +48,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.20
+				m_value = 0.10
 			},
 		]
 	}
@@ -62,7 +62,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.25
+				m_value = 0.125
 			},
 		]
 	}
@@ -76,7 +76,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.25
+				m_value = 0.125
 			},
 		]
 	}
@@ -90,7 +90,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.30
+				m_value = 0.15
 			},
 		]
 	}
@@ -104,7 +104,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.30
+				m_value = 0.15
 			},
 		]
 	}
@@ -118,7 +118,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.35
+				m_value = 0.175
 			},
 		]
 	}
@@ -132,7 +132,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.35
+				m_value = 0.175
 			},
 		]
 	}
@@ -146,7 +146,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.35
+				m_value = 0.175
 			},
 		]
 	}
@@ -182,15 +182,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 500.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
 				m_value = 250.0
 			},
 			{
-				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
 				m_value = 125.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
+				m_value = 62.5
 			},
 		]
 	}
@@ -198,6 +198,28 @@ $customModifiersKv3 = @"
 	{
 		_class = "modifier_base"
 		_my_subclass_name = "td_creep_strength_3"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 625.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
+				m_value = 312.5
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
+				m_value = 250.0
+			},
+		]
+	}
+	td_creep_strength_4 = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_creep_strength_4"
 		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
 		m_bIsHidden = true
 		m_vecScriptValues = 
@@ -216,28 +238,6 @@ $customModifiersKv3 = @"
 			},
 		]
 	}
-	td_creep_strength_4 = 
-	{
-		_class = "modifier_base"
-		_my_subclass_name = "td_creep_strength_4"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
-		m_bIsHidden = true
-		m_vecScriptValues = 
-		[
-			{
-				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 2500.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 1250.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 1000.0
-			},
-		]
-	}
 	td_creep_strength_5 = 
 	{
 		_class = "modifier_base"
@@ -248,15 +248,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 4500.0
+				m_value = 2250.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 2125.0
+				m_value = 1062.5
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 1750.0
+				m_value = 875.0
 			},
 		]
 	}
@@ -270,15 +270,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 7500.0
+				m_value = 3750.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 3250.0
+				m_value = 1625.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 2750.0
+				m_value = 1375.0
 			},
 		]
 	}
@@ -292,15 +292,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 12000.0
+				m_value = 6000.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 4750.0
+				m_value = 2375.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 4250.0
+				m_value = 2125.0
 			},
 		]
 	}
@@ -314,15 +314,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 18750.0
+				m_value = 9375.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 6750.0
+				m_value = 3375.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 6250.0
+				m_value = 3125.0
 			},
 		]
 	}
@@ -336,15 +336,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 28750.0
+				m_value = 14375.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 9500.0
+				m_value = 4750.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 9000.0
+				m_value = 4500.0
 			},
 		]
 	}
@@ -358,15 +358,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 43750.0
+				m_value = 21875.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 13000.0
+				m_value = 6500.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 12500.0
+				m_value = 6250.0
 			},
 		]
 	}
@@ -375,14 +375,14 @@ $customModifiersKv3 = @"
 $modInsertPos = $modTxt.LastIndexOf("}")
 $modPatchedTxt = $modTxt.Substring(0, $modInsertPos) + $customModifiersKv3 + "`n}`n"
 
-# 2. Patch npc_units.vdata_c.txt with 150 HP initial stats + 5x faster per-minute growth (500%/min) + Phase 4 Graves Zombies & Neutral Creeps
+# 2. Patch npc_units.vdata_c.txt with 150 HP initial stats + halved per-minute growth (250%/min) + Phase 4 Graves Zombies & Neutral Creeps
 $npcTxtPath = Join-Path $scratchDir "npc_units.vdata_c.txt"
 $npcTxt = [System.IO.File]::ReadAllText($npcTxtPath)
 
-$npcPatchedTxt = [regex]::Replace($npcTxt, '(_class = "modifier_citadel_trooper_shrine_down_buff"\s+_my_subclass_name = "modifier_citadel_trooper_shrine_down_buff"\s+)m_flModelScale = 1\.1\s+m_flHealthScale = 1\.4\s+m_flDamageScale = 60\.0', '${1}m_flModelScale = 1.25' + "`n`t`t`t" + 'm_flHealthScale = 2.50' + "`n`t`t`t" + 'm_flDamageScale = 150.0')
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 0\.0', 'm_flDPSPctGrowthPerMinute = 500.0'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 3\.0', 'm_flDPSPctGrowthPerMinute = 500.0'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDamageGrowthPctPerMin = 0\.5', 'm_flDamageGrowthPctPerMin = 500.0'
+$npcPatchedTxt = [regex]::Replace($npcTxt, '(_class = "modifier_citadel_trooper_shrine_down_buff"\s+_my_subclass_name = "modifier_citadel_trooper_shrine_down_buff"\s+)m_flModelScale = 1\.1\s+m_flHealthScale = 1\.4\s+m_flDamageScale = 60\.0', '${1}m_flModelScale = 1.125' + "`n`t`t`t" + 'm_flHealthScale = 1.75' + "`n`t`t`t" + 'm_flDamageScale = 75.0')
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 0\.0', 'm_flDPSPctGrowthPerMinute = 250.0'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 3\.0', 'm_flDPSPctGrowthPerMinute = 250.0'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDamageGrowthPctPerMin = 0\.5', 'm_flDamageGrowthPctPerMin = 250.0'
 
 # Set initial base health (150 HP) & base DPS of troopers and neutral creeps
 $npcPatchedTxt = $npcPatchedTxt -replace 'm_nMaxHealth = 300', 'm_nMaxHealth = 150'
