@@ -26,19 +26,19 @@ Creep HP and damage are controlled by a combination of **Layer 1 (`src/cfg/td_sc
    * `citadel_trooper_health_mult_gametime 9999`
    * Prevents vanilla Deadlock from multiplying creep HP by `3.0x` until 9,999 seconds into the match.
 2. **Base VData Stats (`scripts/build_td_vdata.ps1`, lines 385–396):**
-   * Sets initial Wave 1 base health (`m_nMaxHealth = 150` for troopers/neutrals, `180` for melee zombies), sets initial base DPS (`m_flBaseDPS = 20.0`), zeroes out the 50% bullet / 45% ability armor on neutral creeps, and sets passive DPS growth to `+1.66%` per minute (`m_flDPSPctGrowthPerMinute = 1.66`).
+   * Sets initial Wave 1 base health (`m_nMaxHealth = 150` for troopers/neutrals, `180` for melee zombies), sets initial base DPS (`m_flBaseDPS = 20.0`), zeroes out the 50% bullet / 45% ability armor on neutral creeps, and sets passive DPS growth to `+8.3%` per minute (`m_flDPSPctGrowthPerMinute = 8.3`).
 3. **10-Tier Base HP Overrides (`src/cfg/td_scaling.cfg`, lines 58–67):**
-   * Uses `SetMaxHealth` ONLY (never `SetHealth` or `OverrideHealth`, so damaged creeps in the lane are **never** healed back to full HP on wave ticks!), starting at **`150 HP`** on Tier 1 and scaling up to **`393 HP`** on Tier 10:
+   * Uses `SetMaxHealth` ONLY (never `SetHealth` or `OverrideHealth`, so damaged creeps in the lane are **never** healed back to full HP on wave ticks!), starting at **`150 HP`** on Tier 1 and scaling up to **`1,367 HP`** (`~6,634` effective HP with modifiers) on Tier 10:
      ```cfg
      alias td_hp_tier1 "ent_fire npc_trooper SetMaxHealth 150; ent_fire npc_trooper_neutral SetMaxHealth 150"
-     alias td_hp_tier2 "ent_fire npc_trooper SetMaxHealth 153; ent_fire npc_trooper_neutral SetMaxHealth 153"
+     alias td_hp_tier2 "ent_fire npc_trooper SetMaxHealth 167; ent_fire npc_trooper_neutral SetMaxHealth 167"
      ...
-     alias td_hp_tier10 "ent_fire npc_trooper SetMaxHealth 393; ent_fire npc_trooper_neutral SetMaxHealth 393"
+     alias td_hp_tier10 "ent_fire npc_trooper SetMaxHealth 1367; ent_fire npc_trooper_neutral SetMaxHealth 1367"
      ```
-   * **Tip:** You can edit those numbers (`150`, `153`, `158`, `166`, `177`, `193`, `218`, `256`, `310`, `393`) directly in `src/cfg/td_scaling.cfg` without recompiling VData or the map!
+   * **Tip:** You can edit those numbers (`150`, `167`, `192`, `229`, `283`, `367`, `492`, `679`, `950`, `1367`) directly in `src/cfg/td_scaling.cfg` without recompiling VData or the map!
 4. **10-Tier Strength Modifiers (`scripts/build_td_vdata.ps1`, lines 153–372 & `src/cfg/td_scaling.cfg`):**
    * Applied by `td_strength_tier1..10` (`AddModifier td_creep_strength_1..10`).
-   * Scales up to `+145.8` flat HP, `+43.3%` Max HP, and `+41.7%` outgoing damage by Tier 10.
+   * Scales up to `+729.0` flat HP, `+216.5%` Max HP, and `+208.5%` outgoing damage by Tier 10.
 
 ---
 
