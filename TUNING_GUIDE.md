@@ -26,19 +26,19 @@ Creep HP and damage are controlled by a combination of **Layer 1 (`src/cfg/td_sc
    * `citadel_trooper_health_mult_gametime 9999`
    * Prevents vanilla Deadlock from multiplying creep HP by `3.0x` until 9,999 seconds into the match.
 2. **Base VData Stats (`scripts/build_td_vdata.ps1`, lines 385–396):**
-   * Sets initial Wave 1 base health (`m_nMaxHealth = 150` for troopers/neutrals, `180` for melee zombies), sets initial base DPS (`m_flBaseDPS = 20.0`), zeroes out the 50% bullet / 45% ability armor on neutral creeps, and sets passive DPS growth to `+2.77%` per minute (`m_flDPSPctGrowthPerMinute = 2.77`).
+   * Sets initial Wave 1 base health (`m_nMaxHealth = 150` for troopers/neutrals, `180` for melee zombies), sets initial base DPS (`m_flBaseDPS = 20.0`), zeroes out the 50% bullet / 45% ability armor on neutral creeps, and sets passive DPS growth to `+1.38%` per minute (`m_flDPSPctGrowthPerMinute = 1.38`).
 3. **10-Tier Base HP Overrides (`src/cfg/td_scaling.cfg`, lines 58–67):**
-   * Uses `CAI_BaseNPC_API::OverrideHealth` + `SetHealth` (without `modifier_citadel_trooper_shrine_down_buff`), starting at **`150 HP`** on Tier 1 and scaling up to **`2,311 HP`** on Tier 10:
+   * Uses `CAI_BaseNPC_API::OverrideHealth` + `SetHealth` (without `modifier_citadel_trooper_shrine_down_buff`), starting at **`150 HP`** on Tier 1 and scaling up to **`1,231 HP`** on Tier 10:
      ```cfg
      alias td_hp_tier1 "ent_fire npc_trooper OverrideHealth 150; ent_fire npc_trooper SetHealth 150; ent_fire npc_trooper_neutral OverrideHealth 150; ent_fire npc_trooper_neutral SetHealth 150"
-     alias td_hp_tier2 "ent_fire npc_trooper OverrideHealth 161; ent_fire npc_trooper SetHealth 161; ent_fire npc_trooper_neutral OverrideHealth 161; ent_fire npc_trooper_neutral SetHealth 161"
+     alias td_hp_tier2 "ent_fire npc_trooper OverrideHealth 156; ent_fire npc_trooper SetHealth 156; ent_fire npc_trooper_neutral OverrideHealth 156; ent_fire npc_trooper_neutral SetHealth 156"
      ...
-     alias td_hp_tier10 "ent_fire npc_trooper OverrideHealth 2311; ent_fire npc_trooper SetHealth 2311; ent_fire npc_trooper_neutral OverrideHealth 2311; ent_fire npc_trooper_neutral SetHealth 2311"
+     alias td_hp_tier10 "ent_fire npc_trooper OverrideHealth 1231; ent_fire npc_trooper SetHealth 1231; ent_fire npc_trooper_neutral OverrideHealth 1231; ent_fire npc_trooper_neutral SetHealth 1231"
      ```
-   * **Tip:** You can edit those numbers (`150`, `161`, `178`, `209`, `262`, `353`, `513`, `802`, `1331`, `2311`) directly in `src/cfg/td_scaling.cfg` without recompiling VData or the map!
+   * **Tip:** You can edit those numbers (`150`, `156`, `164`, `180`, `206`, `252`, `332`, `476`, `741`, `1231`) directly in `src/cfg/td_scaling.cfg` without recompiling VData or the map!
 4. **10-Tier Strength Modifiers (`scripts/build_td_vdata.ps1`, lines 153–372 & `src/cfg/td_scaling.cfg`):**
    * Applied by `td_strength_tier1..10` (`AddModifier td_creep_strength_1..10`).
-   * Scales up to `+243.0` flat HP, `+72.2%` Max HP, and `+69.5%` outgoing damage by Tier 10.
+   * Scales up to `+121.5` flat HP, `+36.1%` Max HP, and `+34.75%` outgoing damage by Tier 10.
 
 ---
 

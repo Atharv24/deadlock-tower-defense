@@ -182,15 +182,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 2.8
+				m_value = 1.4
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 1.3
+				m_value = 0.65
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 0.7
+				m_value = 0.35
 			},
 		]
 	}
@@ -204,15 +204,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 7.0
-			},
-			{
-				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
 				m_value = 3.5
 			},
 			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
+				m_value = 1.75
+			},
+			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 2.8
+				m_value = 1.4
 			},
 		]
 	}
@@ -226,15 +226,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 13.8
+				m_value = 6.9
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 7.0
+				m_value = 3.5
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 5.5
+				m_value = 2.75
 			},
 		]
 	}
@@ -248,15 +248,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 25.0
+				m_value = 12.5
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 11.8
+				m_value = 5.9
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 9.7
+				m_value = 4.85
 			},
 		]
 	}
@@ -270,15 +270,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 41.7
+				m_value = 20.9
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 18.0
+				m_value = 9.0
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 15.3
+				m_value = 7.65
 			},
 		]
 	}
@@ -292,15 +292,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 66.7
+				m_value = 33.4
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 26.3
+				m_value = 13.15
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 23.7
+				m_value = 11.85
 			},
 		]
 	}
@@ -314,15 +314,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 104.2
+				m_value = 52.1
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 37.5
+				m_value = 18.75
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 34.7
+				m_value = 17.35
 			},
 		]
 	}
@@ -336,15 +336,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 159.7
+				m_value = 79.9
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 52.8
+				m_value = 26.4
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 50.0
+				m_value = 25.0
 			},
 		]
 	}
@@ -358,15 +358,15 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
-				m_value = 243.0
+				m_value = 121.5
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX_PERCENT"
-				m_value = 72.2
+				m_value = 36.1
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
-				m_value = 69.5
+				m_value = 34.75
 			},
 		]
 	}
@@ -375,14 +375,14 @@ $customModifiersKv3 = @"
 $modInsertPos = $modTxt.LastIndexOf("}")
 $modPatchedTxt = $modTxt.Substring(0, $modInsertPos) + $customModifiersKv3 + "`n}`n"
 
-# 2. Patch npc_units.vdata_c.txt with 150 HP initial stats + 3x reduced per-minute growth (2.77%/min) + Phase 4 Graves Zombies & Neutral Creeps
+# 2. Patch npc_units.vdata_c.txt with 150 HP initial stats + halved per-minute growth (1.38%/min) + Phase 4 Graves Zombies & Neutral Creeps
 $npcTxtPath = Join-Path $scratchDir "npc_units.vdata_c.txt"
 $npcTxt = [System.IO.File]::ReadAllText($npcTxtPath)
 
 $npcPatchedTxt = [regex]::Replace($npcTxt, '(_class = "modifier_citadel_trooper_shrine_down_buff"\s+_my_subclass_name = "modifier_citadel_trooper_shrine_down_buff"\s+)m_flModelScale = 1\.1\s+m_flHealthScale = 1\.4\s+m_flDamageScale = 60\.0', '${1}m_flModelScale = 1.01' + "`n`t`t`t" + 'm_flHealthScale = 1.01' + "`n`t`t`t" + 'm_flDamageScale = 1.5')
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 0\.0', 'm_flDPSPctGrowthPerMinute = 2.77'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 3\.0', 'm_flDPSPctGrowthPerMinute = 2.77'
-$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDamageGrowthPctPerMin = 0\.5', 'm_flDamageGrowthPctPerMin = 2.77'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 0\.0', 'm_flDPSPctGrowthPerMinute = 1.38'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDPSPctGrowthPerMinute = 3\.0', 'm_flDPSPctGrowthPerMinute = 1.38'
+$npcPatchedTxt = $npcPatchedTxt -replace 'm_flDamageGrowthPctPerMin = 0\.5', 'm_flDamageGrowthPctPerMin = 1.38'
 
 # Set initial base health (150 HP) & base DPS of troopers and neutral creeps
 $npcPatchedTxt = $npcPatchedTxt -replace 'm_nMaxHealth = 300', 'm_nMaxHealth = 150'
