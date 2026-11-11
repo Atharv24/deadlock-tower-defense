@@ -114,6 +114,11 @@ export class TomeManager {
     )
 
     if (result.isPlayerKill && result.playerSlot !== undefined) {
+      while (this.rewardedCreeps.size > 512) {
+        const oldest = this.rewardedCreeps.values().next().value
+        if (oldest === undefined) break
+        this.rewardedCreeps.delete(oldest)
+      }
       const prevKills = this.playerKills.get(result.playerSlot) ?? 0
       this.playerKills.set(result.playerSlot, prevKills + 1)
       const killer = slotToPlayer.get(result.playerSlot)

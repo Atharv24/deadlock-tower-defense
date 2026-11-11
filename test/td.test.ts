@@ -19,6 +19,7 @@ import {
   BASE_CREEP_HP,
   BASE_CREEP_SCALE,
   computeBossTier,
+  computeCreepScaleAuraStep,
   computeGuardianRepair,
   computeGuardianUpgradeCost,
   computeWaveCreepDamageMult,
@@ -31,6 +32,7 @@ import {
   evaluateCreepHealthSync,
   evaluateCreepLastHit,
   getBossWaveSpec,
+  getCreepScaleAuraModifier,
   getWaveCreepModifiers,
   getWaveNeutralSpawns,
   GUARDIAN_BASE_MAX_HP,
@@ -108,15 +110,23 @@ describe('Tier 1 — Wave Scaling & Boss Wave Math', () => {
     const spec15 = getBossWaveSpec(15)
     const spec25 = getBossWaveSpec(25)
     const spec30 = getBossWaveSpec(30)
-    assert.equal(spec5.targetScale, 1.55)
-    assert.equal(spec10.targetScale, 1.9)
+    assert.equal(spec5.targetScale, 1.35)
+    assert.equal(spec10.targetScale, 1.5)
     assert.equal(spec15.tier, 3)
     assert.equal(spec15.modifier, 'td_boss_hero_stats_3')
-    assert.equal(spec15.targetScale, 2.25)
+    assert.equal(spec15.targetScale, 1.65)
     assert.ok(spec15.bonusHp > 7500)
-    assert.equal(spec25.targetScale, 2.95)
+    assert.equal(spec25.targetScale, 1.95)
+    assert.equal(spec30.endlessBoostStacks, 1)
     assert.equal(spec30.extraSizeStacks, 1)
-    assert.equal(spec30.targetScale, 3.3)
+    assert.equal(spec30.targetScale, 2.05)
+
+    // Verify 16-step C++ creep scale aura mapping (0.90x -> 1.65x)
+    assert.equal(computeCreepScaleAuraStep(0.9), 1)
+    assert.equal(getCreepScaleAuraModifier(1).modifier, 'td_creep_scale_aura_1')
+    assert.equal(getCreepScaleAuraModifier(1).appliedScale, 0.9)
+    assert.equal(getCreepScaleAuraModifier(60).modifier, 'td_creep_scale_aura_16')
+    assert.equal(getCreepScaleAuraModifier(60).appliedScale, 1.65)
   })
 
   it('scales creep Damage, Size, Zipline Cadence, and Soul Bounties monotonically across waves', () => {
@@ -139,7 +149,7 @@ describe('Tier 1 — Wave Scaling & Boss Wave Math', () => {
     assert.equal(computeWaveSpawnIntervalSeconds(25), MIN_SPAWN_INTERVAL_SECONDS)
 
     const cvarMap = new Map(TD_SERVER_CVARS)
-    assert.equal(cvarMap.get('citadel_trooper_max_per_lane'), 120)
+    assert.equal(cvarMap.get('citadel_trooper_max_per_lane'), 36)
     assert.equal(cvarMap.get('citadel_trooper_squad_size'), ZIPLINE_SQUAD_SIZE)
     assert.equal(cvarMap.get('citadel_trooper_health_mult_gametime'), 9999)
     assert.equal(cvarMap.get('citadel_hero_testing_enabled'), 1)
@@ -656,14 +666,33 @@ describe('Tier 1 — Enemy Hero Boss AI Navigation, Aiming & Combat Brain', () =
     })
     assert.notEqual(tick4.drive.pressed & TEST_BUTTONS.ability2, 0n, 'Tick 4 immediately casts next ready ability')
 
-    // Verify Guardian siege priority ignores unprovoked distant heroes (> 950u) once in siege zone
+    // Verify provoked Defender behind Blue Guardian (<= 1500u) gets targeted (#17), while unprovoked/extreme-range (> 1500u) stays on Guardian
+    const provokedBehindGuardian = selectBossTarget(
+      { x: -85, y: -1180, z: 384 },
+      { x: -85, y: -1180, z: 480 },
+      [
+        {
+          entity: 10,
+          position: { x: 0, y: -2150, z: 390 },
+          velocity: { x: 0, y: 0, z: 0 },
+          health: 700,
+          maxHealth: 700,
+          hasLineOfSight: true,
+        },
+      ],
+      { entity: 700, position: { x: 0, y: -1792, z: 384 }, alive: true },
+      { provokedHeroEntity: 10, provokedUntil: 99 },
+      10,
+    )
+    assert.equal(provokedBehindGuardian?.kind, 'hero')
+
     const siegeTarget = selectBossTarget(
       { x: -85, y: -1180, z: 384 },
       { x: -85, y: -1180, z: 480 },
       [
         {
           entity: 10,
-          position: { x: 0, y: -2450, z: 390 },
+          position: { x: 0, y: -2850, z: 390 },
           velocity: { x: 0, y: 0, z: 0 },
           health: 700,
           maxHealth: 700,
@@ -752,6 +781,9 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   })
 
   const appliedModifiers: string[] = []
+  const heldPlayerModifiers: Array<{ slot: number; mod: string; active: boolean }> = []
+  let activeMockAuraScale = 1.0
+  const activeBossBots: MockPlayer[] = []
   const refreshedAbilities: string[] = []
   const heldModifierStates: Array<{ entity: number; state: string; active: boolean }> = []
   const executedServerCommands: string[] = []
@@ -863,10 +895,35 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       if (mod.startsWith('td_boss_hero_stats_')) {
         const tier = Number(mod.replace('td_boss_hero_stats_', '')) || 1
         this.maxHealth = 700 + [2500, 5500, 10000, 16000, 25000][tier - 1]
+        scaleStore.set(this.pawnEntity, [1.35, 1.5, 1.65, 1.8, 1.95][tier - 1])
+      } else if (mod === 'td_boss_endless_boost') {
+        this.maxHealth += 3200
+      } else if (mod === 'td_boss_size_step') {
+        this.maxHealth = 700 + 25000
+        scaleStore.set(this.pawnEntity, 2.05)
+      } else if (mod.startsWith('td_creep_scale_aura_')) {
+        const step = Number(mod.replace('td_creep_scale_aura_', '')) || 1
+        activeMockAuraScale = Number((0.9 + (step - 1) * 0.05).toFixed(2))
+        for (const [ent, s] of npcStore.entries()) {
+          if (s.team === 3 && ((ent >= 800 && ent < 900) || trooperIds.has(ent))) {
+            scaleStore.set(ent, activeMockAuraScale)
+          }
+        }
       }
       return true
     }
-    holdModifier(_mod: string, _active?: boolean) {
+    holdModifier(mod: string, active?: boolean) {
+      const isOn = active !== false
+      heldPlayerModifiers.push({ slot: this.slot, mod, active: isOn })
+      if (isOn && mod.startsWith('td_creep_scale_aura_')) {
+        const step = Number(mod.replace('td_creep_scale_aura_', '')) || 1
+        activeMockAuraScale = Number((0.9 + (step - 1) * 0.05).toFixed(2))
+        for (const [ent, s] of npcStore.entries()) {
+          if (s.team === 3 && ((ent >= 800 && ent < 900) || trooperIds.has(ent))) {
+            scaleStore.set(ent, activeMockAuraScale)
+          }
+        }
+      }
       return true
     }
     abilities() {
@@ -940,6 +997,29 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       if (s) s.position = { ...this.position }
 
       // Simulate primary weapon fire when Buttons.attack (1n) is held
+      if ((cmd.held & 1n) !== 0n && this.team === 2) {
+        const angleDiff = (a: number, b: number) => {
+          let d = ((a - b + 540) % 360) - 180
+          if (d < -180) d += 360
+          return Math.abs(d)
+        }
+        for (const [ent, s] of npcStore.entries()) {
+          if (s.team !== 3 || s.health <= 0) continue
+          const dist = Math.hypot(s.position.x - this.position.x, s.position.y - this.position.y)
+          const yawTo = (Math.atan2(s.position.y - this.position.y, s.position.x - this.position.x) * 180) / Math.PI
+          if (dist <= 350 && angleDiff(cmd.facing.yaw, yawTo) <= 22) {
+            s.health = Math.max(0, s.health - 45)
+          }
+        }
+        for (const bot of activeBossBots) {
+          if (bot.health <= 0) continue
+          const dist = Math.hypot(bot.position.x - this.position.x, bot.position.y - this.position.y)
+          const yawTo = (Math.atan2(bot.position.y - this.position.y, bot.position.x - this.position.x) * 180) / Math.PI
+          if (dist <= 350 && angleDiff(cmd.facing.yaw, yawTo) <= 22) {
+            bot.health = Math.max(0, bot.health - 45)
+          }
+        }
+      }
       if ((cmd.held & 1n) !== 0n && this.team === 3) {
         const angleDiff = (a: number, b: number) => {
           let d = ((a - b + 540) % 360) - 180
@@ -1049,6 +1129,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       p.team = opts.team;
       p.pawnEntity = ent;
       p.position = opts.position ? { ...opts.position } : { x: 0, y: 1200, z: 390 };
+      if (opts.team === 3) globalThis.__mockModlock.activeBossBots.push(p);
       globalThis.__mockModlock.npcStore.set(ent, { health: 2500, maxHealth: 2500, team: opts.team, position: { ...p.position } });
       return p;
     };
@@ -1181,6 +1262,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     trooperIds,
     modelStore,
     allocSpawnEntity: () => ++nextSpawnedEntityId,
+    activeBossBots,
     firedInputs,
     scaleStore,
     lifeStateStore,
@@ -1229,7 +1311,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     waves.reset(0)
 
     // Advance all 8 probe steps at 4 Hz (0.25s ticks): world -> defender -> wave_scale -> tome_grant -> boon_and_guardian -> zombie_kamikaze -> boss_scale -> boss_combat
-    for (let step = 1; step <= 40 && !probePassed; step++) {
+    for (let step = 1; step <= 80 && !probePassed; step++) {
       // Simulate spawned trooper_melee marching south to the Guardian pedestal ring (y = -1350, 442u from Guardian y = -1792)
       for (const [ent, model] of modelStore.entries()) {
         if (model.includes('necro_shambler')) {
@@ -1281,7 +1363,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     const spawnedWave = waves.spawnNextWave(100, true)
     assert.equal(spawnedWave, 8)
     const expectedHp = computeWaveCreepHp(8)
-    const expectedScale = computeWaveCreepScale(8)
+    const expectedAura = getCreepScaleAuraModifier(8)
     const expectedDmgMult = computeWaveCreepDamageMult(8)
     const expectedInterval = computeWaveSpawnIntervalSeconds(8) // 14s
 
@@ -1290,7 +1372,16 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.equal(waves.aliveCreepCount, 4)
     assert.equal(waves.scaledCreeps.has(801), false)
     assert.equal(npcStore.get(802)?.maxHealth, expectedHp)
-    assert.equal(scaleStore.get(802), expectedScale)
+    assert.equal(scaleStore.get(802), expectedAura.appliedScale)
+    assert.equal(
+      firedInputs.some((i) => i.input === 'SetAbsScale'),
+      false,
+      'Must NEVER call SetAbsScale (which desynchronizes CHitboxComponent hitboxes, #16)',
+    )
+    assert.ok(
+      appliedModifiers.includes(expectedAura.modifier),
+      'Expected Defender Hero to receive timed C++ creep scale aura modifier (#16)',
+    )
 
     // Next second: 801 rides zipline (lifeState=0, 1/1 @[0,2000,1025]) -> still excluded until landing!
     lifeStateStore.set(801, 0)
@@ -1321,7 +1412,6 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.equal(waves.scaledCreeps.has(801), true)
     assert.equal(npcStore.get(801)?.maxHealth, expectedHp)
     assert.equal(npcStore.get(801)?.health, expectedHp)
-    assert.equal(scaleStore.get(801), expectedScale)
 
     // Simulate handle 801 dying/returning to pool (lifeState=2) and then re-landing on Wave 11:
     // scaledCreeps MUST release 801 when lifeState=2 so its next Wave 11 spawn gets Wave 11 HP!
@@ -1477,8 +1567,11 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     waves.tickActiveBosses(51)
     assert.equal(boss.configuredPawnEntity, 999)
     assert.equal(appliedModifiers.includes('td_boss_hero_stats_2'), true)
-    assert.equal(appliedModifiers.includes('td_tome_ammo'), true)
-    assert.equal(appliedModifiers.includes('td_tome_cdr'), true)
+    assert.equal(
+      appliedModifiers.filter((m) => !m.startsWith('td_creep_scale_aura_')).length,
+      1,
+      'Expected Wave 10 Boss to apply 1 baked VData modifier without synchronous giveModifier loops (#18)',
+    )
     assert.equal(botMock.abilityList[0].upgrades, 0b0111)
     assert.equal(botMock.abilityList[0].cooldownEnd, 0, 'Expected refreshAbility to clear initial cooldowns (#14)')
     assert.ok(refreshedAbilities.includes('citadel_ability_bull_leap'))
@@ -1490,7 +1583,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     )
     assert.ok(botMock.lastDrive !== undefined, 'Expected Boss bot.drive(...) to be active immediately')
     assert.ok(botMock.position.y < 1200, 'Expected Boss to start marching south out of spawn')
-    assert.equal(scaleStore.get(999), 1.9)
+    assert.equal(scaleStore.get(999), 1.5)
     assert.equal(botMock.maxHealth, 6200)
     assert.equal(botMock.health, 6200)
     assert.equal(boss.currentHp, 6200)
@@ -1510,7 +1603,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       52,
     )
     assert.equal(boss.ai.provokedHeroEntity, defenderPlayer.pawnEntity)
-    assert.equal(boss.ai.provokedUntil, 58)
+    assert.equal(boss.ai.provokedUntil, 60)
     assert.deepEqual(awardedMilestoneWaves, [])
 
     // Verify Boss outgoing damage is scaled in modifyIncomingDamage

@@ -384,7 +384,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.55
+				m_value = 1.35
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
@@ -406,6 +406,14 @@ $customModifiersKv3 = @"
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
 				m_value = 50.0
 			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_AMMO_CLIP_SIZE_PERCENT"
+				m_value = 25.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_COOLDOWN_REDUCTION_PERCENTAGE"
+				m_value = 12.0
+			},
 		]
 	}
 	td_boss_hero_stats_2 = 
@@ -418,7 +426,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.90
+				m_value = 1.50
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
@@ -440,6 +448,14 @@ $customModifiersKv3 = @"
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
 				m_value = 100.0
 			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_AMMO_CLIP_SIZE_PERCENT"
+				m_value = 25.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_COOLDOWN_REDUCTION_PERCENTAGE"
+				m_value = 12.0
+			},
 		]
 	}
 	td_boss_hero_stats_3 = 
@@ -452,7 +468,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 1.25
+				m_value = 1.65
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
@@ -474,6 +490,14 @@ $customModifiersKv3 = @"
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
 				m_value = 160.0
 			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_AMMO_CLIP_SIZE_PERCENT"
+				m_value = 25.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_COOLDOWN_REDUCTION_PERCENTAGE"
+				m_value = 12.0
+			},
 		]
 	}
 	td_boss_hero_stats_4 = 
@@ -486,7 +510,7 @@ $customModifiersKv3 = @"
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 1.60
+				m_value = 1.80
 			},
 			{
 				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
@@ -507,6 +531,14 @@ $customModifiersKv3 = @"
 			{
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
 				m_value = 225.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_AMMO_CLIP_SIZE_PERCENT"
+				m_value = 25.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_COOLDOWN_REDUCTION_PERCENTAGE"
+				m_value = 12.0
 			},
 		]
 	}
@@ -542,23 +574,114 @@ $customModifiersKv3 = @"
 				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
 				m_value = 300.0
 			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_AMMO_CLIP_SIZE_PERCENT"
+				m_value = 25.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_COOLDOWN_REDUCTION_PERCENTAGE"
+				m_value = 12.0
+			},
 		]
 	}
 	td_boss_size_step = 
 	{
 		_class = "modifier_base"
 		_my_subclass_name = "td_boss_size_step"
-		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE | MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
 		m_bIsHidden = true
 		m_vecScriptValues = 
 		[
 			{
 				m_eModifierValue = "MODIFIER_VALUE_MODEL_SCALE"
-				m_value = 0.35
+				m_value = 2.05
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 25000.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_REGEN_PER_SECOND"
+				m_value = 100.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_WEAPON_DAMAGE_INCREASE"
+				m_value = 500.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_POWER"
+				m_value = 350.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_OUTGOING_DAMAGE_PERCENTAGE_CHANGE"
+				m_value = 300.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_AMMO_CLIP_SIZE_PERCENT"
+				m_value = 25.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_COOLDOWN_REDUCTION_PERCENTAGE"
+				m_value = 12.0
+			},
+		]
+	}
+	td_boss_endless_boost = 
+	{
+		_class = "modifier_base"
+		_my_subclass_name = "td_boss_endless_boost"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_MULTIPLE | MODIFIER_ATTRIBUTE_PERMANENT | MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_vecScriptValues = 
+		[
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_MAX"
+				m_value = 3200.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_HEALTH_REGEN_PER_SECOND"
+				m_value = 25.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_WEAPON_DAMAGE_INCREASE"
+				m_value = 60.0
+			},
+			{
+				m_eModifierValue = "MODIFIER_VALUE_TECH_POWER"
+				m_value = 40.0
 			},
 		]
 	}
 "@
+
+$creepScaleAurasSb = New-Object System.Text.StringBuilder
+for ($step = 1; $step -le 16; $step++) {
+    $scale = [Math]::Round(0.90 + ($step - 1) * 0.05, 2)
+    $scaleStr = $scale.ToString("0.00", [System.Globalization.CultureInfo]::InvariantCulture)
+    [void]$creepScaleAurasSb.AppendLine(@"
+	td_creep_scale_aura_$step = 
+	{
+		_class = "modifier_base_aura"
+		_my_subclass_name = "td_creep_scale_aura_$step"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_flAuraRadius = 15000.0
+		m_iAuraSearchType = "CITADEL_UNIT_TARGET_TROOPER_ENEMY | CITADEL_UNIT_TARGET_CREEP_ENEMY | CITADEL_UNIT_TARGET_MINION_ENEMY | CITADEL_UNIT_TARGET_NEUTRAL"
+		m_iAuraSearchFlags = "CITADEL_UNIT_TARGET_FLAG_PENETRATE_INVULNERABLE"
+		m_modifierProvidedByAura = subclass:
+		{
+			_class = "modifier_citadel_trooper_shrine_down_buff"
+			_my_subclass_name = "td_creep_scale_aura_target_$step"
+			m_bIsHidden = true
+			m_nAttributes = "MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+			m_flModelScale = $scaleStr
+			m_flHealthScale = 1.0
+			m_flDamageScale = 0.0
+		}
+	}
+"@)
+}
+$creepScaleAurasKv3 = "`n" + $creepScaleAurasSb.ToString()
 
 $tomeAndGuardianModifiersKv3 = @"
 
@@ -847,7 +970,7 @@ $tomeAndGuardianModifiersKv3 = @"
 "@
 
 $modInsertPos = $modTxt.LastIndexOf("}")
-$modPatchedTxt = $modTxt.Substring(0, $modInsertPos) + $customModifiersKv3 + $tomeAndGuardianModifiersKv3 + "`n}`n"
+$modPatchedTxt = $modTxt.Substring(0, $modInsertPos) + $customModifiersKv3 + $creepScaleAurasKv3 + $tomeAndGuardianModifiersKv3 + "`n}`n"
 
 # 2. Patch npc_units.vdata_c.txt with 150 HP initial stats + halved per-minute growth (1.38%/min) + Phase 4 Graves Zombies & Neutral Creeps
 $npcTxtPath = Join-Path $scratchDir "npc_units.vdata_c.txt"

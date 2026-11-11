@@ -26,6 +26,7 @@ export interface BossHeroCandidate {
   readonly health: number
   readonly maxHealth: number
   readonly hasLineOfSight: boolean
+  readonly aimHeightOffset?: number
 }
 
 export interface BossGuardianCandidate {
@@ -66,6 +67,7 @@ export interface BossAiState {
   slotBackoffUntil: [number, number, number, number]
   provokedHeroEntity: number
   provokedUntil: number
+  heroSeenUntil: Record<number, number>
 }
 
 export interface BossDrivePlan {
@@ -164,6 +166,7 @@ export function createBossAiState(spawnOrigin: Vector, now = 0): BossAiState {
     slotBackoffUntil: [0, 0, 0, 0],
     provokedHeroEntity: 0,
     provokedUntil: 0,
+    heroSeenUntil: {},
   }
 }
 
@@ -243,18 +246,19 @@ function buildHeroCombatTarget(
   bossEyePos: Vector,
   hero: BossHeroCandidate,
 ): BossCombatTarget {
+  const aimOffsetZ = hero.aimHeightOffset ?? 54
   const d2 = flatDistance2D(bossPos, hero.position)
   const d3 = distance3D(bossEyePos, {
     x: hero.position.x,
     y: hero.position.y,
-    z: hero.position.z + 54,
+    z: hero.position.z + aimOffsetZ,
   })
   // Light projectile lead (0..0.16s) for moving targets without overshooting strafes.
   const leadSec = clamp(d3 / 3200, 0, 0.16)
   const aimPoint: Vector = {
     x: hero.position.x + hero.velocity.x * leadSec,
     y: hero.position.y + hero.velocity.y * leadSec,
-    z: hero.position.z + 54,
+    z: hero.position.z + aimOffsetZ,
   }
   return {
     kind: 'hero',
@@ -290,8 +294,8 @@ function buildGuardianCombatTarget(
 
 /**
  * Selects the highest-priority combat target for a Boss Hero:
- * 1. Close Defender Hero with LoS (`<= 620u`), even during Guardian siege.
- * 2. Provoked Defender Hero attacker with LoS (`<= 1850u` while marching, or `<= 950u` during siege).
+ * 1. Close Defender Hero with LoS (`<= 780u`), even during Guardian siege.
+ * 2. Provoked Defender Hero attacker with LoS (`<= 1850u` while marching, or `<= 1500u` during siege).
  * 3. Visible Defender Hero in Center Lane (`<= 1450u`) before Guardian siege.
  * 4. Friendly Blue T1 Guardian once within `BOSS_GUARDIAN_SIEGE_RANGE` (`880u < m_flInvulRange = 944.882`).
  * 5. Long-range visible Defender Hero (`<= 1850u`) for opportunistic fire while marching.
@@ -312,18 +316,18 @@ export function selectBossTarget(
     guardian && guardian.alive ? flatDistance2D(bossPos, guardian.position) : Infinity
   const inGuardianSiegeZone = distToGuardian <= BOSS_GUARDIAN_SIEGE_RANGE
 
-  // 1. Immediate close-quarters Hero threat (`<= 620u`).
+  // 1. Immediate close-quarters Hero threat (`<= 780u`), even when sieging Guardian.
   const closest = visibleHeroes[0]
-  if (closest && flatDistance2D(bossPos, closest.position) <= 620) {
+  if (closest && flatDistance2D(bossPos, closest.position) <= 780) {
     return buildHeroCombatTarget(bossPos, bossEyePos, closest)
   }
 
-  // 2. Provoked Hero who recently damaged this Boss.
+  // 2. Provoked Hero who recently damaged this Boss (including behind Blue Guardian up to 1500u).
   if (state.provokedHeroEntity > 0 && now < state.provokedUntil) {
     const provoked = visibleHeroes.find((h) => h.entity === state.provokedHeroEntity)
     if (provoked) {
       const provokedDist = flatDistance2D(bossPos, provoked.position)
-      const maxProvokedRange = inGuardianSiegeZone ? 950 : 1850
+      const maxProvokedRange = inGuardianSiegeZone ? 1500 : 1850
       if (provokedDist <= maxProvokedRange) {
         return buildHeroCombatTarget(bossPos, bossEyePos, provoked)
       }
@@ -657,7 +661,7 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
   let mode: BossBehaviorMode = 'march'
   if (target?.kind === 'guardian') {
     mode = 'guardian_siege'
-  } else if (target?.kind === 'hero' && target.distance2D <= 1150) {
+  } else if (target?.kind === 'hero' && target.distance2D <= 1350) {
     mode = 'hero_combat'
   }
 

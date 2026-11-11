@@ -12,9 +12,11 @@ export const CREEP_DAMAGE_GROWTH_RATE = 1.035
 export const BASE_CREEP_SCALE = 0.9
 export const CREEP_SCALE_PER_WAVE = 0.015
 export const MAX_CREEP_SCALE = 1.65
+export const MAX_CREEP_SCALE_AURA_STEPS = 16
 export const ZIPLINE_SQUAD_SIZE = 4
 export const MIN_SPAWN_INTERVAL_SECONDS = 7
 export const MAX_CREEP_TIER = 10
+export const MAX_ACTIVE_CREEPS_FOR_WAVE_NEUTRALS = 22
 
 export const BOSS_WAVE_INTERVAL = 5
 export const MAX_BOSS_TIER = 5
@@ -298,7 +300,7 @@ export const TD_SERVER_CVARS: readonly (readonly [string, string | number])[] = 
   ['citadel_trooper_spawn_interval_very_late_time', 999],
   ['citadel_trooper_squad_size', ZIPLINE_SQUAD_SIZE],
   ['citadel_trooper_health_mult_gametime', 9999],
-  ['citadel_trooper_max_per_lane', 120],
+  ['citadel_trooper_max_per_lane', 36],
   ['citadel_trooper_gold_reward', 150],
   ['citadel_trooper_gold_reward_bonus_per_minute', 100],
   ['citadel_npc_disable_cockroaches', 1],
@@ -331,6 +333,33 @@ export function computeWaveCreepScale(wave: number): number {
   const clampedWave = Math.max(1, Math.floor(wave))
   const raw = BASE_CREEP_SCALE + (clampedWave - 1) * CREEP_SCALE_PER_WAVE
   return Number(Math.min(MAX_CREEP_SCALE, raw).toFixed(3))
+}
+
+/**
+ * Maps a target creep scale (`0.90..1.65`) onto discrete hidden VData aura step `1..16`
+ * (`td_creep_scale_aura_1..16`, `0.05` increments) so C++ `MODIFIER_VALUE_MODEL_SCALE`
+ * scales BOTH visual models AND skeletal hitboxes (`CHitboxComponent`) synchronously.
+ */
+export function computeCreepScaleAuraStep(scale: number): number {
+  const clamped = Math.max(BASE_CREEP_SCALE, Math.min(MAX_CREEP_SCALE, scale))
+  const step = Math.round((clamped - BASE_CREEP_SCALE) / 0.05) + 1
+  return Math.max(1, Math.min(MAX_CREEP_SCALE_AURA_STEPS, step))
+}
+
+/** Returns the active hidden creep-scale aura modifier (`td_creep_scale_aura_1..16`) for `wave`. */
+export function getCreepScaleAuraModifier(wave: number): {
+  readonly step: number
+  readonly modifier: string
+  readonly appliedScale: number
+} {
+  const targetScale = computeWaveCreepScale(wave)
+  const step = computeCreepScaleAuraStep(targetScale)
+  const appliedScale = Number((BASE_CREEP_SCALE + (step - 1) * 0.05).toFixed(2))
+  return {
+    step,
+    modifier: `td_creep_scale_aura_${step}`,
+    appliedScale,
+  }
 }
 
 /**
@@ -534,9 +563,11 @@ export function computeBossTier(wave: number): number {
 }
 
 const BOSS_TIER_BONUS_HP = [2500, 5500, 10000, 16000, 25000] as const
-const BOSS_TIER_SCALE = [1.55, 1.9, 2.25, 2.6, 2.95] as const
-const BOSS_SCALE_STEP = 0.35
-const MAX_BOSS_EXTRA_SIZE_STACKS = 4
+const BOSS_TIER_SCALE = [1.35, 1.5, 1.65, 1.8, 1.95] as const
+const BOSS_SCALE_STEP = 0.1
+const MAX_BOSS_EXTRA_SIZE_STACKS = 1
+const MAX_BOSS_ENDLESS_BOOST_STACKS = 12
+const BOSS_ENDLESS_BOOST_HP = 3200
 
 /** Returns the Boss hero name, VData modifier, and scaling parameters for a Boss wave. */
 export function getBossWaveSpec(wave: number): {
@@ -544,7 +575,7 @@ export function getBossWaveSpec(wave: number): {
   readonly hero: string
   readonly modifier: string
   readonly bonusHp: number
-  readonly extraHealthStacks: number
+  readonly endlessBoostStacks: number
   readonly extraSizeStacks: number
   readonly targetScale: number
   readonly damageMult: number
@@ -554,12 +585,16 @@ export function getBossWaveSpec(wave: number): {
   const hero = BOSS_HERO_POOL[bossIdx % BOSS_HERO_POOL.length]
   const wavesBeyondMaxTier =
     wave > 25 ? Math.floor((wave - 25) / BOSS_WAVE_INTERVAL) : 0
-  const extraHealthStacks = wavesBeyondMaxTier * 40
+  const endlessBoostStacks = Math.min(
+    MAX_BOSS_ENDLESS_BOOST_STACKS,
+    wavesBeyondMaxTier,
+  )
   const extraSizeStacks = Math.min(
     MAX_BOSS_EXTRA_SIZE_STACKS,
     wavesBeyondMaxTier,
   )
-  const bonusHp = BOSS_TIER_BONUS_HP[tier - 1] + extraHealthStacks * 80
+  const bonusHp =
+    BOSS_TIER_BONUS_HP[tier - 1] + endlessBoostStacks * BOSS_ENDLESS_BOOST_HP
   const targetScale = Number(
     (BOSS_TIER_SCALE[tier - 1] + extraSizeStacks * BOSS_SCALE_STEP).toFixed(2),
   )
@@ -569,7 +604,7 @@ export function getBossWaveSpec(wave: number): {
     hero,
     modifier: `td_boss_hero_stats_${tier}`,
     bonusHp,
-    extraHealthStacks,
+    endlessBoostStacks,
     extraSizeStacks,
     targetScale,
     damageMult,

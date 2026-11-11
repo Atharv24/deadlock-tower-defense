@@ -47,10 +47,13 @@ const forceHeroPickerSlots = new Set<number>()
 const pendingHeroPickUntil = new Map<number, number>()
 const heroSearchBySlot = new Map<number, string>()
 const lastCursorKeyBySlot = new Map<number, string>()
+const lastHudSigBySlot = new Map<number, string>()
+const cachedHudModeBySlot = new Map<number, { mode: string; expiresAt: number }>()
 
 /** Opens the Panorama Hero Selection UI for a player (e.g. via `/hero`). */
 export function openHeroPickerForPlayer(player: Player): void {
   forceHeroPickerSlots.add(player.slot)
+  lastHudSigBySlot.delete(player.slot)
 }
 
 /** Selects a hero for the player on Team 2 (The Hidden King) and closes the picker. */
@@ -62,8 +65,19 @@ export function selectDefenderHero(
   forceHeroPickerSlots.delete(player.slot)
   heroSearchBySlot.delete(player.slot)
   pendingHeroPickUntil.set(player.slot, now + 6)
+  lastHudSigBySlot.delete(player.slot)
   player.selectHero(hero.name, DEFENDER_TEAM)
   toast(player, `Deploying as ${hero.title} (The Hidden King)!`)
+}
+
+function getCachedCompactHudMode(player: Player, now: number): boolean {
+  const cached = cachedHudModeBySlot.get(player.slot)
+  if (cached && now < cached.expiresAt) {
+    return cached.mode === 'compact'
+  }
+  const mode = player.setting('hud_mode') ?? 'full'
+  cachedHudModeBySlot.set(player.slot, { mode, expiresAt: now + 2.0 })
+  return mode === 'compact'
 }
 
 export function renderTdHud(
@@ -85,6 +99,8 @@ export function renderTdHud(
       pendingHeroPickUntil.delete(player.slot)
       heroSearchBySlot.delete(player.slot)
       lastCursorKeyBySlot.delete(player.slot)
+      lastHudSigBySlot.delete(player.slot)
+      cachedHudModeBySlot.delete(player.slot)
     }
 
     const pawn = player.pawn()
@@ -116,6 +132,23 @@ export function renderTdHud(
       freeCursor(player, needsCursor)
     }
 
+    const canCancelHeroPick = Boolean(pawn && pawn.hero > 0)
+    const compact = getCachedCompactHudMode(player, now)
+    const displayWave = Math.max(1, waves.wave)
+    const nextWaveSeconds = Math.max(0, Math.ceil(waves.nextWaveTime - now))
+    const bossSig = waves.activeBosses
+      .filter((b) => b.configuredPawnEntity > 0 && b.currentHp > 0)
+      .slice(0, 2)
+      .map((b) => `${b.wave}:${b.configuredPawnEntity}:${b.currentHp}:${b.currentMaxHp}`)
+      .join('|')
+    const boonSig = pendingBoons ? pendingBoons.map((b) => b.id).join(',') : ''
+    const searchSig = needsHeroPick ? (heroSearchBySlot.get(player.slot) ?? '') : ''
+    const hudSig = `${displayWave};${waves.waitingForDefenderHero ? 1 : 0};${nextWaveSeconds};${waves.aliveCreepCount};${guardian.health};${guardian.maxHealth};${guardian.upgradeLevel};${guardian.matchState};${compact ? 1 : 0};${needsHeroPick ? 1 : 0};${canCancelHeroPick ? 1 : 0};${searchSig};${boonSig};${tomes.getKills(player.slot)};${tomes.getTotalTomes(player.slot)};${bossSig}`
+    if (lastHudSigBySlot.get(player.slot) === hudSig) {
+      continue
+    }
+    lastHudSigBySlot.set(player.slot, hudSig)
+
     show(
       player,
       <TdHudRoot
@@ -124,8 +157,9 @@ export function renderTdHud(
         waves={waves}
         guardian={guardian}
         tomes={tomes}
+        compact={compact}
         needsHeroPick={needsHeroPick}
-        canCancelHeroPick={Boolean(pawn && pawn.hero > 0)}
+        canCancelHeroPick={canCancelHeroPick}
         onRestart={onRestart}
       />,
     )
@@ -138,6 +172,7 @@ function TdHudRoot(props: {
   waves: WaveManager
   guardian: GuardianManager
   tomes: TomeManager
+  compact: boolean
   needsHeroPick: boolean
   canCancelHeroPick: boolean
   onRestart: () => void
@@ -148,6 +183,7 @@ function TdHudRoot(props: {
     waves,
     guardian,
     tomes,
+    compact,
     needsHeroPick,
     canCancelHeroPick,
     onRestart,
@@ -159,7 +195,6 @@ function TdHudRoot(props: {
   const creepScale = computeWaveCreepScale(displayWave)
   const cadenceSec = computeWaveSpawnIntervalSeconds(displayWave)
   const tier = computeWaveTier(displayWave)
-  const compact = player.setting('hud_mode') === 'compact'
   const pendingBoons = tomes.pendingBoonChoices.get(player.slot)
   const hpFraction =
     guardian.maxHealth > 0

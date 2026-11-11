@@ -191,14 +191,21 @@ onDamaged((hit) => {
     return
   }
   waves.handleCreepPostDamage(hit, guardian, nowSeconds)
-  const evalResult = tomes.onDamaged(hit, waves.validEnemyEntities(), guardian)
-  if (evalResult.isPlayerKill) {
-    persistHandoff()
+  // Gate Tome evaluation strictly on lethal enemy kills so non-lethal bullets,
+  // pellets, and burn ticks execute 0 entity scans (#18).
+  if (
+    hit.healthBefore > 0 &&
+    hit.healthLost >= hit.healthBefore &&
+    hit.attacker > 0 &&
+    hit.attacker !== guardian.entity &&
+    waves.isEnemyRewardVictim(hit.victim)
+  ) {
+    tomes.onDamaged(hit, new Set([hit.victim]), guardian)
   }
 })
 
-// Refresh Panorama JSX HUD and drive active Enemy Hero Bosses at 10 Hz (smooth 100ms
-// aim tracking, lane steering, and ability casting while keeping frame times tiny).
+// Refresh Panorama JSX HUD (memoized on state change) and drive active Enemy Hero
+// Bosses at 10 Hz (smooth 100ms aim tracking, lane steering, and ability casting).
 every(0.1, () => {
   if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
     waves.tickActiveBosses(nowSeconds, guardian)
@@ -206,13 +213,19 @@ every(0.1, () => {
   renderTdHud(nowSeconds, waves, guardian, tomes, restartMatch)
 })
 
-// Fast 250ms pass so newly dismounted zipline creeps and Graves Zombie kamikaze
-// detonations run responsively and newly spawned defender heroes get Buy Anywhere.
+// Fast 250ms pass for Graves Zombie kamikaze proximity checks (0 host calls when
+// no zombies are alive) and Buy Anywhere shop state on newly spawned defenders.
 every(0.25, () => {
   ensureDefenderShopAccess()
   if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
-    waves.scaleNewlySpawnedCreeps()
     waves.tickExplodingZombies(nowSeconds, guardian)
+  }
+})
+
+// 500ms pass to sync hidden C++ creep-scale aura and newly dismounted creep HP.
+every(0.5, () => {
+  if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
+    waves.scaleNewlySpawnedCreeps(nowSeconds)
   }
 })
 
@@ -235,6 +248,10 @@ every(1, () => {
 
   guardian.poll(waves.wave)
   waves.tick(nowSeconds, guardian.matchState === 'active')
+})
+
+// Persist hot-reload state every 5 seconds (instead of on every kill/second).
+every(5, () => {
   persistHandoff()
 })
 

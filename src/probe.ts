@@ -8,6 +8,7 @@
 
 import {
   addBot,
+  Buttons,
   entityPosition,
   findEntities,
   log,
@@ -45,7 +46,7 @@ const STEP_WAITS: Record<ProbeStep, string> = {
   tome_grant: 'player last-hit Tome grant and Guardian-kill rejection',
   boon_and_guardian: '1-of-3 Major Boon selection and Guardian fortification',
   zombie_kamikaze: 'Graves Zombie to engage Blue T1 Guardian, detonate kamikaze explosion, and die',
-  boss_scale: 'Boss Hero Wave 5 & Wave 10 HP and Size scaling',
+  boss_scale: 'C++ aura creep & Boss model+hitbox scaling and high-torso bullet registration',
   boss_combat: 'Boss Hero autonomous Center Lane march, target aiming, and live combat damage',
 }
 
@@ -57,7 +58,10 @@ export class TdProbe {
   private testZombieNpc?: Npc
   private guardianHpBeforeZombie = 0
   private bossSpawned = false
-  private bossSettleTicks = 0
+  private hitboxPhase: 'init' | 'wait_aura' | 'shoot_creep_high' | 'shoot_boss_high' = 'init'
+  private hitboxPhaseStartedAt = 0
+  private hitboxTestTrooper?: Npc
+  private bossHpBeforeHighShot = 0
   private bossMarchVerified = false
   private defenderHpBeforeBoss = 0
   private guardianHpBeforeBoss = 0
@@ -154,14 +158,14 @@ export class TdProbe {
       return false
     }
 
-    waves.scaleNewlySpawnedCreeps()
+    waves.scaleNewlySpawnedCreeps(now)
     const targetCreep = creeps[0]
     this.testCreepEntity = targetCreep
     const expectedHp = computeWaveCreepHp(waves.wave)
 
     // Damage the creep to 80 HP and verify a subsequent scale pass does NOT heal it back to 150 HP.
     new Npc(targetCreep).setHealth(80, expectedHp)
-    waves.scaleNewlySpawnedCreeps()
+    waves.scaleNewlySpawnedCreeps(now)
     const afterNpc = new Npc(targetCreep).read()
     if (afterNpc && afterNpc.health > 80) {
       return `damaged creep was healed mid-fight from 80 to ${afterNpc.health}`
@@ -316,7 +320,7 @@ export class TdProbe {
         return 'failed to spawn trooper_melee Graves Zombie for kamikaze probe'
       }
       this.testZombieNpc = z
-      waves.scaleNewlySpawnedCreeps()
+      waves.scaleNewlySpawnedCreeps(now)
       // Boost test zombie HP to 5000 so Guardian bullets cannot kill it before kamikaze self-detonation!
       z.setHealth(5000, 5000)
       const spec = waves.creepSpecs.get(z.entity)
@@ -395,16 +399,160 @@ export class TdProbe {
       return false
     }
 
-    this.bossSettleTicks += 1
-    if (this.bossSettleTicks === 1) {
-      waves.tickActiveBosses(now, guardian)
-      return false
-    }
-    if (this.bossSettleTicks < 3) {
-      waves.tickActiveBosses(now, guardian)
+    // Sub-phase 1: Spawn a live enemy trooper under Wave 51's hidden C++ aura (`td_creep_scale_aura_16`, 1.65x)
+    // and verify BOTH `m_flScale ~= 1.65` AND real Defender gun bullets hit its scaled high torso/head (`z + 98`,
+    // 20u above an unscaled 1.0x trooper's 78u top — which previously missed 100% under SetAbsScale, #16!).
+    if (this.hitboxPhase === 'init') {
+      const tScaled = spawnNpc({
+        className: 'npc_trooper',
+        unit: 'trooper_normal',
+        team: 3,
+        lane: 4,
+        position: { x: 185, y: -1360, z: 388 },
+        facing: { pitch: 0, yaw: 270, roll: 0 },
+        health: 9000,
+        maxHealth: 9000,
+      })
+      if (!tScaled || tScaled.entity <= 0) {
+        return 'failed to spawn test trooper for C++ aura hitbox-scaling verification'
+      }
+      waves.scaledCreeps.add(tScaled.entity)
+      waves.creepSpecs.set(tScaled.entity, {
+        wave: 51,
+        targetHp: 9000,
+        targetScale: 1.65,
+        damageMult: 1,
+        isExplodingZombie: false,
+      })
+      tScaled.setHealth(9000, 9000)
+      waves.wave = 51
+      waves.syncCreepScaleAura(now)
+      this.hitboxTestTrooper = tScaled
+      this.hitboxPhase = 'wait_aura'
+      this.hitboxPhaseStartedAt = now
       return false
     }
 
+    if (this.hitboxPhase === 'wait_aura') {
+      waves.syncCreepScaleAura(now)
+      const tEnt = this.hitboxTestTrooper?.entity ?? 0
+      const tScale = readField(tEnt, 'CGameSceneNode', 'm_flScale', 'float32')
+      if (typeof tScale !== 'number' || tScale < 1.58) {
+        if (now - this.hitboxPhaseStartedAt > 3.5) {
+          return `td_creep_scale_aura_16 did not scale trooper ent=${tEnt} to 1.65x (got m_flScale=${tScale})`
+        }
+        return false
+      }
+      const tp =
+        this.hitboxTestTrooper?.read()?.position ??
+        entityPosition(tEnt)?.position ?? { x: 185, y: -1360, z: 388 }
+      this.hitboxTestTrooper?.setHealth(9000, 9000)
+      this.defender?.teleport(
+        { x: tp.x, y: tp.y - 180, z: tp.z },
+        { pitch: 0, yaw: 90, roll: 0 },
+      )
+      this.hitboxPhase = 'shoot_creep_high'
+      this.hitboxPhaseStartedAt = now
+      return false
+    }
+
+    if (this.hitboxPhase === 'shoot_creep_high') {
+      const tEnt = this.hitboxTestTrooper?.entity ?? 0
+      const tp =
+        this.hitboxTestTrooper?.read()?.position ??
+        entityPosition(tEnt)?.position ?? { x: 185, y: -1360, z: 388 }
+      const defEyeZ = (this.defender?.pawn()?.eyePosition.z ?? tp.z + 75) - tp.z
+      const dist2D = Math.max(
+        40,
+        Math.hypot(
+          tp.x - (this.defender?.pawn()?.position.x ?? tp.x),
+          tp.y - (this.defender?.pawn()?.position.y ?? tp.y - 180),
+        ),
+      )
+      // Aim at z + 98 (20u above unscaled 78u trooper head!)
+      const yawToTrooper =
+        (Math.atan2(
+          tp.y - (this.defender?.pawn()?.position.y ?? tp.y - 180),
+          tp.x - (this.defender?.pawn()?.position.x ?? tp.x),
+        ) *
+          180) /
+        Math.PI
+      const pitchUp = (-Math.atan2(98 - defEyeZ, dist2D) * 180) / Math.PI
+      this.defender?.drive({
+        forward: 0,
+        left: 0,
+        held: Buttons.attack,
+        pressed: 0n,
+        facing: { pitch: pitchUp, yaw: yawToTrooper, roll: 0 },
+      })
+      const curHp = this.hitboxTestTrooper?.read()?.health ?? 9000
+      if (curHp >= 9000) {
+        if (now - this.hitboxPhaseStartedAt > 3.0) {
+          return `high-torso/head bullets at z+98 failed to register on 1.65x scaled trooper ent=${tEnt} (HP stayed ${curHp})`
+        }
+        return false
+      }
+      log(
+        `Probe: verified 1.65x creep aura hitbox scaling — bullets at z+98 dealt ${9000 - curHp} dmg to trooper ent=${tEnt}!`,
+      )
+      this.defender?.drive()
+      this.hitboxTestTrooper?.remove()
+      this.hitboxTestTrooper = undefined
+      waves.wave = 10
+      waves.syncCreepScaleAura(now)
+
+      // Sub-phase 2: Verify high-torso/head shot registration on scaled Wave 10 Boss (`z + 136`, above unscaled 112u!)
+      b10.bot.drive()
+      b10.bot.teleport({ x: -55, y: -1180, z: 388 }, { pitch: 0, yaw: -90, roll: 0 })
+      b10.bot.heal(100_000)
+      this.defender?.teleport({ x: -55, y: -1360, z: 388 }, { pitch: 0, yaw: 90, roll: 0 })
+      this.bossHpBeforeHighShot = b10.bot.pawn()?.health ?? 6000
+      this.hitboxPhase = 'shoot_boss_high'
+      this.hitboxPhaseStartedAt = now
+      return false
+    }
+
+    if (this.hitboxPhase === 'shoot_boss_high') {
+      b10.bot.drive()
+      const bp = b10.bot.pawn()?.position ?? { x: -55, y: -1180, z: 388 }
+      const defPawn = this.defender?.pawn()
+      const defEyeZ = (defPawn?.eyePosition.z ?? bp.z + 75) - bp.z
+      const dist2D = Math.max(
+        40,
+        Math.hypot(
+          bp.x - (defPawn?.position.x ?? bp.x),
+          bp.y - (defPawn?.position.y ?? bp.y - 180),
+        ),
+      )
+      // Aim at z + 136 (24u above Abrams's 112u unscaled height; Wave 10 Boss at 1.50x reaches ~168u!)
+      const pitchUp = (-Math.atan2(136 - defEyeZ, dist2D) * 180) / Math.PI
+      this.defender?.drive({
+        forward: 0,
+        left: 0,
+        held: Buttons.attack,
+        pressed: 0n,
+        facing: { pitch: pitchUp, yaw: 90, roll: 0 },
+      })
+      const curBossHp = b10.bot.pawn()?.health ?? this.bossHpBeforeHighShot
+      if (curBossHp >= this.bossHpBeforeHighShot) {
+        if (now - this.hitboxPhaseStartedAt > 3.0) {
+          return `high-torso/head bullets at z+136 failed to register on ${b10.targetScale}x Boss (HP stayed ${curBossHp})`
+        }
+        return false
+      }
+      log(
+        `Probe: verified ${b10.targetScale}x Boss hitbox scaling — bullets at z+136 dealt ${this.bossHpBeforeHighShot - curBossHp} dmg!`,
+      )
+      this.defender?.drive()
+      this.defender?.teleport({ x: 0, y: -2750, z: 390 }, PLAYER_SPAWN_ANGLES)
+      b10.bot.teleport({ x: -55, y: 1200, z: 390 }, { pitch: 0, yaw: -90, roll: 0 })
+      b10.bot.heal(100_000)
+      b10.ai.waypointIndex = 0
+      b10.ai.provokedHeroEntity = 0
+      b10.ai.provokedUntil = 0
+    }
+
+    waves.tickActiveBosses(now, guardian)
     const p5 = b5.bot.pawn()
     const p10 = b10.bot.pawn()
     const scale5 = readField(
@@ -432,7 +580,7 @@ export class TdProbe {
     if (Math.abs(scale5 - b5.targetScale) > 0.1 || Math.abs(scale10 - b10.targetScale) > 0.1) {
       return `Boss m_flScale mismatch: Wave 5 got ${scale5} (expected ${b5.targetScale}), Wave 10 got ${scale10} (expected ${b10.targetScale})`
     }
-    if (scale10 - scale5 < 0.25) {
+    if (scale10 - scale5 < 0.1) {
       return `Boss size growth too slow: scale5=${scale5}, scale10=${scale10}`
     }
 
@@ -444,7 +592,7 @@ export class TdProbe {
       waves.activeBosses.splice(idx5, 1)
     }
 
-    log('Probe: verified Boss HP, HP bar sync & 3.5x Size scaling — advancing to Boss lane march & combat check')
+    log('Probe: verified C++ creep & Boss hitbox scaling — advancing to Boss lane march & aiming check')
     this.step = 'boss_combat'
     return false
   }

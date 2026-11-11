@@ -98,7 +98,11 @@ for ($i = 1; $i -le 10; $i++) {
 for ($b = 1; $b -le 5; $b++) {
     Assert-True ($modDecomp -match "td_boss_hero_stats_$b\b") "modifiers.vdata_c defines td_boss_hero_stats_$b"
 }
+for ($s = 1; $s -le 16; $s++) {
+    Assert-True ($modDecomp -match "td_creep_scale_aura_$s\b") "modifiers.vdata_c defines td_creep_scale_aura_$s"
+}
 Assert-True ($modDecomp -match "td_boss_size_step\b") "modifiers.vdata_c defines stackable td_boss_size_step"
+Assert-True ($modDecomp -match "td_boss_endless_boost\b") "modifiers.vdata_c defines stackable td_boss_endless_boost"
 $expectedTomes = @(
     "td_tome_spirit", "td_tome_weapon", "td_tome_firerate", "td_tome_health",
     "td_tome_cooldown", "td_tome_range", "td_tome_omni",
