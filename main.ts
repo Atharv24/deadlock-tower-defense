@@ -17,11 +17,13 @@ import {
   onDamaged,
   onFrame,
   onPlayerJoin,
+  onPlayerLeave,
   onStart,
   onWorld,
   type Player,
   players,
   precache,
+  serverCommand,
   toast,
 } from 'modlock'
 
@@ -30,6 +32,9 @@ import {
   BOSS_WAVE_INTERVAL,
   DEFENDER_TEAM,
   deserializeTdHandoff,
+  EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
+  type EmptyServerWatchState,
+  evaluateEmptyServerShutdown,
   MINOR_TOME_POOL,
   parseSlashCommandLine,
   PLAYER_SPAWN_ANGLES,
@@ -56,6 +61,11 @@ const waves = new WaveManager((milestoneWave) => {
 let probe: TdProbe | undefined
 let nowSeconds = 0
 let skipInitialWorldReset = false
+let emptyServerWatch: EmptyServerWatchState = {
+  hasSeenHuman: false,
+  emptySinceSeconds: undefined,
+  quitIssued: false,
+}
 const placedHeroEntityBySlot = new Map<number, number>()
 const shopStateHeldEntities = new Set<number>()
 
@@ -88,6 +98,7 @@ function persistHandoff(): void {
       matchState: guardian.matchState,
       guardianUpgradeLevel: guardian.upgradeLevel,
       guardianBonusMaxHp: guardian.bonusMaxHp,
+      patronReachedStage2: guardian.patronReachedStage2,
       scaledCreeps: [...waves.scaledCreeps],
       explodingZombies: waves.exportExplodingZombieHandles(),
       rewardedCreeps: [...tomes.rewardedCreeps],
@@ -97,23 +108,24 @@ function persistHandoff(): void {
   )
 }
 
-/** Restarts the Tower Defense match from Wave 1. */
+/** Restarts the Tower Defense match from Wave 1 and respawns all Team 2 structures. */
 function restartMatch(): void {
   placedHeroEntityBySlot.clear()
   shopStateHeldEntities.clear()
-  guardian.reset()
+  guardian.respawnAllStructures()
   tomes.reset()
   waves.cleanupForRestart(nowSeconds)
+  const spawnOrigin = guardian.getDefenderSpawnOrigin()
   for (const conn of players()) {
     const p = conn.player
     const pawn = p.pawn()
     if (pawn && pawn.team === DEFENDER_TEAM && pawn.hero > 0) {
-      p.teleport(PLAYER_SPAWN_ORIGIN, PLAYER_SPAWN_ANGLES)
+      p.teleport(spawnOrigin, PLAYER_SPAWN_ANGLES)
       placedHeroEntityBySlot.set(p.slot, pawn.entity)
     }
     p.announce(
       'TOWER DEFENSE RESTARTED',
-      'Wave 1 begins in 5 seconds! Defend the Blue T1 Guardian in Center Lane.',
+      'Wave 1 begins in 5 seconds! Defend the Base from Blue Guardian down to the Patron!',
     )
   }
   persistHandoff()
@@ -139,6 +151,7 @@ onStart((args) => {
       restored.guardianUpgradeLevel,
       restored.guardianBonusMaxHp,
       restored.matchState,
+      restored.patronReachedStage2 ?? false,
     )
     tomes.restore(
       restored.rewardedCreeps,
@@ -173,17 +186,51 @@ onWorld((mapName) => {
 })
 
 onPlayerJoin((joined) => {
+  if (!joined.connection.bot && !probe) {
+    if (emptyServerWatch.emptySinceSeconds !== undefined) {
+      log('Human player reconnected — cancelled empty-server shutdown timer')
+    }
+    emptyServerWatch = {
+      hasSeenHuman: true,
+      emptySinceSeconds: undefined,
+      quitIssued: false,
+    }
+  }
   joined.connection.player.announce(
     'DEADLOCK TOWER DEFENSE',
-    'Defend the Blue T1 Guardian in Center Lane! Last-hit creeps for a 10% Tome drop.',
+    'Defend Guardian -> Walker -> Shrines -> Patron! Last-hit creeps for a 10% Tome drop.',
   )
+})
+
+onPlayerLeave((left) => {
+  if (!left.connection.bot && left.disconnected && !probe) {
+    let remainingHumans = 0
+    for (const conn of players()) {
+      if (!conn.bot && conn.player.slot !== left.connection.player.slot) {
+        remainingHumans += 1
+      }
+    }
+    if (
+      remainingHumans === 0 &&
+      emptyServerWatch.hasSeenHuman &&
+      emptyServerWatch.emptySinceSeconds === undefined
+    ) {
+      emptyServerWatch = {
+        ...emptyServerWatch,
+        emptySinceSeconds: nowSeconds,
+      }
+      log(
+        `All human players disconnected — shutting down server in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`,
+      )
+    }
+  }
 })
 
 onDamage((hit) => {
   if (guardian.matchState !== 'active') {
     return
   }
-  return waves.modifyIncomingDamage(hit)
+  return waves.modifyIncomingDamage(hit, guardian)
 })
 
 onDamaged((hit) => {
@@ -197,7 +244,7 @@ onDamaged((hit) => {
     hit.healthBefore > 0 &&
     hit.healthLost >= hit.healthBefore &&
     hit.attacker > 0 &&
-    hit.attacker !== guardian.entity &&
+    !guardian.isFriendlyStructureEntity(hit.attacker) &&
     waves.isEnemyRewardVictim(hit.victim)
   ) {
     tomes.onDamaged(hit, new Set([hit.victim]), guardian)
@@ -229,25 +276,59 @@ every(0.5, () => {
   }
 })
 
-// 1-second tick for wave scheduling, defender spawn safety, and Guardian monitoring.
+// 1-second tick for wave scheduling, defender spawn safety, and Base Defense monitoring.
 every(1, () => {
-  // Ensure newly spawned Team 2 defender heroes (pawn.hero > 0) stand on Center Lane surface behind Blue Guardian.
+  guardian.poll(waves.wave, nowSeconds)
+  const spawnOrigin = guardian.getDefenderSpawnOrigin()
+
+  // Place newly spawned/respawned Team 2 defender heroes safely behind the active frontline!
+  let humanCount = 0
   for (const conn of players()) {
     if (conn.bot) continue
+    humanCount += 1
     const p = conn.player
     const pawn = p.pawn()
     if (pawn && pawn.team === DEFENDER_TEAM && pawn.hero > 0 && pawn.health > 0) {
       const outOfBounds =
-        pawn.position.z < -100 || Math.abs(pawn.position.y) > 4500
+        pawn.position.z < -900 || Math.abs(pawn.position.y) > 11500
       if (placedHeroEntityBySlot.get(p.slot) !== pawn.entity || outOfBounds) {
-        p.teleport(PLAYER_SPAWN_ORIGIN, PLAYER_SPAWN_ANGLES)
+        p.teleport(spawnOrigin, PLAYER_SPAWN_ANGLES)
         placedHeroEntityBySlot.set(p.slot, pawn.entity)
       }
     }
   }
 
-  guardian.poll(waves.wave)
-  waves.tick(nowSeconds, guardian.matchState === 'active')
+  const prevEmptySince = emptyServerWatch.emptySinceSeconds
+  const shutdownEval = evaluateEmptyServerShutdown(
+    emptyServerWatch,
+    humanCount,
+    nowSeconds,
+    probe !== undefined,
+  )
+  emptyServerWatch = shutdownEval.nextState
+  if (
+    prevEmptySince === undefined &&
+    emptyServerWatch.emptySinceSeconds !== undefined &&
+    !shutdownEval.shouldQuit
+  ) {
+    log(
+      `All human players disconnected — shutting down server in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`,
+    )
+  } else if (
+    prevEmptySince !== undefined &&
+    emptyServerWatch.emptySinceSeconds === undefined
+  ) {
+    log('Human player reconnected — cancelled empty-server shutdown timer')
+  }
+  if (shutdownEval.shouldQuit) {
+    log(
+      `No human players connected for ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s — shutting down server (quit)`,
+    )
+    serverCommand('quit')
+    return
+  }
+
+  waves.tick(nowSeconds, guardian.matchState === 'active', guardian)
 })
 
 // Persist hot-reload state every 5 seconds (instead of on every kill/second).

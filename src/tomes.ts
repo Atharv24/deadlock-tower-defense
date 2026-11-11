@@ -102,6 +102,9 @@ export class TomeManager {
     if (guardian.entity > 0) {
       guardianSet.add(guardian.entity)
     }
+    if (hit.attacker > 0 && guardian.isFriendlyStructureEntity(hit.attacker)) {
+      guardianSet.add(hit.attacker)
+    }
 
     const result = evaluateCreepLastHit(
       hit,

@@ -11,6 +11,7 @@ import {
   computeBossAbilityUpgradeMask,
   createBossAiState,
   flatDistance2D,
+  getBossWaypointsForObjective,
   planBossDriveStep,
   selectBossTarget,
   worldMoveToDriveAxes,
@@ -22,6 +23,7 @@ import {
   computeCreepScaleAuraStep,
   computeGuardianRepair,
   computeGuardianUpgradeCost,
+  computeStructureDamageMult,
   computeWaveCreepDamageMult,
   computeWaveCreepHp,
   computeWaveCreepScale,
@@ -29,10 +31,16 @@ import {
   computeWaveSpawnIntervalSeconds,
   computeWaveTier,
   deserializeTdHandoff,
+  EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
+  type EmptyServerWatchState,
+  evaluateAllStructuresRepair,
+  evaluateBaseDefenseProgression,
   evaluateCreepHealthSync,
   evaluateCreepLastHit,
+  evaluateEmptyServerShutdown,
   getBossWaveSpec,
   getCreepScaleAuraModifier,
+  getStructureFortifyAuraSpec,
   getWaveCreepModifiers,
   getWaveNeutralSpawns,
   GUARDIAN_BASE_MAX_HP,
@@ -383,6 +391,7 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
       matchState: 'active',
       guardianUpgradeLevel: 2,
       guardianBonusMaxHp: 2400,
+      patronReachedStage2: true,
       scaledCreeps: [101, 102, 205],
       explodingZombies: [102],
       rewardedCreeps: [98, 99],
@@ -416,6 +425,59 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
     assert.equal(isExplodingZombieBaseMaxHp(300), false)
     assert.equal(isExplodingZombieBaseMaxHp(350), false)
     assert.equal(isExplodingZombieBaseMaxHp(1), false)
+  })
+
+  it('auto-quits server 30s after last human disconnects, ignoring cold startup and cancelling on reconnect', () => {
+    assert.equal(EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS, 30)
+
+    let state: EmptyServerWatchState = {
+      hasSeenHuman: false,
+      emptySinceSeconds: undefined,
+      quitIssued: false,
+    }
+
+    // Cold server startup (0..60s before first human joins) must NEVER trigger quit
+    const coldCheck = evaluateEmptyServerShutdown(state, 0, 60, false)
+    assert.equal(coldCheck.shouldQuit, false)
+    assert.equal(coldCheck.nextState.hasSeenHuman, false)
+
+    // First human joins at t=65s
+    const joined = evaluateEmptyServerShutdown(coldCheck.nextState, 1, 65, false)
+    assert.equal(joined.shouldQuit, false)
+    assert.equal(joined.nextState.hasSeenHuman, true)
+    assert.equal(joined.nextState.emptySinceSeconds, undefined)
+
+    // Human disconnects at t=100s -> starts 30s countdown
+    const leftStart = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false)
+    assert.equal(leftStart.shouldQuit, false)
+    assert.equal(leftStart.nextState.emptySinceSeconds, 100)
+
+    // At t=120s (20s elapsed), human reconnects -> cancels countdown
+    const reconnected = evaluateEmptyServerShutdown(leftStart.nextState, 1, 120, false)
+    assert.equal(reconnected.shouldQuit, false)
+    assert.equal(reconnected.nextState.emptySinceSeconds, undefined)
+
+    // Human disconnects again at t=200s
+    const leftAgain = evaluateEmptyServerShutdown(reconnected.nextState, 0, 200, false)
+    assert.equal(leftAgain.shouldQuit, false)
+    assert.equal(leftAgain.nextState.emptySinceSeconds, 200)
+
+    // Probe mode bypasses shutdown
+    const probeCheck = evaluateEmptyServerShutdown(leftAgain.nextState, 0, 250, true)
+    assert.equal(probeCheck.shouldQuit, false)
+
+    // At t=229s (29s elapsed) -> still waiting
+    const at29s = evaluateEmptyServerShutdown(leftAgain.nextState, 0, 229, false)
+    assert.equal(at29s.shouldQuit, false)
+
+    // At t=230s (30s elapsed) -> triggers quit exactly once!
+    const at30s = evaluateEmptyServerShutdown(at29s.nextState, 0, 230, false)
+    assert.equal(at30s.shouldQuit, true)
+    assert.equal(at30s.nextState.quitIssued, true)
+
+    // Subsequent frames do not re-issue quit
+    const afterQuit = evaluateEmptyServerShutdown(at30s.nextState, 0, 231, false)
+    assert.equal(afterQuit.shouldQuit, false)
   })
 })
 
@@ -751,6 +813,154 @@ describe('Tier 1 — Enemy Hero Boss AI Navigation, Aiming & Combat Brain', () =
     })
     assert.ok(p3.unstuckTeleport !== undefined, 'Expected 3rd stuck check to issue waypoint teleport nudge')
   })
+
+  it('evaluates full 6-stage Base Defense progression, All-Structure Repair/Fortify, and Boss multi-structure routes (#19)', () => {
+    // 1. Stage progression never ends early until Patron reaches Stage 2 and hits 0 HP
+    assert.deepEqual(
+      evaluateBaseDefenseProgression({
+        guardianHp: 5500,
+        walkerHp: 9000,
+        baseGuardiansHp: 8000,
+        shrinesHp: 16000,
+        patronHp: 12000,
+        patronPhase: 0,
+        patronReachedStage2: false,
+      }),
+      { stage: 'guardian', stageLabel: 'BLUE GUARDIAN', defeated: false },
+    )
+    assert.deepEqual(
+      evaluateBaseDefenseProgression({
+        guardianHp: 0,
+        walkerHp: 9000,
+        baseGuardiansHp: 8000,
+        shrinesHp: 16000,
+        patronHp: 12000,
+        patronPhase: 0,
+        patronReachedStage2: false,
+      }),
+      { stage: 'walker', stageLabel: 'BLUE WALKER', defeated: false },
+    )
+    assert.deepEqual(
+      evaluateBaseDefenseProgression({
+        guardianHp: 0,
+        walkerHp: 0,
+        baseGuardiansHp: 4000,
+        shrinesHp: 16000,
+        patronHp: 12000,
+        patronPhase: 0,
+        patronReachedStage2: false,
+      }),
+      { stage: 'base_guardians', stageLabel: 'BASE GUARDIANS', defeated: false },
+    )
+    assert.deepEqual(
+      evaluateBaseDefenseProgression({
+        guardianHp: 0,
+        walkerHp: 0,
+        baseGuardiansHp: 0,
+        shrinesHp: 8000,
+        patronHp: 12000,
+        patronPhase: 0,
+        patronReachedStage2: false,
+      }),
+      { stage: 'shrines', stageLabel: 'AMBER SHRINES', defeated: false },
+    )
+    // Patron Stage 1 at 1 HP or Transforming (phase=2, 0 HP) MUST NOT trigger defeat!
+    assert.equal(
+      evaluateBaseDefenseProgression({
+        guardianHp: 0,
+        walkerHp: 0,
+        baseGuardiansHp: 0,
+        shrinesHp: 0,
+        patronHp: 0,
+        patronPhase: 2,
+        patronReachedStage2: false,
+      }).defeated,
+      false,
+    )
+    // Weakened Patron Stage 2 alive -> not defeated; Weakened Patron Stage 2 at 0 HP -> defeated!
+    assert.deepEqual(
+      evaluateBaseDefenseProgression({
+        guardianHp: 0,
+        walkerHp: 0,
+        baseGuardiansHp: 0,
+        shrinesHp: 0,
+        patronHp: 6000,
+        patronPhase: 1,
+        patronReachedStage2: true,
+      }),
+      { stage: 'patron_stage2', stageLabel: 'WEAKENED PATRON', defeated: false },
+    )
+    assert.deepEqual(
+      evaluateBaseDefenseProgression({
+        guardianHp: 0,
+        walkerHp: 0,
+        baseGuardiansHp: 0,
+        shrinesHp: 0,
+        patronHp: 0,
+        patronPhase: 1,
+        patronReachedStage2: true,
+      }),
+      { stage: 'patron_stage2', stageLabel: 'WEAKENED PATRON', defeated: true },
+    )
+
+    // 2. Structure Damage & Attack Speed fortification math
+    assert.equal(computeStructureDamageMult(0), 1)
+    assert.equal(computeStructureDamageMult(3), 1.75)
+    const aura3 = getStructureFortifyAuraSpec(3)
+    assert.equal(aura3.active, true)
+    assert.equal(aura3.modifier, 'td_structure_fortify_aura_3')
+    assert.equal(aura3.damageBonusPct, 75)
+    assert.equal(aura3.fireRateBonusPct, 54)
+    assert.equal(aura3.cdrBonusPct, 36)
+
+    // 3. All-Structure Repair heals all damaged alive structures for 1 Soul cost
+    const rep = evaluateAllStructuresRepair(
+      [
+        { id: '700', hp: 0, maxHp: 5500 }, // fallen Guardian skipped
+        { id: '701', hp: 6000, maxHp: 9000 }, // damaged Walker (+1500 -> 7500)
+        { id: '704', hp: 7200, maxHp: 8000 }, // damaged Shrine (+800 -> 8000)
+        { id: '706', hp: 12000, maxHp: 12000 }, // full Patron skipped
+      ],
+      500,
+    )
+    assert.equal(rep.ok, true)
+    assert.equal(rep.soulsSpent, GUARDIAN_REPAIR_COST_SOULS)
+    assert.equal(rep.repairedCount, 2)
+    assert.equal(rep.totalHealed, 2300)
+
+    // 4. Boss AI routes cleanly past fallen Guardian down to Walker (`x = -1288, y = -3472`) and Patron Pit (`x = -1280, y = -7800`)
+    const walkerWps = getBossWaypointsForObjective(0, 'walker')
+    assert.ok(walkerWps[walkerWps.length - 1].x < -900)
+    const patron2Wps = getBossWaypointsForObjective(1, 'patron_stage2')
+    assert.equal(patron2Wps[patron2Wps.length - 1].x, -1280)
+    assert.equal(patron2Wps[patron2Wps.length - 1].y, -7800)
+
+    const aiState = createBossAiState({ x: -600, y: -2900, z: 384 }, 20)
+    const stepPlan = planBossDriveStep({
+      hero: 'hero_atlas',
+      bossPos: { x: -600, y: -2900, z: 384 },
+      bossEyePos: { x: -600, y: -2900, z: 460 },
+      bossHealth: 8000,
+      bossMaxHealth: 8000,
+      abilities: [],
+      heroes: [],
+      guardian: {
+        entity: 701,
+        position: { x: -1288, y: -3472, z: 376 },
+        alive: true,
+        objectiveKind: 'walker',
+        siegeRange: 920,
+        minStandoff: 420,
+        aimOffsetZ: 155,
+      },
+      state: aiState,
+      now: 20,
+      buttons: TEST_BUTTONS,
+    })
+    // At ~895u from Walker (`<= 920u` siegeRange), Boss enters `guardian_siege` targeting Walker!
+    assert.equal(stepPlan.mode, 'guardian_siege')
+    assert.equal(stepPlan.target?.entity, 701)
+  })
 })
 
 describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Host)', async () => {
@@ -761,12 +971,55 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     number,
     { health: number; maxHealth: number; team: number; position: { x: number; y: number; z: number } }
   >()
-  npcStore.set(700, {
-    health: 5500,
-    maxHealth: 5500,
-    team: 2,
-    position: { x: 0, y: -1792, z: 384 },
-  })
+  const patronPhaseStore = new Map<number, number>()
+
+  function seedMockTeam2Structures(): void {
+    npcStore.set(700, {
+      health: 5500,
+      maxHealth: 5500,
+      team: 2,
+      position: { x: 0, y: -1792, z: 384 },
+    })
+    npcStore.set(701, {
+      health: 9000,
+      maxHealth: 9000,
+      team: 2,
+      position: { x: -1288, y: -3472, z: 376 },
+    })
+    npcStore.set(702, {
+      health: 4000,
+      maxHealth: 4000,
+      team: 2,
+      position: { x: -1072, y: -5454, z: 641 },
+    })
+    npcStore.set(703, {
+      health: 4000,
+      maxHealth: 4000,
+      team: 2,
+      position: { x: -1488, y: -5459, z: 641 },
+    })
+    npcStore.set(704, {
+      health: 8000,
+      maxHealth: 8000,
+      team: 2,
+      position: { x: 299, y: -7535, z: 980 },
+    })
+    npcStore.set(705, {
+      health: 8000,
+      maxHealth: 8000,
+      team: 2,
+      position: { x: -2859, y: -7535, z: 980 },
+    })
+    npcStore.set(706, {
+      health: 12000,
+      maxHealth: 12000,
+      team: 2,
+      position: { x: -1280, y: -8034, z: 632 },
+    })
+    patronPhaseStore.set(706, 0)
+  }
+
+  seedMockTeam2Structures()
   npcStore.set(801, {
     health: 150,
     maxHealth: 150,
@@ -1133,14 +1386,25 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       globalThis.__mockModlock.npcStore.set(ent, { health: 2500, maxHealth: 2500, team: opts.team, position: { ...p.position } });
       return p;
     };
-    export const findEntitiesByName = (name) => name.includes('boss_rebel_t1_blue') ? [700] : [];
+    export const findEntitiesByName = (name) => {
+      if (name.includes('boss_rebel_t1_blue')) return globalThis.__mockModlock.npcStore.has(700) ? [700] : [];
+      if (name.includes('rebels_t2_boss_blue')) return globalThis.__mockModlock.npcStore.has(701) ? [701] : [];
+      if (name.includes('rebels_watcher_blue')) return [702, 703].filter((id) => globalThis.__mockModlock.npcStore.has(id));
+      if (name.includes('amber_t3_generator_purple')) return globalThis.__mockModlock.npcStore.has(704) ? [704] : [];
+      if (name.includes('amber_t3_generator_yellow')) return globalThis.__mockModlock.npcStore.has(705) ? [705] : [];
+      return [];
+    };
     export const findEntities = (cls) => {
       if (cls === 'info_super_trooper_spawn') return [14020, 14325];
       if (cls === 'info_neutral_trooper_camp') return [];
       if (cls === 'npc_trooper') return [...globalThis.__mockModlock.npcStore.keys()].filter((id) => (id >= 800 && id < 900) || globalThis.__mockModlock.trooperIds.has(id));
       if (cls === 'npc_trooper_neutral') return [...globalThis.__mockModlock.npcStore.keys()].filter((id) => id >= 1600 && id < 1700);
-      if (cls === 'npc_trooper_boss') return [700];
-      if (cls === 'npc_boss_tier2' || cls === 'destroyable_building') return [];
+      if (cls === 'npc_trooper_boss') return globalThis.__mockModlock.npcStore.has(700) ? [700] : [];
+      if (cls === 'npc_boss_tier2') return globalThis.__mockModlock.npcStore.has(701) ? [701] : [];
+      if (cls === 'npc_barrack_boss') return [702, 703].filter((id) => globalThis.__mockModlock.npcStore.has(id));
+      if (cls === 'destroyable_building') return [704, 705].filter((id) => globalThis.__mockModlock.npcStore.has(id));
+      if (cls === 'npc_boss_tier3') return globalThis.__mockModlock.npcStore.has(706) ? [706] : [];
+      if (cls === 'npc_boss_tier3core') return [];
       return [];
     };
     export const fireInput = (entity, input, value) => {
@@ -1197,6 +1461,9 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       return s ? { position: s.position, facing: { pitch: 0, yaw: 270, roll: 0 }, velocity: { x: 0, y: 0, z: 0 } } : undefined;
     };
     export const readField = (entity, cls, field) => {
+      if (cls === 'CNPC_Boss_Tier3' && field === 'm_ePhase') {
+        return globalThis.__mockModlock.patronPhaseStore.get(entity) ?? 0;
+      }
       if (cls === 'CGameSceneNode' && field === 'm_flScale') {
         return globalThis.__mockModlock.scaleStore.get(entity);
       }
@@ -1266,6 +1533,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     firedInputs,
     scaleStore,
     lifeStateStore,
+    patronPhaseStore,
     heldModifierStates,
   }
 
@@ -1756,6 +2024,118 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     )
     assert.equal(zombieDied, true)
     assert.equal(npcStore.get(812)?.health, 0)
+  })
+
+  it('progresses Guardian -> Walker -> Base Guardians -> Shrines -> Patron Stage 1 -> Patron Stage 2 -> Defeat and scales all-structure upgrades (#19)', () => {
+    npcStore.clear()
+    trooperIds.clear()
+    modelStore.clear()
+    lifeStateStore.clear()
+    scaleStore.clear()
+    appliedModifiers.length = 0
+    executedServerCommands.length = 0
+    seedMockTeam2Structures()
+
+    defenderPlayer.souls = 5000
+    defenderPlayer.health = 700
+
+    const guardian = new GuardianManager()
+    const waves = new WaveManager()
+    guardian.reset()
+    waves.reset(0)
+
+    assert.equal(guardian.currentStage, 'guardian')
+    assert.equal(guardian.matchState, 'active')
+
+    // 1. Fortify twice -> upgrades Max HP on Guardian, Walker, Base Guardians, Shrines, and Patron + applies attack-speed aura + +50% damage
+    assert.equal(guardian.upgradeByPlayer(defenderPlayer as never), true)
+    assert.equal(guardian.upgradeByPlayer(defenderPlayer as never), true)
+    guardian.poll(4, 15)
+    assert.equal(guardian.upgradeLevel, 2)
+    assert.equal(guardian.maxHealth, 5500 + 2 * 1200)
+    assert.equal(guardian.walkerMaxHealth, 9000 + 2 * 1800)
+    assert.equal(guardian.baseGuardiansMaxHealth, (4000 + 2 * 900) * 2)
+    assert.equal(guardian.shrinesMaxHealth, (8000 + 2 * 1500) * 2)
+    assert.equal(guardian.patronMaxHealth, 12000 + 2 * 2400)
+    assert.ok(appliedModifiers.includes('td_structure_fortify_aura_2'))
+
+    const boostedHit = waves.modifyIncomingDamage(
+      {
+        victim: 801,
+        attacker: 702, // Base Guardian
+        ability: 0,
+        inflictor: 702,
+        amount: 80,
+        flags: 0,
+        type: 0,
+      } as never,
+      guardian,
+    )
+    assert.equal(boostedHit?.amount, 120) // 80 * 1.50x
+
+    // 2. Blue Guardian falls -> match stays ACTIVE, frontline moves to Blue Walker
+    npcStore.get(700)!.health = 0
+    lifeStateStore.set(700, 2)
+    guardian.poll(4, 16)
+    assert.equal(guardian.matchState, 'active')
+    assert.equal(guardian.currentStage, 'walker')
+
+    // 3. Blue Walker falls -> match stays ACTIVE, frontline moves to Base Guardians
+    npcStore.get(701)!.health = 0
+    lifeStateStore.set(701, 2)
+    guardian.poll(5, 17)
+    assert.equal(guardian.matchState, 'active')
+    assert.equal(guardian.currentStage, 'base_guardians')
+
+    // 4. Both Blue Base Guardians fall -> match stays ACTIVE, frontline moves to Shrines
+    npcStore.get(702)!.health = 0
+    npcStore.get(703)!.health = 0
+    lifeStateStore.set(702, 2)
+    lifeStateStore.set(703, 2)
+    guardian.poll(6, 18)
+    assert.equal(guardian.matchState, 'active')
+    assert.equal(guardian.currentStage, 'shrines')
+
+    // 5. Both Amber Shrines fall -> match stays ACTIVE, frontline moves to Patron Stage 1
+    npcStore.get(704)!.health = 0
+    npcStore.get(705)!.health = 0
+    lifeStateStore.set(704, 2)
+    lifeStateStore.set(705, 2)
+    guardian.poll(7, 19)
+    assert.equal(guardian.matchState, 'active')
+    assert.equal(guardian.currentStage, 'patron_stage1')
+
+    // 6. Patron Stage 1 drops to 1 HP & enters Transforming (m_ePhase = 2) -> match STILL ACTIVE!
+    npcStore.get(706)!.health = 1
+    patronPhaseStore.set(706, 2)
+    guardian.poll(8, 20)
+    assert.equal(guardian.matchState, 'active')
+    assert.equal(guardian.currentStage, 'patron_stage1')
+
+    // 7. Patron enters Weakened Stage 2 in Pit (m_ePhase = 1, fresh 12000 base HP -> inherits +4800 Fortify bonus = 16800 HP!)
+    npcStore.get(706)!.health = 12000
+    npcStore.get(706)!.maxHealth = 12000
+    patronPhaseStore.set(706, 1)
+    guardian.poll(8, 25)
+    assert.equal(guardian.matchState, 'active')
+    assert.equal(guardian.currentStage, 'patron_stage2')
+    assert.equal(guardian.patronMaxHealth, 16800)
+    assert.equal(guardian.patronHealth, 16800)
+
+    // 8. Weakened Patron Stage 2 falls -> NOW match ends in Defeat!
+    npcStore.get(706)!.health = 0
+    lifeStateStore.set(706, 2)
+    guardian.poll(9, 30)
+    assert.equal(guardian.matchState, 'defeat')
+
+    // 9. `/restarttd` (`respawnAllStructures`) executes engine respawn commands and restores active match!
+    seedMockTeam2Structures()
+    guardian.respawnAllStructures()
+    assert.equal(guardian.matchState, 'active')
+    assert.equal(guardian.currentStage, 'guardian')
+    assert.ok(executedServerCommands.includes('citadel_respawn_boss_t2'))
+    assert.ok(executedServerCommands.includes('citadel_respawn_boss_shrines'))
+    assert.ok(executedServerCommands.includes('citadel_boss_tier_3_testing_reset'))
   })
 })
 

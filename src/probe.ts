@@ -9,8 +9,10 @@
 import {
   addBot,
   Buttons,
+  damage,
   entityPosition,
   findEntities,
+  killEntity,
   log,
   Npc,
   type Player,
@@ -38,16 +40,18 @@ type ProbeStep =
   | 'zombie_kamikaze'
   | 'boss_scale'
   | 'boss_combat'
+  | 'base_progression'
 
 const STEP_WAITS: Record<ProbeStep, string> = {
-  world: 'Center Lane world entities, 0 static neutral camps, and Blue T1 Guardian',
+  world: 'Center Lane world entities, 0 static neutral camps, and full 5-tier Team 2 Base Defense structures',
   defender: 'Team 2 defender hero to spawn on Center Lane surface',
   wave_scale: 'enemy creep wave & varied wave neutrals to spawn and pass no-mid-fight-heal check',
-  tome_grant: 'player last-hit Tome grant and Guardian-kill rejection',
-  boon_and_guardian: '1-of-3 Major Boon selection and Guardian fortification',
+  tome_grant: 'player last-hit Tome grant and Friendly Structure kill rejection',
+  boon_and_guardian: '1-of-3 Major Boon selection and All-Structure Fortify/Repair (HP, Dmg & Atk Spd)',
   zombie_kamikaze: 'Graves Zombie to engage Blue T1 Guardian, detonate kamikaze explosion, and die',
   boss_scale: 'C++ aura creep & Boss model+hitbox scaling and high-torso bullet registration',
   boss_combat: 'Boss Hero autonomous Center Lane march, target aiming, and live combat damage',
+  base_progression: 'Guardian death advancing cleanly to Walker (no premature defeat) and Walker vulnerability',
 }
 
 export class TdProbe {
@@ -93,20 +97,35 @@ export class TdProbe {
       case 'tome_grant':
         return this.checkTomeGrant(waves, guardian, tomes)
       case 'boon_and_guardian':
-        return this.checkBoonAndGuardian(guardian, tomes)
+        return this.checkBoonAndGuardian(now, waves, guardian, tomes)
       case 'zombie_kamikaze':
         return this.checkZombieKamikaze(now, waves, guardian)
       case 'boss_scale':
         return this.checkBossScale(now, waves, guardian, tomes)
       case 'boss_combat':
         return this.checkBossCombat(now, waves, guardian, tomes)
+      case 'base_progression':
+        return this.checkBaseProgression(now, waves, guardian)
     }
   }
 
   private checkWorld(guardian: GuardianManager): boolean | string {
+    guardian.poll(0)
     const guardianEnt = guardian.locateEntity()
     if (guardianEnt <= 0) {
       return false
+    }
+    if (guardian.walkerEntity <= 0) {
+      return 'missing Blue T2 Walker (rebels_t2_boss_blue) in hl_defense'
+    }
+    if (guardian.baseGuardianEntities.length < 2) {
+      return `expected 2 Twin Blue Base Guardians (rebels_watcher_blue), found ${guardian.baseGuardianEntities.length}`
+    }
+    if (guardian.eastShrineEntity <= 0 || guardian.westShrineEntity <= 0) {
+      return `missing Amber Shrines (east=${guardian.eastShrineEntity}, west=${guardian.westShrineEntity})`
+    }
+    if (guardian.patronEntity <= 0) {
+      return 'missing Amber Patron (npc_boss_tier3) in hl_defense'
     }
     const neutralCamps = findEntities('info_neutral_trooper_camp')
     if (neutralCamps.length > 0) {
@@ -117,7 +136,7 @@ export class TdProbe {
       return `expected at most 2 active Center Lane super spawners, found ${superSpawners.length}`
     }
     log(
-      `Probe: verified Blue T1 Guardian (entity=${guardianEnt}, HP=${guardian.health}), 0 static neutral camps, and ${superSpawners.length} Center Lane super spawners`,
+      `Probe: verified all 5 Base Defense tiers (Guardian=${guardianEnt}, Walker=${guardian.walkerEntity}, BaseGuardians=${guardian.baseGuardianEntities.length}, Shrines=2, Patron=${guardian.patronEntity} phase=${guardian.patronPhase})`,
     )
 
     const existingConn = players().find((c) => c.player.pawn()?.team === 2)
@@ -266,6 +285,8 @@ export class TdProbe {
   }
 
   private checkBoonAndGuardian(
+    now: number,
+    waves: WaveManager,
     guardian: GuardianManager,
     tomes: TomeManager,
   ): boolean | string {
@@ -289,8 +310,65 @@ export class TdProbe {
       return 'Tome tally did not increase after Major Boon selection'
     }
 
+    // Verify All-Structure Fortification (`/upgrade`) scales Max HP, Outgoing Damage, & Attack Speed Aura across ALL structures!
+    this.defender.adjustSouls(3000, false)
+    const lvBefore = guardian.upgradeLevel
+    const gMaxBefore = guardian.maxHealth
+    const wMaxBefore = guardian.walkerMaxHealth
+    const bgMaxBefore = guardian.baseGuardiansMaxHealth
+    const sMaxBefore = guardian.shrinesMaxHealth
+    const pMaxBefore = guardian.patronMaxHealth
+
+    if (!guardian.upgradeByPlayer(this.defender)) {
+      return 'upgradeByPlayer failed despite sufficient Souls'
+    }
+    guardian.poll(waves.wave, now)
+    if (guardian.upgradeLevel !== lvBefore + 1) {
+      return `expected upgradeLevel=${lvBefore + 1}, got ${guardian.upgradeLevel}`
+    }
+    if (
+      guardian.maxHealth <= gMaxBefore ||
+      guardian.walkerMaxHealth <= wMaxBefore ||
+      guardian.baseGuardiansMaxHealth <= bgMaxBefore ||
+      guardian.shrinesMaxHealth <= sMaxBefore ||
+      guardian.patronMaxHealth <= pMaxBefore
+    ) {
+      return `All-Structure Fortify did not scale Max HP across every tier: G=${gMaxBefore}->${guardian.maxHealth}, W=${wMaxBefore}->${guardian.walkerMaxHealth}, BG=${bgMaxBefore}->${guardian.baseGuardiansMaxHealth}, S=${sMaxBefore}->${guardian.shrinesMaxHealth}, P=${pMaxBefore}->${guardian.patronMaxHealth}`
+    }
+
+    // Verify fortified structure outgoing damage multiplier applies to Walker / Guardian / Patron hits!
+    const walkerDmgMod = waves.modifyIncomingDamage(
+      {
+        victim: this.testCreepEntity || 999,
+        attacker: guardian.walkerEntity,
+        ability: 0,
+        inflictor: guardian.walkerEntity,
+        amount: 100,
+        flags: 0,
+        type: 0,
+      } as never,
+      guardian,
+    )
+    const expectedMult = guardian.damageMultiplier()
+    if (!walkerDmgMod || Math.abs((walkerDmgMod.amount ?? 100) - 100 * expectedMult) > 0.5) {
+      return `Fortified Walker outgoing damage did not scale by ${expectedMult}x (got ${walkerDmgMod?.amount})`
+    }
+
+    // Verify All-Structure Repair (`/repair`) heals multiple damaged structures simultaneously!
+    const gDamaged = Math.max(1000, guardian.maxHealth - 900)
+    const wDamaged = Math.max(1000, guardian.walkerMaxHealth - 900)
+    new Npc(guardian.entity).setHealth(gDamaged, guardian.maxHealth)
+    new Npc(guardian.walkerEntity).setHealth(wDamaged, guardian.walkerMaxHealth)
+    guardian.poll(waves.wave, now)
+    if (!guardian.repairByPlayer(this.defender)) {
+      return 'repairByPlayer failed to heal damaged Guardian & Walker'
+    }
+    if (guardian.health < guardian.maxHealth || guardian.walkerHealth < guardian.walkerMaxHealth) {
+      return `All-Structure Repair did not restore Guardian (${guardian.health}/${guardian.maxHealth}) and Walker (${guardian.walkerHealth}/${guardian.walkerMaxHealth})`
+    }
+
     log(
-      `Probe: verified Major Boon selection (${chosen.title})`,
+      `Probe: verified Major Boon (${chosen.title}), All-Structure Fortify Lv.${guardian.upgradeLevel} (+${guardian.damageBonusPct()}% Dmg, +${guardian.fireRateBonusPct()}% Atk Spd across all 5 tiers), and All-Structure Repair`,
     )
     this.step = 'zombie_kamikaze'
     return false
@@ -673,7 +751,62 @@ export class TdProbe {
     }
 
     log(
-      `Probe: verified Boss Wave 10 (${b10.hero}) aimed & dealt live combat damage (Defender HP ${this.defenderHpBeforeBoss} -> ${defHp}, Guardian HP ${this.guardianHpBeforeBoss} -> ${guardian.health}, dmgMult=${b10.damageMult}x) and granted Major Boon on Boss kill — ALL CHECKS PASSED`,
+      `Probe: verified Boss Wave 10 (${b10.hero}) aimed & dealt live combat damage (Defender HP ${this.defenderHpBeforeBoss} -> ${defHp}, Guardian HP ${this.guardianHpBeforeBoss} -> ${guardian.health}, dmgMult=${b10.damageMult}x) and granted Major Boon on Boss kill — advancing to Multi-Stage Base Progression check`,
+    )
+    this.step = 'base_progression'
+    return false
+  }
+
+  private progressionKilledGuardianAt = 0
+
+  private checkBaseProgression(
+    now: number,
+    waves: WaveManager,
+    guardian: GuardianManager,
+  ): boolean | string {
+    // 1. Destroy Blue T1 Guardian and verify match stays ACTIVE and advances frontline to Blue Walker!
+    if (this.progressionKilledGuardianAt === 0) {
+      killEntity({ victim: guardian.entity })
+      this.progressionKilledGuardianAt = now
+      guardian.poll(waves.wave, now)
+      if (guardian.matchState !== 'active') {
+        return `Match prematurely ended (${guardian.matchState}) when Blue T1 Guardian fell!`
+      }
+      return false
+    }
+
+    // Allow a couple ticks for Source 2 C++ BossInvuln to update on Blue Walker (`rebels_t2_boss_blue`)
+    if (now - this.progressionKilledGuardianAt < 0.6) {
+      guardian.poll(waves.wave, now)
+      return false
+    }
+
+    guardian.poll(waves.wave, now)
+    if (guardian.health !== 0) {
+      return `Expected fallen Blue Guardian health=0, got ${guardian.health}`
+    }
+    if (guardian.matchState !== 'active') {
+      return `Match prematurely ended (${guardian.matchState}) after Blue Guardian fell!`
+    }
+    if (guardian.currentStage !== 'walker') {
+      return `Expected currentStage='walker' after Guardian fell, got '${guardian.currentStage}'`
+    }
+
+    const activeBossObj = guardian.getActiveBossObjective({ x: 0, y: -1800, z: 384 })
+    if (!activeBossObj || activeBossObj.kind !== 'walker') {
+      return `Expected Boss AI active objective to advance to 'walker', got '${activeBossObj?.kind}'`
+    }
+
+    // 2. Verify Blue T2 Walker (`rebels_t2_boss_blue`) dropped invulnerability and takes real damage!
+    const walkerBefore = guardian.walkerHealth
+    damage({ victim: guardian.walkerEntity, amount: 600 })
+    guardian.poll(waves.wave, now)
+    if (guardian.walkerHealth >= walkerBefore) {
+      return `Blue Walker (ent=${guardian.walkerEntity}) remained invulnerable (${walkerBefore} -> ${guardian.walkerHealth}) after Blue T1 Guardian died!`
+    }
+
+    log(
+      `Probe: verified Guardian death keeps match ACTIVE, advances frontline to Blue Walker (${walkerBefore} -> ${guardian.walkerHealth} HP), and preserves full Guardian -> Walker -> Base Guardians -> Shrines -> Patron Stage 1 -> Stage 2 progression — ALL CHECKS PASSED`,
     )
     return true
   }

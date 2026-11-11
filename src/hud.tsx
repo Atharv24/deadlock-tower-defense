@@ -143,7 +143,7 @@ export function renderTdHud(
       .join('|')
     const boonSig = pendingBoons ? pendingBoons.map((b) => b.id).join(',') : ''
     const searchSig = needsHeroPick ? (heroSearchBySlot.get(player.slot) ?? '') : ''
-    const hudSig = `${displayWave};${waves.waitingForDefenderHero ? 1 : 0};${nextWaveSeconds};${waves.aliveCreepCount};${guardian.health};${guardian.maxHealth};${guardian.upgradeLevel};${guardian.matchState};${compact ? 1 : 0};${needsHeroPick ? 1 : 0};${canCancelHeroPick ? 1 : 0};${searchSig};${boonSig};${tomes.getKills(player.slot)};${tomes.getTotalTomes(player.slot)};${bossSig}`
+    const hudSig = `${displayWave};${waves.waitingForDefenderHero ? 1 : 0};${nextWaveSeconds};${waves.aliveCreepCount};${guardian.currentStage};${guardian.health};${guardian.maxHealth};${guardian.walkerHealth};${guardian.baseGuardiansHealth};${guardian.shrinesHealth};${guardian.patronHealth};${guardian.patronPhase};${guardian.upgradeLevel};${guardian.matchState};${compact ? 1 : 0};${needsHeroPick ? 1 : 0};${canCancelHeroPick ? 1 : 0};${searchSig};${boonSig};${tomes.getKills(player.slot)};${tomes.getTotalTomes(player.slot)};${bossSig}`
     if (lastHudSigBySlot.get(player.slot) === hudSig) {
       continue
     }
@@ -197,8 +197,14 @@ function TdHudRoot(props: {
   const tier = computeWaveTier(displayWave)
   const pendingBoons = tomes.pendingBoonChoices.get(player.slot)
   const hpFraction =
-    guardian.maxHealth > 0
-      ? Math.max(0, Math.min(1, guardian.health / guardian.maxHealth))
+    guardian.activeObjectiveMaxHealth > 0
+      ? Math.max(
+          0,
+          Math.min(
+            1,
+            guardian.activeObjectiveHealth / guardian.activeObjectiveMaxHealth,
+          ),
+        )
       : 0
   const guardianTone: Tone =
     hpFraction > 0.5 ? 'success' : hpFraction > 0.25 ? 'accent' : 'danger'
@@ -227,10 +233,10 @@ function TdHudRoot(props: {
       >
         <Pill flow="right" style={{ padding: [4, 12, 4, 12] }}>
           <Text role="label" tone="muted" plated={true}>
-            {`GUARDIAN `}
+            {`${guardian.stageLabel} `}
           </Text>
           <Text role="title" tone={guardianTone} plated={true}>
-            {`${guardian.health} / ${guardian.maxHealth}`}
+            {`${guardian.activeObjectiveHealth} / ${guardian.activeObjectiveMaxHealth}`}
           </Text>
         </Pill>
       </TopStrip>
@@ -494,6 +500,8 @@ function DefenseSidePanel(props: {
   const totalTomes = tomes.getTotalTomes(player.slot)
   const kills = tomes.getKills(player.slot)
   const upgradeCost = guardian.nextUpgradeCost()
+  const dmgBonus = guardian.damageBonusPct()
+  const rateBonus = guardian.fireRateBonusPct()
 
   return (
     <panel
@@ -502,24 +510,69 @@ function DefenseSidePanel(props: {
         horizontalAlign: 'left',
         verticalAlign: 'top',
         margin: [110, 0, 0, 20],
-        width: 280,
+        width: 296,
       }}
     >
-      <Plate flow="down" style={{ padding: 12, width: 280 }}>
+      <Plate flow="down" style={{ padding: 12, width: 296 }}>
         <Text role="title" tone="accent" plated={true}>
-          {`BLUE T1 GUARDIAN · LV.${guardian.upgradeLevel}`}
+          {`${guardian.stageLabel} · FORTIFY LV.${guardian.upgradeLevel}`}
         </Text>
+        <label style={{ fontSize: 12, color: '#93c5fd', margin: [2, 0, 0, 0] }}>
+          {guardian.upgradeLevel > 0
+            ? `All Structures: +${dmgBonus}% Dmg · +${rateBonus}% Atk Spd`
+            : 'Fortify upgrades HP, Dmg & Atk Spd on all structures'}
+        </label>
         <Meter
           value={hpFraction}
           tone={guardianTone}
-          width={256}
+          width={272}
           height={10}
           style={{ margin: [6, 0, 6, 0] }}
         />
         <StatRow
-          label="Integrity"
-          value={`${guardian.health} / ${guardian.maxHealth} HP`}
-          color="#60a5fa"
+          label="1. Blue Guardian"
+          value={
+            guardian.health > 0
+              ? `${guardian.health} / ${guardian.maxHealth}`
+              : 'FALLEN'
+          }
+          color={guardian.health > 0 ? '#60a5fa' : '#64748b'}
+        />
+        <StatRow
+          label="2. Blue Walker"
+          value={
+            guardian.walkerHealth > 0
+              ? `${guardian.walkerHealth} / ${guardian.walkerMaxHealth}`
+              : 'FALLEN'
+          }
+          color={guardian.walkerHealth > 0 ? '#38bdf8' : '#64748b'}
+        />
+        <StatRow
+          label={`3. Base Guard (${guardian.baseGuardiansAliveCount})`}
+          value={
+            guardian.baseGuardiansHealth > 0
+              ? `${guardian.baseGuardiansHealth} / ${guardian.baseGuardiansMaxHealth}`
+              : 'FALLEN'
+          }
+          color={guardian.baseGuardiansHealth > 0 ? '#818cf8' : '#64748b'}
+        />
+        <StatRow
+          label={`4. Shrines (${guardian.shrinesAliveCount})`}
+          value={
+            guardian.shrinesHealth > 0
+              ? `${guardian.shrinesHealth} / ${guardian.shrinesMaxHealth}`
+              : 'FALLEN'
+          }
+          color={guardian.shrinesHealth > 0 ? '#facc15' : '#64748b'}
+        />
+        <StatRow
+          label={`5. Patron (${guardian.patronReachedStage2 ? 'Stage 2' : 'Stage 1'})`}
+          value={
+            guardian.patronHealth > 0
+              ? `${guardian.patronHealth} / ${guardian.patronMaxHealth}`
+              : 'FALLEN'
+          }
+          color={guardian.patronReachedStage2 ? '#f87171' : '#fb923c'}
         />
         <panel style={{ flow: 'down', width: 'fill', margin: [8, 0, 8, 0] }}>
           <Action
@@ -527,14 +580,14 @@ function DefenseSidePanel(props: {
             style={{ width: 'fill', margin: [0, 0, 4, 0] }}
             onPress={() => guardian.repairByPlayer(player)}
           >
-            {`Repair +${GUARDIAN_REPAIR_AMOUNT_HP} HP (${GUARDIAN_REPAIR_COST_SOULS} Souls)`}
+            {`Repair All +${GUARDIAN_REPAIR_AMOUNT_HP} HP (${GUARDIAN_REPAIR_COST_SOULS} Souls)`}
           </Action>
           <Action
             kind="secondary"
             style={{ width: 'fill' }}
             onPress={() => guardian.upgradeByPlayer(player)}
           >
-            {`Fortify Lv.${guardian.upgradeLevel + 1} (${upgradeCost} Souls)`}
+            {`Fortify All Lv.${guardian.upgradeLevel + 1} (${upgradeCost} Souls)`}
           </Action>
         </panel>
         <StatRow label="Creep Last-Hits" value={`${kills}`} color="#ffffff" />
@@ -723,7 +776,7 @@ function DefeatOverlay(props: {
       }}
     >
       <Banner
-        title="BLUE GUARDIAN DESTROYED"
+        title="AMBER PATRON DESTROYED"
         detail={`Reached Wave ${wave} · ${kills} Creep Last-Hits`}
         tone="danger"
       />

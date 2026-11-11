@@ -29,10 +29,23 @@ export interface BossHeroCandidate {
   readonly aimHeightOffset?: number
 }
 
+export type BossObjectiveKind =
+  | 'guardian'
+  | 'walker'
+  | 'base_guardian'
+  | 'shrine_east'
+  | 'shrine_west'
+  | 'patron_stage1'
+  | 'patron_stage2'
+
 export interface BossGuardianCandidate {
   readonly entity: number
   readonly position: Vector
   readonly alive: boolean
+  readonly objectiveKind?: BossObjectiveKind
+  readonly siegeRange?: number
+  readonly minStandoff?: number
+  readonly aimOffsetZ?: number
 }
 
 export interface BossCombatTarget {
@@ -50,6 +63,7 @@ export type BossBehaviorMode = 'march' | 'hero_combat' | 'guardian_siege'
 export interface BossAiState {
   readonly routeIndex: 0 | 1
   waypointIndex: number
+  lastObjectiveKind?: BossObjectiveKind
   lastCheckPos: Vector
   lastCheckAt: number
   stuckCount: number
@@ -113,6 +127,91 @@ export const BOSS_LANE_ROUTES: readonly [readonly Vector[], readonly Vector[]] =
 export const BOSS_GUARDIAN_SIEGE_RANGE = 880
 /** Minimum distance kept from `[0, -1792, 384]` so Bosses never wedge onto the Guardian dais. */
 export const BOSS_GUARDIAN_MIN_STANDOFF = 485
+
+const POST_GUARDIAN_TO_WALKER: readonly [readonly Vector[], readonly Vector[]] = [
+  [
+    { x: -215, y: -1792, z: 384 },
+    { x: -60, y: -2360, z: 384 },
+    { x: -544, y: -2872, z: 384 },
+    { x: -1040, y: -3050, z: 380 },
+  ],
+  [
+    { x: 215, y: -1792, z: 384 },
+    { x: 40, y: -2360, z: 384 },
+    { x: -544, y: -2872, z: 384 },
+    { x: -1040, y: -3050, z: 380 },
+  ],
+]
+
+const POST_WALKER_TO_BASE_GATE: readonly Vector[] = [
+  { x: -1050, y: -3472, z: 380 },
+  { x: -1264, y: -3880, z: 384 },
+  { x: -1280, y: -4352, z: 430 },
+  { x: -1280, y: -4835, z: 530 },
+  { x: -1280, y: -5020, z: 615 },
+]
+
+const COURTYARD_HUB: readonly Vector[] = [
+  { x: -1280, y: -5780, z: 641 },
+  { x: -1280, y: -6450, z: 641 },
+  { x: -1280, y: -6850, z: 641 },
+]
+
+const COURTYARD_TO_EAST_SHRINE: readonly Vector[] = [
+  { x: -520, y: -6890, z: 695 },
+  { x: 40, y: -6944, z: 768 },
+  { x: 210, y: -7190, z: 920 },
+]
+
+const COURTYARD_TO_WEST_SHRINE: readonly Vector[] = [
+  { x: -2020, y: -6890, z: 695 },
+  { x: -2632, y: -6960, z: 768 },
+  { x: -2770, y: -7190, z: 920 },
+]
+
+const COURTYARD_TO_PATRON_STAGE1: readonly Vector[] = [
+  { x: -1280, y: -7200, z: 641 },
+  { x: -1280, y: -7460, z: 641 },
+]
+
+const COURTYARD_TO_PATRON_STAGE2: readonly Vector[] = [
+  { x: -1280, y: -7200, z: 641 },
+  { x: -1280, y: -7540, z: 641 },
+  { x: -1280, y: -7800, z: 632 },
+]
+
+/**
+ * Returns the full Center Lane -> Base waypoint chain for `routeIndex` (`0` West / `1` East)
+ * leading to the active vulnerable objective (`Guardian -> Walker -> Base Guardians -> Shrines -> Patron`).
+ */
+export function getBossWaypointsForObjective(
+  routeIndex: 0 | 1,
+  objectiveKind: BossObjectiveKind = 'guardian',
+): readonly Vector[] {
+  const upper = BOSS_LANE_ROUTES[routeIndex]
+  if (objectiveKind === 'guardian') {
+    return upper
+  }
+  const toWalker = [...upper, ...POST_GUARDIAN_TO_WALKER[routeIndex]]
+  if (objectiveKind === 'walker') {
+    return toWalker
+  }
+  const toBaseGate = [...toWalker, ...POST_WALKER_TO_BASE_GATE]
+  if (objectiveKind === 'base_guardian') {
+    return toBaseGate
+  }
+  const toCourtyard = [...toBaseGate, ...COURTYARD_HUB]
+  if (objectiveKind === 'shrine_east') {
+    return [...toCourtyard, ...COURTYARD_TO_EAST_SHRINE]
+  }
+  if (objectiveKind === 'shrine_west') {
+    return [...toCourtyard, ...COURTYARD_TO_WEST_SHRINE]
+  }
+  if (objectiveKind === 'patron_stage1') {
+    return [...toCourtyard, ...COURTYARD_TO_PATRON_STAGE1]
+  }
+  return [...toCourtyard, ...COURTYARD_TO_PATRON_STAGE2]
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
@@ -222,7 +321,8 @@ export function worldMoveToDriveAxes(
 
 /**
  * Advances `currentIndex` along `waypoints` whenever the Boss reaches `165u` horizontally
- * OR has already progressed more than `80u` south past that waypoint (`pos.y < wp.y - 80`).
+ * (`220u` inside Amber Base Courtyard `y <= -6000` where Shrine approaches run East/West),
+ * OR has progressed more than `80u` south past a North->South lane waypoint (`wp.y > -6000`).
  */
 export function advanceBossWaypointIndex(
   pos: Vector,
@@ -232,7 +332,12 @@ export function advanceBossWaypointIndex(
   let idx = clamp(currentIndex, 0, waypoints.length - 1)
   while (idx < waypoints.length - 1) {
     const wp = waypoints[idx]
-    if (flatDistance2D(pos, wp) <= 165 || pos.y < wp.y - 80) {
+    const inBaseCourtyard = wp.y <= -6000
+    const reachRadius = inBaseCourtyard ? 220 : 165
+    if (
+      flatDistance2D(pos, wp) <= reachRadius ||
+      (!inBaseCourtyard && pos.y < wp.y - 80)
+    ) {
       idx++
     } else {
       break
@@ -276,10 +381,11 @@ function buildGuardianCombatTarget(
   bossEyePos: Vector,
   guardian: BossGuardianCandidate,
 ): BossCombatTarget {
+  const aimOffsetZ = guardian.aimOffsetZ ?? 125
   const aimPoint: Vector = {
     x: guardian.position.x,
     y: guardian.position.y,
-    z: guardian.position.z + 125,
+    z: guardian.position.z + aimOffsetZ,
   }
   return {
     kind: 'guardian',
@@ -294,10 +400,10 @@ function buildGuardianCombatTarget(
 
 /**
  * Selects the highest-priority combat target for a Boss Hero:
- * 1. Close Defender Hero with LoS (`<= 780u`), even during Guardian siege.
+ * 1. Close Defender Hero with LoS (`<= 780u`), even during structure siege.
  * 2. Provoked Defender Hero attacker with LoS (`<= 1850u` while marching, or `<= 1500u` during siege).
- * 3. Visible Defender Hero in Center Lane (`<= 1450u`) before Guardian siege.
- * 4. Friendly Blue T1 Guardian once within `BOSS_GUARDIAN_SIEGE_RANGE` (`880u < m_flInvulRange = 944.882`).
+ * 3. Visible Defender Hero in lane (`<= 1450u`) before structure siege.
+ * 4. Active vulnerable Team 2 structure (`Guardian`, `Walker`, `Base Guardian`, `Shrine`, or `Patron`) once within `siegeRange`.
  * 5. Long-range visible Defender Hero (`<= 1850u`) for opportunistic fire while marching.
  */
 export function selectBossTarget(
@@ -312,9 +418,10 @@ export function selectBossTarget(
     .filter((h) => h.health > 0 && h.hasLineOfSight)
     .sort((a, b) => flatDistance2D(bossPos, a.position) - flatDistance2D(bossPos, b.position))
 
+  const siegeRange = guardian?.siegeRange ?? BOSS_GUARDIAN_SIEGE_RANGE
   const distToGuardian =
     guardian && guardian.alive ? flatDistance2D(bossPos, guardian.position) : Infinity
-  const inGuardianSiegeZone = distToGuardian <= BOSS_GUARDIAN_SIEGE_RANGE
+  const inGuardianSiegeZone = distToGuardian <= siegeRange
 
   // 1. Immediate close-quarters Hero threat (`<= 780u`), even when sieging Guardian.
   const closest = visibleHeroes[0]
@@ -650,7 +757,25 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
     buttons,
   } = input
 
-  const waypoints = BOSS_LANE_ROUTES[state.routeIndex]
+  const objectiveKind: BossObjectiveKind = guardian?.objectiveKind ?? 'guardian'
+  const minStandoff = guardian?.minStandoff ?? BOSS_GUARDIAN_MIN_STANDOFF
+  const waypoints = getBossWaypointsForObjective(state.routeIndex, objectiveKind)
+
+  // When the active objective advances (e.g. Guardian -> Walker, or East Shrine -> West Shrine -> Patron),
+  // re-anchor `waypointIndex` to the closest waypoint in the new route so Courtyard transitions never skip ramps.
+  if (state.lastObjectiveKind !== undefined && state.lastObjectiveKind !== objectiveKind) {
+    let bestIdx = 0
+    let bestDist = Infinity
+    for (let i = 0; i < waypoints.length; i++) {
+      const d = flatDistance2D(bossPos, waypoints[i])
+      if (d < bestDist) {
+        bestDist = d
+        bestIdx = i
+      }
+    }
+    state.waypointIndex = bestIdx
+  }
+  state.lastObjectiveKind = objectiveKind
   state.waypointIndex = advanceBossWaypointIndex(bossPos, waypoints, state.waypointIndex)
   const wp = waypoints[state.waypointIndex]
   const siegeAnchor = waypoints[waypoints.length - 1]
@@ -679,7 +804,7 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
       moveY = dy / d
     }
   } else if (mode === 'guardian_siege' && target) {
-    // Hold ~618u standoff around siegeAnchor ([±85, -1180, 384]) and strafe laterally.
+    // Hold standoff around the active objective's siegeAnchor and strafe laterally.
     const anchorDx = siegeAnchor.x + strafeSign * 95 - bossPos.x
     const anchorDy = siegeAnchor.y - bossPos.y
     const anchorDist = Math.hypot(anchorDx, anchorDy)
@@ -688,9 +813,15 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
       moveX = (anchorDx / anchorDist) * weight
       moveY = (anchorDy / anchorDist) * weight
     }
-    // Never step south onto the solid Guardian pedestal (`y < -1300` / `dist < 485u`).
-    if (bossPos.y < -1300 || target.distance2D < BOSS_GUARDIAN_MIN_STANDOFF) {
+    if (objectiveKind === 'guardian' && bossPos.y < -1300) {
+      // Never step south onto the solid Guardian pedestal (`y < -1300`) while Guardian lives.
       moveY = Math.max(moveY, 0.75)
+    } else if (target.distance2D < minStandoff) {
+      const awayX = bossPos.x - target.position.x
+      const awayY = bossPos.y - target.position.y
+      const awayLen = Math.max(1, Math.hypot(awayX, awayY))
+      moveX += (awayX / awayLen) * 0.85
+      moveY += (awayY / awayLen) * 0.85
     }
   } else if (mode === 'hero_combat' && target) {
     const heroBehindNorth = target.position.y > bossPos.y + 80 && bossPos.y > -1050
@@ -742,14 +873,17 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
     }
   }
 
-  // Keep inside Center Lane outer side walls (`|x| <= 400`) and outside Guardian pedestal.
-  if (bossPos.x < -380) moveX = Math.max(moveX, 0.55)
-  if (bossPos.x > 380) moveX = Math.min(moveX, -0.55)
+  // Keep inside upper Center Lane outer side walls (`|x| <= 400` north of `y = -2200`)
+  // while allowing full Broadway / Amber Base lateral navigation south of Guardian (`y <= -2200`).
+  if (bossPos.y > -2200) {
+    if (bossPos.x < -380) moveX = Math.max(moveX, 0.55)
+    if (bossPos.x > 380) moveX = Math.min(moveX, -0.55)
+  }
   if (guardian && guardian.alive) {
     const gDx = bossPos.x - guardian.position.x
     const gDy = bossPos.y - guardian.position.y
     const gDist = Math.hypot(gDx, gDy)
-    if (gDist > 1 && gDist < BOSS_GUARDIAN_MIN_STANDOFF) {
+    if (gDist > 1 && gDist < minStandoff) {
       moveX += (gDx / gDist) * 0.9
       moveY += (gDy / gDist) * 0.9
     }

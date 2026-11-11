@@ -43,6 +43,40 @@ export const GUARDIAN_TARGETNAMES = [
   '[PR#]boss_rebel_t1_blue',
 ] as const
 
+export const WALKER_TARGETNAMES = [
+  'rebels_t2_boss_blue',
+  '[PR#]rebels_t2_boss_blue',
+] as const
+
+export const BASE_GUARDIAN_TARGETNAMES = [
+  'rebels_watcher_blue',
+  '[PR#]rebels_watcher_blue',
+] as const
+
+export const EAST_SHRINE_TARGETNAMES = [
+  'amber_t3_generator_purple',
+  '[PR#]amber_t3_generator_purple',
+] as const
+
+export const WEST_SHRINE_TARGETNAMES = [
+  'amber_t3_generator_yellow',
+  '[PR#]amber_t3_generator_yellow',
+] as const
+
+export const WALKER_ORIGIN = { x: -1288, y: -3472, z: 376 } as const
+export const BASE_GUARDIAN_ORIGIN = { x: -1280, y: -5456, z: 641 } as const
+export const EAST_SHRINE_ORIGIN = { x: 299, y: -7535, z: 980 } as const
+export const WEST_SHRINE_ORIGIN = { x: -2859, y: -7535, z: 980 } as const
+export const PATRON_ORIGIN = { x: -1280, y: -8034, z: 632 } as const
+
+export type DefenseStage =
+  | 'guardian'
+  | 'walker'
+  | 'base_guardians'
+  | 'shrines'
+  | 'patron_stage1'
+  | 'patron_stage2'
+
 export const ZOMBIE_BASE_KAMIKAZE_DAMAGE = 85
 export const ZOMBIE_ARM_FUSE_SECONDS = 0.2
 
@@ -116,6 +150,21 @@ export const GUARDIAN_REPAIR_AMOUNT_HP = 1500
 export const GUARDIAN_UPGRADE_BASE_COST_SOULS = 500
 export const GUARDIAN_UPGRADE_COST_STEP_SOULS = 250
 export const GUARDIAN_UPGRADE_HP_BONUS = 1200
+
+export const WALKER_BASE_MAX_HP = 9000
+export const WALKER_UPGRADE_HP_BONUS = 1800
+export const BASE_GUARDIAN_BASE_MAX_HP = 4000
+export const BASE_GUARDIAN_UPGRADE_HP_BONUS = 900
+export const SHRINE_BASE_MAX_HP = 8000
+export const SHRINE_UPGRADE_HP_BONUS = 1500
+export const PATRON_STAGE1_BASE_MAX_HP = 12000
+export const PATRON_STAGE2_BASE_MAX_HP = 12000
+export const PATRON_UPGRADE_HP_BONUS = 2400
+
+export const STRUCTURE_DAMAGE_PCT_PER_LEVEL = 25
+export const STRUCTURE_FIRE_RATE_PCT_PER_LEVEL = 18
+export const STRUCTURE_CDR_PCT_PER_LEVEL = 12
+export const MAX_STRUCTURE_FORTIFY_AURA_STEPS = 12
 
 export const TOME_DROP_CHANCE = 0.10
 
@@ -278,7 +327,8 @@ export const MAJOR_BOON_POOL: readonly MajorBoonDef[] = [
   {
     id: 'bastion',
     title: 'Sapphire Bastion',
-    subtitle: 'Fortify Blue Guardian (+1,200 Max HP, +2,000 Heal) & +80 Hero HP',
+    subtitle:
+      'Fortify All Structures (+Max HP, +25% Dmg, +18% Atk Spd, +2,000 Heal) & +80 Hero HP',
     modifiers: [{ name: 'td_tome_health', stacks: 1 }],
     guardianHeal: 2000,
     guardianUpgrade: true,
@@ -304,6 +354,8 @@ export const TD_SERVER_CVARS: readonly (readonly [string, string | number])[] = 
   ['citadel_trooper_gold_reward', 150],
   ['citadel_trooper_gold_reward_bonus_per_minute', 100],
   ['citadel_npc_disable_cockroaches', 1],
+  ['citadel_dev_boss_backdoor_protection_disabled', 1],
+  ['citadel_boss_tier_3_check_pit_modifier', 0],
   ['citadel_player_starting_team', DEFENDER_TEAM],
   ['citadel_tutorial_close_shop', 0],
   ['citadel_allow_purchasing_anywhere', 1],
@@ -482,7 +534,13 @@ export function isExplodingZombieBaseMaxHp(unscaledMaxHp: number): boolean {
   return unscaledMaxHp >= 380 && unscaledMaxHp <= 440
 }
 
-export type ZombieDetonationTargetKind = 'hero' | 'guardian' | 'walker' | 'shrine'
+export type ZombieDetonationTargetKind =
+  | 'hero'
+  | 'guardian'
+  | 'walker'
+  | 'base_guardian'
+  | 'shrine'
+  | 'patron'
 
 const ZOMBIE_DETONATION_RADII: Readonly<
   Record<ZombieDetonationTargetKind, { readonly max2D: number; readonly maxDz: number }>
@@ -490,7 +548,9 @@ const ZOMBIE_DETONATION_RADII: Readonly<
   hero: { max2D: 185, maxDz: 160 },
   guardian: { max2D: 500, maxDz: 220 },
   walker: { max2D: 710, maxDz: 260 },
-  shrine: { max2D: 380, maxDz: 200 },
+  base_guardian: { max2D: 380, maxDz: 240 },
+  shrine: { max2D: 380, maxDz: 240 },
+  patron: { max2D: 560, maxDz: 380 },
 }
 
 /**
@@ -737,10 +797,175 @@ export function pickThreeMajorBoons(
   return [first, second, third]
 }
 
-/** Computes the Soul cost of the next Guardian upgrade level (0-indexed). */
+/** Computes the Soul cost of the next base fortification level (0-indexed). */
 export function computeGuardianUpgradeCost(upgradeLevel: number): number {
   const clamped = Math.max(0, Math.floor(upgradeLevel))
   return GUARDIAN_UPGRADE_BASE_COST_SOULS + clamped * GUARDIAN_UPGRADE_COST_STEP_SOULS
+}
+
+/** Computes outgoing damage multiplier (`1 + 0.25 * level`) for all fortified Team 2 structures. */
+export function computeStructureDamageMult(upgradeLevel: number): number {
+  const clamped = Math.max(0, Math.floor(upgradeLevel))
+  return Number((1 + (clamped * STRUCTURE_DAMAGE_PCT_PER_LEVEL) / 100).toFixed(3))
+}
+
+/**
+ * Computes the active hidden structure fortification aura (`td_structure_fortify_aura_1..12`)
+ * and attack-speed / damage bonuses for `upgradeLevel`.
+ */
+export function getStructureFortifyAuraSpec(upgradeLevel: number): {
+  readonly active: boolean
+  readonly step: number
+  readonly modifier: string
+  readonly damageMult: number
+  readonly damageBonusPct: number
+  readonly fireRateBonusPct: number
+  readonly cdrBonusPct: number
+} {
+  const clamped = Math.max(0, Math.floor(upgradeLevel))
+  if (clamped <= 0) {
+    return {
+      active: false,
+      step: 0,
+      modifier: '',
+      damageMult: 1,
+      damageBonusPct: 0,
+      fireRateBonusPct: 0,
+      cdrBonusPct: 0,
+    }
+  }
+  const step = Math.min(MAX_STRUCTURE_FORTIFY_AURA_STEPS, clamped)
+  return {
+    active: true,
+    step,
+    modifier: `td_structure_fortify_aura_${step}`,
+    damageMult: computeStructureDamageMult(clamped),
+    damageBonusPct: clamped * STRUCTURE_DAMAGE_PCT_PER_LEVEL,
+    fireRateBonusPct: step * STRUCTURE_FIRE_RATE_PCT_PER_LEVEL,
+    cdrBonusPct: Math.min(72, step * STRUCTURE_CDR_PCT_PER_LEVEL),
+  }
+}
+
+export interface BaseDefenseSnapshot {
+  readonly guardianHp: number
+  readonly walkerHp: number
+  readonly baseGuardiansHp: number
+  readonly shrinesHp: number
+  readonly patronHp: number
+  /** `ETier3Phase_t`: `0` = Stage 1, `2` = Transforming, `1` = Weakened Stage 2 in Pit. */
+  readonly patronPhase: number
+  readonly patronReachedStage2: boolean
+}
+
+/**
+ * Pure evaluator for full Deadlock base defense progression:
+ * `Guardian -> Walker -> Base Guardians -> Shrines -> Patron Stage 1 -> Patron Stage 2 -> Defeat`.
+ * Match NEVER ends when Guardian, Walker, Base Guardians, Shrines, or Patron Stage 1 fall!
+ */
+export function evaluateBaseDefenseProgression(snap: BaseDefenseSnapshot): {
+  readonly stage: DefenseStage
+  readonly stageLabel: string
+  readonly defeated: boolean
+} {
+  if (snap.guardianHp > 0) {
+    return { stage: 'guardian', stageLabel: 'BLUE GUARDIAN', defeated: false }
+  }
+  if (snap.walkerHp > 0) {
+    return { stage: 'walker', stageLabel: 'BLUE WALKER', defeated: false }
+  }
+  if (snap.baseGuardiansHp > 0) {
+    return {
+      stage: 'base_guardians',
+      stageLabel: 'BASE GUARDIANS',
+      defeated: false,
+    }
+  }
+  if (snap.shrinesHp > 0) {
+    return { stage: 'shrines', stageLabel: 'AMBER SHRINES', defeated: false }
+  }
+  const inStage2 = snap.patronReachedStage2 || snap.patronPhase === 1
+  if (!inStage2) {
+    return {
+      stage: 'patron_stage1',
+      stageLabel: 'PATRON STAGE 1',
+      defeated: false,
+    }
+  }
+  return {
+    stage: 'patron_stage2',
+    stageLabel: 'WEAKENED PATRON',
+    defeated: snap.patronHp <= 0,
+  }
+}
+
+export interface RepairableStructureInput {
+  readonly id: string
+  readonly hp: number
+  readonly maxHp: number
+}
+
+/**
+ * Pure evaluator for All-Structure Repair (`/repair` & HUD Repair button):
+ * spends `GUARDIAN_REPAIR_COST_SOULS` once and heals EVERY damaged, alive Team 2
+ * structure by `+GUARDIAN_REPAIR_AMOUNT_HP` (clamped to each structure's `maxHp`).
+ */
+export function evaluateAllStructuresRepair(
+  structures: readonly RepairableStructureInput[],
+  playerSouls: number,
+): {
+  readonly ok: boolean
+  readonly soulsSpent: number
+  readonly repairedCount: number
+  readonly totalHealed: number
+  readonly updates: readonly { readonly id: string; readonly newHp: number; readonly healed: number }[]
+  readonly reason?: string
+} {
+  const alive = structures.filter((s) => s.hp > 0 && s.maxHp > 0)
+  if (alive.length === 0) {
+    return {
+      ok: false,
+      soulsSpent: 0,
+      repairedCount: 0,
+      totalHealed: 0,
+      updates: [],
+      reason: 'All defense structures have already fallen.',
+    }
+  }
+  const damaged = alive.filter((s) => s.hp < s.maxHp)
+  if (damaged.length === 0) {
+    return {
+      ok: false,
+      soulsSpent: 0,
+      repairedCount: 0,
+      totalHealed: 0,
+      updates: [],
+      reason: 'All alive structures are already at full health.',
+    }
+  }
+  if (playerSouls < GUARDIAN_REPAIR_COST_SOULS) {
+    return {
+      ok: false,
+      soulsSpent: 0,
+      repairedCount: 0,
+      totalHealed: 0,
+      updates: [],
+      reason: `Need ${GUARDIAN_REPAIR_COST_SOULS} Souls to repair structures.`,
+    }
+  }
+  let totalHealed = 0
+  const updates = damaged.map((s) => {
+    const newHp = Math.min(s.maxHp, s.hp + GUARDIAN_REPAIR_AMOUNT_HP)
+    const healed = newHp - s.hp
+    totalHealed += healed
+    return { id: s.id, newHp, healed }
+  })
+  return {
+    ok: true,
+    soulsSpent: GUARDIAN_REPAIR_COST_SOULS,
+    repairedCount: updates.length,
+    totalHealed,
+    updates,
+  }
 }
 
 /** Evaluates a Guardian repair request and computes the resulting HP and Soul cost. */
@@ -798,6 +1023,7 @@ export interface TdHandoffState {
   readonly matchState: 'waiting' | 'active' | 'defeat' | 'victory'
   readonly guardianUpgradeLevel: number
   readonly guardianBonusMaxHp: number
+  readonly patronReachedStage2?: boolean
   readonly scaledCreeps: readonly number[]
   readonly explodingZombies?: readonly number[]
   readonly rewardedCreeps: readonly number[]
@@ -830,6 +1056,7 @@ export function deserializeTdHandoff(raw: string | undefined): TdHandoffState | 
       matchState: parsed.matchState,
       guardianUpgradeLevel: Number(parsed.guardianUpgradeLevel ?? 0),
       guardianBonusMaxHp: Number(parsed.guardianBonusMaxHp ?? 0),
+      patronReachedStage2: Boolean(parsed.patronReachedStage2 ?? false),
       scaledCreeps: Array.isArray(parsed.scaledCreeps) ? parsed.scaledCreeps : [],
       explodingZombies: Array.isArray(parsed.explodingZombies)
         ? parsed.explodingZombies
@@ -846,5 +1073,69 @@ export function deserializeTdHandoff(raw: string | undefined): TdHandoffState | 
     }
   } catch {
     return undefined
+  }
+}
+
+/** Seconds with 0 connected human players (after at least 1 human joined) before shutting down the server (`quit`). */
+export const EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS = 30
+
+export interface EmptyServerWatchState {
+  readonly hasSeenHuman: boolean
+  readonly emptySinceSeconds?: number
+  readonly quitIssued: boolean
+}
+
+/**
+ * Evaluates whether the dedicated server should shut down (`serverCommand('quit')`)
+ * after all human players have disconnected for `delaySeconds` (default 30s).
+ * Never triggers before the first human player connects or during `TdProbe`.
+ */
+export function evaluateEmptyServerShutdown(
+  state: EmptyServerWatchState,
+  humanPlayerCount: number,
+  nowSeconds: number,
+  isProbeMode: boolean,
+  delaySeconds = EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
+): { readonly nextState: EmptyServerWatchState; readonly shouldQuit: boolean } {
+  if (isProbeMode || state.quitIssued) {
+    return { nextState: state, shouldQuit: false }
+  }
+  if (humanPlayerCount > 0) {
+    if (state.hasSeenHuman && state.emptySinceSeconds === undefined) {
+      return { nextState: state, shouldQuit: false }
+    }
+    return {
+      nextState: {
+        hasSeenHuman: true,
+        emptySinceSeconds: undefined,
+        quitIssued: false,
+      },
+      shouldQuit: false,
+    }
+  }
+  if (!state.hasSeenHuman) {
+    return { nextState: state, shouldQuit: false }
+  }
+  const emptySince = state.emptySinceSeconds ?? nowSeconds
+  if (nowSeconds - emptySince >= delaySeconds) {
+    return {
+      nextState: {
+        hasSeenHuman: true,
+        emptySinceSeconds: emptySince,
+        quitIssued: true,
+      },
+      shouldQuit: true,
+    }
+  }
+  if (state.emptySinceSeconds === emptySince) {
+    return { nextState: state, shouldQuit: false }
+  }
+  return {
+    nextState: {
+      hasSeenHuman: true,
+      emptySinceSeconds: emptySince,
+      quitIssued: false,
+    },
+    shouldQuit: false,
   }
 }

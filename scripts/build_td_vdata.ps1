@@ -683,6 +683,45 @@ for ($step = 1; $step -le 16; $step++) {
 }
 $creepScaleAurasKv3 = "`n" + $creepScaleAurasSb.ToString()
 
+$structureFortifyAurasSb = New-Object System.Text.StringBuilder
+for ($fStep = 1; $fStep -le 12; $fStep++) {
+    $fireRateBonus = [Math]::Round($fStep * 18.0, 1)
+    $cdrBonus = [Math]::Min(72.0, [Math]::Round($fStep * 12.0, 1))
+    $fireRateStr = $fireRateBonus.ToString("0.0", [System.Globalization.CultureInfo]::InvariantCulture)
+    $cdrStr = $cdrBonus.ToString("0.0", [System.Globalization.CultureInfo]::InvariantCulture)
+    [void]$structureFortifyAurasSb.AppendLine(@"
+	td_structure_fortify_aura_$fStep = 
+	{
+		_class = "modifier_base_aura"
+		_my_subclass_name = "td_structure_fortify_aura_$fStep"
+		m_nAttributes = "MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+		m_bIsHidden = true
+		m_flAuraRadius = 25000.0
+		m_iAuraSearchType = "CITADEL_UNIT_TARGET_BOSS_FRIENDLY | CITADEL_UNIT_TARGET_BUILDING_FRIENDLY"
+		m_iAuraSearchFlags = "CITADEL_UNIT_TARGET_FLAG_PENETRATE_INVULNERABLE"
+		m_modifierProvidedByAura = subclass:
+		{
+			_class = "modifier_base"
+			_my_subclass_name = "td_structure_fortify_target_$fStep"
+			m_bIsHidden = true
+			m_nAttributes = "MODIFIER_ATTRIBUTE_CANNOT_BE_PURGED"
+			m_vecScriptValues = 
+			[
+				{
+					m_eModifierValue = "MODIFIER_VALUE_FIRE_RATE"
+					m_value = $fireRateStr
+				},
+				{
+					m_eModifierValue = "MODIFIER_VALUE_COOLDOWN_REDUCTION_PERCENTAGE"
+					m_value = $cdrStr
+				},
+			]
+		}
+	}
+"@)
+}
+$structureFortifyAurasKv3 = "`n" + $structureFortifyAurasSb.ToString()
+
 $tomeAndGuardianModifiersKv3 = @"
 
 	td_tome_spirit = 
@@ -970,7 +1009,7 @@ $tomeAndGuardianModifiersKv3 = @"
 "@
 
 $modInsertPos = $modTxt.LastIndexOf("}")
-$modPatchedTxt = $modTxt.Substring(0, $modInsertPos) + $customModifiersKv3 + $creepScaleAurasKv3 + $tomeAndGuardianModifiersKv3 + "`n}`n"
+$modPatchedTxt = $modTxt.Substring(0, $modInsertPos) + $customModifiersKv3 + $creepScaleAurasKv3 + $structureFortifyAurasKv3 + $tomeAndGuardianModifiersKv3 + "`n}`n"
 
 # 2. Patch npc_units.vdata_c.txt with 150 HP initial stats + halved per-minute growth (1.38%/min) + Phase 4 Graves Zombies & Neutral Creeps
 $npcTxtPath = Join-Path $scratchDir "npc_units.vdata_c.txt"

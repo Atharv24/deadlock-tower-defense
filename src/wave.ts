@@ -124,7 +124,9 @@ export class WaveManager {
   }
   private cachedBuildingTargets?: {
     readonly walkers: { readonly entity: number; readonly pos: Vector }[]
+    readonly baseGuardians: { readonly entity: number; readonly pos: Vector }[]
     readonly shrines: { readonly entity: number; readonly pos: Vector }[]
+    readonly patrons: { readonly entity: number; readonly pos: Vector }[]
   }
   private restoreIntervalAt = 0
   private readonly onMilestoneWaveCallback?: (wave: number) => void
@@ -230,7 +232,7 @@ export class WaveManager {
   }
 
   /** Advances wave timer, restores zipline interval after /skipwave, scales creeps, and ticks Bosses. */
-  tick(now: number, matchActive: boolean): void {
+  tick(now: number, matchActive: boolean, guardian?: GuardianManager): void {
     if (!matchActive) {
       return
     }
@@ -268,7 +270,7 @@ export class WaveManager {
     }
 
     this.scaleNewlySpawnedCreeps(now)
-    this.tickActiveBosses(now)
+    this.tickActiveBosses(now, guardian)
   }
 
   /** Spawns/advances the next wave (used by timer, /skipwave, and Probe). */
@@ -515,10 +517,28 @@ export class WaveManager {
     return newlySpawned.length
   }
 
-  /** Scales outgoing damage dealt by enemy wave creeps and Boss Heroes in Modlock's `onDamage` hook. */
-  modifyIncomingDamage(hit: DamageEvent): DamageResult | undefined {
+  /**
+   * Scales outgoing damage dealt by fortified Team 2 structures (`+25%` per level),
+   * enemy wave creeps, and Enemy Hero Bosses in Modlock's `onDamage` hook.
+   */
+  modifyIncomingDamage(
+    hit: DamageEvent,
+    guardian?: GuardianManager,
+  ): DamageResult | undefined {
     if (hit.attacker <= 0 || hit.amount <= 0) {
       return undefined
+    }
+    if (
+      guardian &&
+      guardian.upgradeLevel > 0 &&
+      guardian.isFriendlyStructureEntity(hit.attacker)
+    ) {
+      const structMult = guardian.damageMultiplier()
+      if (Math.abs(structMult - 1) >= 0.001) {
+        return {
+          amount: hit.amount * structMult,
+        }
+      }
     }
     const spec = this.creepSpecs.get(hit.attacker)
     if (spec) {
@@ -574,8 +594,9 @@ export class WaveManager {
     if (hp <= 0) {
       return false
     }
-    const hitGuardian = Boolean(guardian && guardian.isGuardianEntity(hit.victim))
-    return this.detonateZombie(hit.attacker, spec, guardian, hitGuardian, false)
+    const hitStructureTarget =
+      guardian && guardian.isFriendlyStructureEntity(hit.victim) ? hit.victim : 0
+    return this.detonateZombie(hit.attacker, spec, guardian, hitStructureTarget, false)
   }
 
   /** Records provocation aggro when a Defender damages a Boss, and awards Major Boon on Boss kill. */
@@ -611,35 +632,47 @@ export class WaveManager {
 
   private getStaticBuildingTargets(): {
     readonly walkers: { readonly entity: number; readonly pos: Vector }[]
+    readonly baseGuardians: { readonly entity: number; readonly pos: Vector }[]
     readonly shrines: { readonly entity: number; readonly pos: Vector }[]
+    readonly patrons: { readonly entity: number; readonly pos: Vector }[]
   } {
     if (this.cachedBuildingTargets) {
       return this.cachedBuildingTargets
     }
-    const walkers: { readonly entity: number; readonly pos: Vector }[] = []
-    for (const walker of findEntities('npc_boss_tier2')) {
-      const team = readField(walker, 'CBaseEntity', 'm_iTeamNum', 'int32')
-      const pos = entityPosition(walker)?.position
-      if (team === DEFENDER_TEAM && pos) {
-        walkers.push({ entity: walker, pos })
+    const collect = (cls: string) => {
+      const list: { readonly entity: number; readonly pos: Vector }[] = []
+      for (const ent of findEntities(cls)) {
+        const team = readField(ent, 'CBaseEntity', 'm_iTeamNum', 'int32')
+        const pos = new Npc(ent).read()?.position ?? entityPosition(ent)?.position
+        if (team === DEFENDER_TEAM && pos) {
+          list.push({ entity: ent, pos })
+        }
       }
+      return list
     }
-    const shrines: { readonly entity: number; readonly pos: Vector }[] = []
-    for (const shrine of findEntities('destroyable_building')) {
-      const team = readField(shrine, 'CBaseEntity', 'm_iTeamNum', 'int32')
-      const pos = entityPosition(shrine)?.position
-      if (team === DEFENDER_TEAM && pos) {
-        shrines.push({ entity: shrine, pos })
-      }
+    this.cachedBuildingTargets = {
+      walkers: collect('npc_boss_tier2'),
+      baseGuardians: collect('npc_barrack_boss'),
+      shrines: collect('destroyable_building'),
+      patrons: collect('npc_boss_tier3'),
     }
-    this.cachedBuildingTargets = { walkers, shrines }
     return this.cachedBuildingTargets
+  }
+
+  private isStructureAliveForZombie(ent: number): boolean {
+    if (ent <= 0) return false
+    const lifeState = readField(ent, 'CBaseEntity', 'm_lifeState', 'uint8')
+    if (typeof lifeState === 'number' && lifeState !== 0) {
+      return false
+    }
+    return this.readEntityHealth(ent) > 0
   }
 
   /**
    * Polls live Graves Zombies (`trooper_melee`) every 250ms, arming (`0.2s` warning)
    * and detonating (`killEntity` -> `necro_zombie_explode_on_death` + wave-scaled
-   * splash) whenever a zombie reaches a Defender Hero, Guardian, Walker, or Shrine.
+   * splash) whenever a zombie reaches a Defender Hero or any LIVE Team 2 defense
+   * structure (`Guardian`, `Walker`, `Base Guardians`, `Shrines`, or `Patron`).
    * Exits in O(1) with 0 host calls whenever `explodingZombies` is empty (#18).
    */
   tickExplodingZombies(nowSeconds: number, guardian: GuardianManager): number {
@@ -656,13 +689,22 @@ export class WaveManager {
       }
     }
 
-    const hasLiveGuardian =
-      guardian.matchState === 'active' &&
-      guardian.locateEntity() > 0 &&
-      guardian.health > 0
+    const guardianEnt = guardian.matchState === 'active' ? guardian.locateEntity() : 0
+    const hasLiveGuardian = guardianEnt > 0 && guardian.health > 0
     const guardianPos = hasLiveGuardian ? guardian.position() : undefined
-    const { walkers: walkerTargets, shrines: shrineTargets } =
-      this.getStaticBuildingTargets()
+    const staticTargets = this.getStaticBuildingTargets()
+    const walkerTargets = staticTargets.walkers.filter((w) =>
+      this.isStructureAliveForZombie(w.entity),
+    )
+    const baseGuardianTargets = staticTargets.baseGuardians.filter((bg) =>
+      this.isStructureAliveForZombie(bg.entity),
+    )
+    const shrineTargets = staticTargets.shrines.filter((s) =>
+      this.isStructureAliveForZombie(s.entity),
+    )
+    const patronTargets = staticTargets.patrons.filter((p) =>
+      this.isStructureAliveForZombie(p.entity),
+    )
 
     let detonatedCount = 0
     for (const handle of [...this.explodingZombies]) {
@@ -690,18 +732,26 @@ export class WaveManager {
       const nearWalker = walkerTargets.find((w) =>
         isWithinZombieDetonationRange(zPos, w.pos, 'walker'),
       )
+      const nearBaseGuardian = baseGuardianTargets.find((bg) =>
+        isWithinZombieDetonationRange(zPos, bg.pos, 'base_guardian'),
+      )
       const nearShrine = shrineTargets.find((s) =>
         isWithinZombieDetonationRange(zPos, s.pos, 'shrine'),
       )
+      const nearPatron = patronTargets.find((p) =>
+        isWithinZombieDetonationRange(zPos, p.pos, 'patron'),
+      )
+
+      const nearStructureEntity = nearGuardian
+        ? guardianEnt
+        : (nearWalker?.entity ??
+          nearBaseGuardian?.entity ??
+          nearShrine?.entity ??
+          nearPatron?.entity ??
+          0)
 
       const armDeadline = this.armedZombies.get(handle)
-      if (
-        armDeadline === undefined &&
-        !nearHero &&
-        !nearGuardian &&
-        !nearWalker &&
-        !nearShrine
-      ) {
+      if (armDeadline === undefined && !nearHero && nearStructureEntity <= 0) {
         continue
       }
 
@@ -715,27 +765,7 @@ export class WaveManager {
         continue
       }
 
-      const scaledDmg = Math.max(
-        1,
-        Math.round(ZOMBIE_BASE_KAMIKAZE_DAMAGE * spec.damageMult),
-      )
-      if (nearWalker) {
-        const curHp = this.readEntityHealth(nearWalker.entity)
-        if (curHp > 0) {
-          const nextHp = Math.max(0, curHp - scaledDmg)
-          fireInput(nearWalker.entity, 'SetHealth', { integer: nextHp })
-          writeField(nearWalker.entity, 'CBaseEntity', 'm_iHealth', 'int32', nextHp)
-        }
-      } else if (nearShrine) {
-        const curHp = this.readEntityHealth(nearShrine.entity)
-        if (curHp > 0) {
-          const nextHp = Math.max(0, curHp - scaledDmg)
-          fireInput(nearShrine.entity, 'SetHealth', { integer: nextHp })
-          writeField(nearShrine.entity, 'CBaseEntity', 'm_iHealth', 'int32', nextHp)
-        }
-      }
-
-      if (this.detonateZombie(handle, spec, guardian, nearGuardian, true)) {
+      if (this.detonateZombie(handle, spec, guardian, nearStructureEntity, true)) {
         detonatedCount++
       }
     }
@@ -747,7 +777,7 @@ export class WaveManager {
     handle: number,
     spec: CreepWaveSpec,
     guardian: GuardianManager | undefined,
-    applyGuardianKamikaze: boolean,
+    structureTargetEntity: number,
     applyHeroSplash: boolean,
   ): boolean {
     if (this.detonatedZombies.has(handle)) {
@@ -776,8 +806,8 @@ export class WaveManager {
       }
     }
 
-    if (applyGuardianKamikaze && guardian) {
-      guardian.applyKamikazeDamage(scaledDmg, spec.wave)
+    if (structureTargetEntity > 0 && guardian) {
+      guardian.applyKamikazeDamageToStructure(structureTargetEntity, scaledDmg, spec.wave)
     }
 
     // Force lethal environmental death through the game's damage path so
@@ -1051,17 +1081,6 @@ export class WaveManager {
       return
     }
 
-    const guardianEnt =
-      guardian && guardian.matchState === 'active' ? guardian.locateEntity() : 0
-    const guardianCandidate: BossGuardianCandidate | undefined =
-      guardian && guardianEnt > 0
-        ? {
-            entity: guardianEnt,
-            position: guardian.position(),
-            alive: guardian.health > 0,
-          }
-        : undefined
-
     const liveDefenderPawns = players()
       .map((c) => c.player.pawn())
       .filter((p): p is NonNullable<typeof p> =>
@@ -1070,7 +1089,7 @@ export class WaveManager {
             p.team === DEFENDER_TEAM &&
             p.hero > 0 &&
             p.health > 0 &&
-            Math.abs(p.position.y) < 3400,
+            Math.abs(p.position.y) < 10500,
         ),
       )
 
@@ -1255,6 +1274,19 @@ export class WaveManager {
             aimHeightOffset,
           }
         })
+
+        const activeObjective = guardian?.getActiveBossObjective(bossPos)
+        const guardianCandidate: BossGuardianCandidate | undefined = activeObjective
+          ? {
+              entity: activeObjective.entity,
+              position: activeObjective.position,
+              alive: activeObjective.alive,
+              objectiveKind: activeObjective.kind,
+              siegeRange: activeObjective.siegeRange,
+              minStandoff: activeObjective.minStandoff,
+              aimOffsetZ: activeObjective.aimOffsetZ,
+            }
+          : undefined
 
         const plan = planBossDriveStep({
           hero: boss.hero,
