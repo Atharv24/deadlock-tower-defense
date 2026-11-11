@@ -15,6 +15,7 @@ $manifestPath       = Join-Path $backupDir "installed_manifest.json"
 $modlockExe         = Join-Path $PSScriptRoot "tools\modlock.exe"
 $deadlockCfgDir     = Join-Path $DeadlockDir "game\citadel\cfg"
 $deadlockMapsDir    = Join-Path $DeadlockDir "game\citadel\maps"
+$deadlockTdAddonDir = Join-Path $DeadlockDir "game\citadel\td_addons"
 $deadlockAddonDir   = Join-Path $DeadlockDir "game\citadel\addons"
 $deadlockScriptsDir = Join-Path $DeadlockDir "game\citadel\scripts"
 $gameInfoPath       = Join-Path $DeadlockDir "game\citadel\gameinfo.gi"
@@ -24,7 +25,7 @@ if (-not (Test-Path $backupDir)) {
 }
 
 function Invoke-BuildAll {
-    Write-Host "=== [1/4] Building Binary KV3 VData (pak20_dir.vpk) ===" -ForegroundColor Cyan
+    Write-Host "=== [1/4] Building Binary KV3 VData & AnimGraphs (pak20_dir.vpk) ===" -ForegroundColor Cyan
     & powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "scripts\build_td_vdata.ps1")
     if ($LASTEXITCODE -ne 0) { throw "build_td_vdata.ps1 failed" }
 
@@ -102,9 +103,31 @@ function Invoke-InstallFiles {
         }
     }
 
-    # 4. Install custom addon VPK (pak20_dir.vpk) and loose VData overrides
+    # 4. Install custom addon VPK into citadel/td_addons/pak01_dir.vpk (mounted ahead of citadel/addons/pak01_dir.vpk HUD++)
+    #    plus citadel/addons/pak20_dir.vpk fallback, and clean invalid pak00_dir.vpk
+    $legacyPak00Dst = Join-Path $deadlockAddonDir "pak00_dir.vpk"
+    if (Test-Path $legacyPak00Dst) {
+        try {
+            Remove-Item -Path $legacyPak00Dst -Force -ErrorAction Stop
+            Write-Host "[Cleaned Legacy Addon VPK] $legacyPak00Dst" -ForegroundColor Yellow
+        } catch {}
+    }
+
     $addonVpkSrc = Join-Path $buildDir "pak20_dir.vpk"
     if (Test-Path $addonVpkSrc) {
+        if (-not (Test-Path $deadlockTdAddonDir)) {
+            New-Item -ItemType Directory -Path $deadlockTdAddonDir -Force | Out-Null
+        }
+        $tdPak01Dst = Join-Path $deadlockTdAddonDir "pak01_dir.vpk"
+        try {
+            Copy-Item -Path $addonVpkSrc -Destination $tdPak01Dst -Force -ErrorAction Stop
+            $installedFiles += $tdPak01Dst
+            Write-Host "[Installed Priority Addon VPK] pak20_dir.vpk -> $tdPak01Dst" -ForegroundColor Green
+        } catch {
+            Write-Host "[Note] td_addons/pak01_dir.vpk is currently mounted by a running Deadlock process." -ForegroundColor Yellow
+            $installedFiles += $tdPak01Dst
+        }
+
         if (-not (Test-Path $deadlockAddonDir)) {
             New-Item -ItemType Directory -Path $deadlockAddonDir -Force | Out-Null
         }
@@ -114,8 +137,32 @@ function Invoke-InstallFiles {
             $installedFiles += $addonVpkDst
             Write-Host "[Installed Addon VPK] pak20_dir.vpk -> $addonVpkDst" -ForegroundColor Green
         } catch {
-            Write-Host "[Note] pak20_dir.vpk is currently mounted by a running Deadlock process; loose VData overrides in game\citadel\scripts will be updated instead." -ForegroundColor Yellow
+            Write-Host "[Note] addons/pak20_dir.vpk is currently mounted by a running Deadlock process." -ForegroundColor Yellow
             $installedFiles += $addonVpkDst
+        }
+    }
+
+    # Ensure gameinfo.gi mounts citadel/td_addons ahead of citadel/addons (and citadel) so our VPK wins over HUD++ cleanly
+    if (Test-Path $gameInfoPath) {
+        $giLines = [System.IO.File]::ReadAllLines($gameInfoPath)
+        $hasTdAddons = $false
+        foreach ($ln in $giLines) {
+            if ($ln -match '^\s*Game\s+citadel/td_addons\s*$') { $hasTdAddons = $true; break }
+        }
+        if (-not $hasTdAddons) {
+            $outLines = [System.Collections.Generic.List[string]]::new()
+            $inserted = $false
+            foreach ($ln in $giLines) {
+                if ((-not $inserted) -and ($ln -match '^\s*Game\s+citadel(/addons)?\s*$')) {
+                    $outLines.Add("`t`t`tGame`t`t`t`tcitadel/td_addons")
+                    $inserted = $true
+                }
+                $outLines.Add($ln)
+            }
+            if ($inserted) {
+                [System.IO.File]::WriteAllLines($gameInfoPath, $outLines.ToArray(), (New-Object System.Text.UTF8Encoding($false)))
+                Write-Host "[Registered SearchPath] Game citadel/td_addons -> $gameInfoPath" -ForegroundColor Green
+            }
         }
     }
 
@@ -178,6 +225,19 @@ function Invoke-InstallFiles {
         $installedFiles += $dstShambler
     }
 
+    $buildNeutralGraphsDir = Join-Path $buildDir "td_panorama_overrides\animgraphs\animgraph2\npc_units\neutrals"
+    if (Test-Path $buildNeutralGraphsDir) {
+        $deadlockNeutralsDir = Join-Path $DeadlockDir "game\citadel\animgraphs\animgraph2\npc_units\neutrals"
+        if (-not (Test-Path $deadlockNeutralsDir)) {
+            New-Item -ItemType Directory -Path $deadlockNeutralsDir -Force | Out-Null
+        }
+        foreach ($ngFile in Get-ChildItem -Path $buildNeutralGraphsDir -Filter "*.vnmgraph_c") {
+            $dstNg = Join-Path $deadlockNeutralsDir $ngFile.Name
+            Copy-SafeModFile $ngFile.FullName $dstNg "Neutral AnimGraph2"
+            $installedFiles += $dstNg
+        }
+    }
+
     # Remove any retired custom Panorama layout files from previous playtests
     $deadlockPanoramaLayoutRoot = Join-Path $DeadlockDir "game\citadel\panorama\layout"
     if (Test-Path $deadlockPanoramaLayoutRoot) {
@@ -227,6 +287,8 @@ elseif ($Action -eq "Clean" -or $Action -eq "Uninstall") {
     $candidates = @(
         (Join-Path $deadlockMapsDir "dl_defense.vpk"),
         (Join-Path $deadlockMapsDir "hl_defense.vpk"),
+        (Join-Path $deadlockTdAddonDir "pak01_dir.vpk"),
+        (Join-Path $deadlockAddonDir "pak00_dir.vpk"),
         (Join-Path $deadlockAddonDir "pak20_dir.vpk"),
         (Join-Path $deadlockScriptsDir "modifiers.vdata_c"),
         (Join-Path $deadlockScriptsDir "npc_units.vdata_c"),
@@ -243,6 +305,12 @@ elseif ($Action -eq "Clean" -or $Action -eq "Uninstall") {
         (Join-Path $deadlockCfgDir "td_grant_tome.cfg"),
         (Join-Path $deadlockCfgDir "td_rearm_tome.cfg")
     )
+    $deadlockNeutralsDir = Join-Path $DeadlockDir "game\citadel\animgraphs\animgraph2\npc_units\neutrals"
+    if (Test-Path $deadlockNeutralsDir) {
+        foreach ($ngFile in Get-ChildItem -Path $deadlockNeutralsDir -Filter "*.vnmgraph_c") {
+            $candidates += $ngFile.FullName
+        }
+    }
     if (Test-Path $manifestPath) {
         $fromManifest = Get-Content $manifestPath | ConvertFrom-Json
         foreach ($f in $fromManifest) {
@@ -255,6 +323,10 @@ elseif ($Action -eq "Clean" -or $Action -eq "Uninstall") {
             Write-Host "[Removed] $filePath" -ForegroundColor Yellow
         }
     }
+    if (Test-Path $deadlockTdAddonDir) {
+        Remove-Item -Path $deadlockTdAddonDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "[Removed Dir] $deadlockTdAddonDir" -ForegroundColor Yellow
+    }
     $deadlockPanoramaLayoutRoot = Join-Path $DeadlockDir "game\citadel\panorama\layout"
     if (Test-Path $deadlockPanoramaLayoutRoot) {
         foreach ($tdDir in Get-ChildItem -Path $deadlockPanoramaLayoutRoot -Directory -Filter "deadlock-td-*") {
@@ -262,13 +334,13 @@ elseif ($Action -eq "Clean" -or $Action -eq "Uninstall") {
             Write-Host "[Removed Dir] $($tdDir.FullName)" -ForegroundColor Yellow
         }
     }
-    # Clean any // MODLOCK DEV lines from gameinfo.gi if left behind by an interrupted session
+    # Clean citadel/td_addons and any // MODLOCK DEV lines from gameinfo.gi
     if (Test-Path $gameInfoPath) {
-        $giLines = Get-Content $gameInfoPath
-        $filtered = $giLines | Where-Object { $_ -notmatch "MODLOCK DEV" }
+        $giLines = [System.IO.File]::ReadAllLines($gameInfoPath)
+        $filtered = @($giLines | Where-Object { ($_ -notmatch "MODLOCK DEV") -and ($_ -notmatch '^\s*Game\s+citadel/td_addons\s*$') })
         if ($filtered.Count -lt $giLines.Count) {
-            $filtered | Set-Content -Path $gameInfoPath -Encoding UTF8
-            Write-Host "[Cleaned MODLOCK DEV entries] $gameInfoPath" -ForegroundColor Yellow
+            [System.IO.File]::WriteAllLines($gameInfoPath, $filtered, (New-Object System.Text.UTF8Encoding($false)))
+            Write-Host "[Cleaned custom SearchPath entries] $gameInfoPath" -ForegroundColor Yellow
         }
     }
     if (Test-Path $manifestPath) {

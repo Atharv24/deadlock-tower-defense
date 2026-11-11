@@ -1053,6 +1053,7 @@ $npcPatchedTxt = Update-UnitBlock $npcPatchedTxt "trooper_medic" {
     param($b)
     $b = $b -replace 'models/npc_units/troopers/amber_medic_01/amber_medic_01\.vmdl', 'models/npc_units/neutral_library_watcher_01/neutral_library_watcher_01.vmdl'
     $b = $b -replace 'models/npc_units/troopers/sapphire_medic_01/sapphire_medic_01\.vmdl', 'models/npc_units/neutral_library_watcher_01/neutral_library_watcher_01.vmdl'
+    $b = $b -replace 'm_flSquadDistance = 50', "m_flSquadDistance = 50`n`t`tm_sAnimGraphIdentifier = `"Neutrals`""
     $b = $b -replace 'm_sDefaultMaterialGroupName = "FriendlyMedic"', 'm_sDefaultMaterialGroupName = "Neutral_Normal"'
     $b = $b -replace 'm_sEnemyMaterialGroupName = "EnemyMedic"', 'm_sEnemyMaterialGroupName = "Neutral_Normal"'
     $b = $b -replace 'm_sTeam1MaterialGroupName = "Amber"', 'm_sTeam1MaterialGroupName = "Neutral_Normal"'
@@ -1085,7 +1086,7 @@ function New-MarchingNeutralVariant([string]$name, [string]$modelPath, [string]$
 $extraWaveNeutralsKv3 = @(
     (New-MarchingNeutralVariant "td_neutral_lantern" "models/npc_units/neutral_ct_lanterns/neutral_ct_lantern.vmdl" "Neutral_Normal" "particles/npc/neutrals/lantern/lantern_neutral_tracer.vpcf" 275),
     (New-MarchingNeutralVariant "td_neutral_puppeteer" "models/npc_units/neutral_theatre_puppeteer_02/neutral_theatre_puppeteer_02.vmdl" "Neutral_Normal" "" 255),
-    (New-MarchingNeutralVariant "td_neutral_pigeon" "models/npc_units/neutral_pigeon_cerberus/neutral_pigeon_cerberus.vmdl" "Neutral_Normal" "" 290),
+    (New-MarchingNeutralVariant "td_neutral_pigeon" "models/npc_units/neutral_library_bookmoth/neutral_library_bookmoth.vmdl" "Neutral_Normal" "" 290),
     (New-MarchingNeutralVariant "td_neutral_mushroom" "models/npc_units/neutral_mushroom_large_01/neutral_mushroom_large_01.vmdl" "Neutral_Strong" "" 235)
 ) -join "`n"
 
@@ -1370,18 +1371,20 @@ $hudMinimapCssBasePath = Join-Path $scratchDir "panorama\styles\hud_minimap.vcss
 $hudMinimapCssBytes = [System.IO.File]::ReadAllBytes($hudMinimapCssBasePath)
 $cssPatchCount = Patch-AsciiBytesInPlace $hudMinimapCssBytes ".connectedToHeroTesting:not(.isDefaultMap)" ".connectedToHeroTestXng:not(.isDefaultMap)"
 if ($cssPatchCount -lt 3) { throw "Expected >= 3 .connectedToHeroTesting:not(.isDefaultMap) rules in hud_minimap.vcss_c, patched $cssPatchCount" }
+$newMinimapPatchCount = Patch-AsciiBytesInPlace $hudMinimapCssBytes ".NewMinimapBackgroundsContainer,.HideOldZiplines" ".NewMinimapBackgroundsContainXX,.HideOldZiplines"
+if ($newMinimapPatchCount -ne 1) { throw "Expected 1 .NewMinimapBackgroundsContainer,.HideOldZiplines rule in hud_minimap.vcss_c, patched $newMinimapPatchCount" }
 $midtownClassPatchCount = Patch-AsciiBytesInPlace $hudMinimapCssBytes ".dl_midtown" ".HudMinimap"
 if ($midtownClassPatchCount -ne 6) { throw "Expected 6 .dl_midtown rules in hud_minimap.vcss_c, patched $midtownClassPatchCount" }
 $hudMinimapCssOutPath = Join-Path $buildPanoramaStylesDir "hud_minimap.vcss_c"
 [System.IO.File]::WriteAllBytes($hudMinimapCssOutPath, $hudMinimapCssBytes)
-Write-Output "Wrote $hudMinimapCssOutPath ($($hudMinimapCssBytes.Length) bytes, patched $cssPatchCount heroTesting + $midtownClassPatchCount layer rules)."
+Write-Output "Wrote $hudMinimapCssOutPath ($($hudMinimapCssBytes.Length) bytes, patched $cssPatchCount heroTesting + $newMinimapPatchCount container + $midtownClassPatchCount layer rules)."
 
-# Compile patched necro_shambler.vnmgraph_c so Graves zombies (trooper_melee) start directly in MOVEMENT -> Walk_Loop
-# and read omnidirectional move_speed (node 12) instead of getting trapped in Spawn (forward_speed <= 1.0)!
+# Compile patched necro_shambler.vnmgraph_c and all 11 wave neutral .vnmgraph_c graphs so CNPC_Trooper's
+# run_speed / trooper_action ("RUN") / attack / in_air_forced parameters drive full walking/flying animations!
 function Update-GraphNode([string]$graphTxt, [int]$nodeIdx, [scriptblock]$mutator) {
     $needle = "m_nNodeIdx = $nodeIdx"
     $m = [regex]::Match($graphTxt, "(?m)^\s*m_nNodeIdx = $nodeIdx\s*$")
-    if (-not $m.Success) { throw "Could not find $needle in necro_shambler.vnmgraph_c.txt" }
+    if (-not $m.Success) { throw "Could not find $needle in animgraph text" }
     $openIdx = $graphTxt.LastIndexOf("{", $m.Index)
     if ($openIdx -lt 0) { throw "Could not find opening brace for $needle" }
     $depth = 0
@@ -1401,9 +1404,40 @@ function Update-GraphNode([string]$graphTxt, [int]$nodeIdx, [scriptblock]$mutato
     return $graphTxt.Substring(0, $openIdx) + $newBlock + $graphTxt.Substring($closeIdx + 1)
 }
 
+function Rename-ControlParams([string]$graphTxt, [hashtable]$renames, [string]$label) {
+    $m = [regex]::Match($graphTxt, '(?s)(m_controlParameterIDs\s*=\s*\[)(.*?)(\])')
+    if (-not $m.Success) { throw "Could not find m_controlParameterIDs in $label" }
+    $body = $m.Groups[2].Value
+    foreach ($oldName in $renames.Keys) {
+        $newName = $renames[$oldName]
+        $pat = '"' + [regex]::Escape($oldName) + '"'
+        if ($body -notmatch $pat) { throw "Expected control parameter '$oldName' in $label" }
+        $body = [regex]::Replace($body, $pat, "`"$newName`"")
+    }
+    $graphTxt = $graphTxt.Substring(0, $m.Groups[2].Index) + $body + $graphTxt.Substring($m.Groups[2].Index + $m.Groups[2].Length)
+
+    $mPaths = [regex]::Match($graphTxt, '(?s)(m_nodePaths\s*=\s*\[)(.*?)(\])')
+    if ($mPaths.Success) {
+        $pathsBody = $mPaths.Groups[2].Value
+        foreach ($oldName in $renames.Keys) {
+            $newName = $renames[$oldName]
+            $pat = '"' + [regex]::Escape($oldName) + '"'
+            $pathsBody = [regex]::Replace($pathsBody, $pat, "`"$newName`"")
+        }
+        $graphTxt = $graphTxt.Substring(0, $mPaths.Groups[2].Index) + $pathsBody + $graphTxt.Substring($mPaths.Groups[2].Index + $mPaths.Groups[2].Length)
+    }
+    return $graphTxt
+}
+
 Write-Output "Compiling necro_shambler.vnmgraph_c..."
 $shamblerTxtPath = Join-Path $scratchDir "animgraphs\animgraph2\hero\necro\necro_shambler.vnmgraph_c.txt"
 $shamblerPatchedTxt = [System.IO.File]::ReadAllText($shamblerTxtPath)
+$shamblerPatchedTxt = Rename-ControlParams $shamblerPatchedTxt @{
+    "move_speed"   = "run_speed"
+    "action_melee" = "attack"
+    "in_air"       = "in_air_forced"
+    "base_action"  = "trooper_action"
+} "necro_shambler.vnmgraph_c"
 $shamblerPatchedTxt = Update-GraphNode $shamblerPatchedTxt 17 { param($b) $b -replace 'm_nDefaultStateIndex = 0', 'm_nDefaultStateIndex = 1' }
 $shamblerPatchedTxt = Update-GraphNode $shamblerPatchedTxt 19 { param($b) $b -replace 'm_bAllowLooping = true', 'm_bAllowLooping = false' }
 $shamblerPatchedTxt = Update-GraphNode $shamblerPatchedTxt 91 { param($b) $b -replace 'm_flComparisonValue = 1\.0', 'm_flComparisonValue = 99999.0' }
@@ -1420,12 +1454,97 @@ $shamblerOutPath = Join-Path $buildShamblerDir "necro_shambler.vnmgraph_c"
 [System.IO.File]::WriteAllBytes($shamblerOutPath, $shamblerOutBytes)
 Write-Output "Wrote $shamblerOutPath ($($shamblerOutBytes.Length) bytes)."
 
+$neutralSrcDir = Join-Path $scratchDir "animgraphs\animgraph2\npc_units\neutrals"
+$buildNeutralsDir = Join-Path $buildDir "td_panorama_overrides\animgraphs\animgraph2\npc_units\neutrals"
+if (-not (Test-Path $buildNeutralsDir)) { New-Item -ItemType Directory -Path $buildNeutralsDir -Force | Out-Null }
+
+$parentNeutralGraphs = @(
+    "npc_neutral.vnmgraph+library_watcher.vnmgraph_c",
+    "npc_neutral.vnmgraph+lantern.vnmgraph_c",
+    "npc_neutral.vnmgraph+puppeteer.vnmgraph_c",
+    "npc_neutral.vnmgraph+bookmoth.vnmgraph_c",
+    "npc_neutral.vnmgraph+mushroom_large.vnmgraph_c"
+)
+$movementNeutralGraphs = @(
+    "npc_neutral_movement_library_watcher.vnmgraph_c",
+    "npc_neutral_movement_flying.vnmgraph+lantern.vnmgraph_c",
+    "npc_neutral_movement_puppeteer.vnmgraph_c",
+    "npc_neutral_movement_flying.vnmgraph+bookmoth.vnmgraph_c",
+    "npc_neutral_movement_mushroom_small.vnmgraph_c",
+    "npc_neutral_movement_mushroom_small.vnmgraph+mushroom_large.vnmgraph_c"
+)
+
+$vpkExts = [System.Collections.Generic.List[string]]::new()
+$vpkPaths = [System.Collections.Generic.List[string]]::new()
+$vpkNames = [System.Collections.Generic.List[string]]::new()
+$vpkContents = [System.Collections.Generic.List[byte[]]]::new()
+
+function Add-VpkEntry([string]$ext, [string]$path, [string]$name, [byte[]]$bytes) {
+    $vpkExts.Add($ext)
+    $vpkPaths.Add($path)
+    $vpkNames.Add($name)
+    $vpkContents.Add($bytes)
+}
+
+Add-VpkEntry "vdata_c" "scripts" "modifiers" $modOutBytes
+Add-VpkEntry "vdata_c" "scripts" "npc_units" $npcOutBytes
+Add-VpkEntry "vmat_c" "materials/minimap" "dl_defense" $minimapBytes
+Add-VpkEntry "vmat_c" "materials/minimap" "hl_defense" $minimapBytes
+Add-VpkEntry "vcss_c" "panorama/styles" "hud" $hudCssBytes
+Add-VpkEntry "vcss_c" "panorama/styles" "hud_minimap" $hudMinimapCssBytes
+Add-VpkEntry "vnmgraph_c" "animgraphs/animgraph2/hero/necro" "necro_shambler" $shamblerOutBytes
+
+foreach ($gFile in $parentNeutralGraphs) {
+    Write-Output "Compiling parent neutral animgraph $gFile..."
+    $gTxt = [System.IO.File]::ReadAllText((Join-Path $neutralSrcDir "$gFile.txt"))
+    $gTxt = Update-GraphNode $gTxt 16 { param($b) $b -replace 'm_nDefaultStateIndex = 2', 'm_nDefaultStateIndex = 3' }
+    $gTxt = Rename-ControlParams $gTxt @{
+        "move_speed"    = "run_speed"
+        "movement_type" = "trooper_action"
+        "action_shoot"  = "attack"
+    } $gFile
+    $gTxt = [regex]::Replace($gTxt, '(?m)^(\s*)"running",(\s*)$', '$1"RUN", "running",$2')
+
+    $gBin = [VDataCompiler]::CompileKv3Data($binDir, $gTxt)
+    $gOrig = [System.IO.File]::ReadAllBytes((Join-Path $neutralSrcDir $gFile))
+    $gOut = [VDataCompiler]::RebuildLastBlockContainer($gOrig, $gBin, 2)
+    $gOutPath = Join-Path $buildNeutralsDir $gFile
+    [System.IO.File]::WriteAllBytes($gOutPath, $gOut)
+    Add-VpkEntry "vnmgraph_c" "animgraphs/animgraph2/npc_units/neutrals" ([System.IO.Path]::GetFileNameWithoutExtension($gFile)) $gOut
+}
+
+foreach ($mFile in $movementNeutralGraphs) {
+    Write-Output "Compiling movement neutral animgraph $mFile..."
+    $mTxt = [System.IO.File]::ReadAllText((Join-Path $neutralSrcDir "$mFile.txt"))
+    $mTxt = Rename-ControlParams $mTxt @{
+        "move_speed"    = "run_speed"
+        "movement_type" = "trooper_action"
+        "action_shoot"  = "attack"
+    } $mFile
+    if ($mTxt -match '\bm_nInputParameterNodeIdx1 = 1\b') {
+        $mTxt = [regex]::Replace($mTxt, '\bm_nInputParameterNodeIdx1 = 1\b', 'm_nInputParameterNodeIdx1 = 2')
+    }
+    $mTxt = [regex]::Replace($mTxt, '(?m)^(\s*)"running",(\s*)$', '$1"RUN", "running",$2')
+    $mTxt = [regex]::Replace($mTxt, '(?m)^(\s*)"idle",(\s*)$', '$1"idle", "range", "melee", "blocked", "hit_react",$2')
+
+    $mBin = [VDataCompiler]::CompileKv3Data($binDir, $mTxt)
+    $mOrig = [System.IO.File]::ReadAllBytes((Join-Path $neutralSrcDir $mFile))
+    $mOut = [VDataCompiler]::RebuildLastBlockContainer($mOrig, $mBin, 2)
+    $mOutPath = Join-Path $buildNeutralsDir $mFile
+    [System.IO.File]::WriteAllBytes($mOutPath, $mOut)
+    Add-VpkEntry "vnmgraph_c" "animgraphs/animgraph2/npc_units/neutrals" ([System.IO.Path]::GetFileNameWithoutExtension($mFile)) $mOut
+}
+
+# Remove invalid pak00_dir.vpk if present (Source 2 scans pak01..pak99 starting at 01); build pak20_dir.vpk (installed as td_addons/pak01_dir.vpk + addons/pak20_dir.vpk)
+$legacyPak00 = Join-Path $buildDir "pak00_dir.vpk"
+if (Test-Path $legacyPak00) { Remove-Item -Path $legacyPak00 -Force }
+
 $pak20Path = Join-Path $buildDir "pak20_dir.vpk"
 [VDataCompiler]::BuildMultiEntryVpk(
     $pak20Path,
-    @("vdata_c", "vdata_c", "vmat_c", "vmat_c", "vcss_c", "vcss_c", "vnmgraph_c"),
-    @("scripts", "scripts", "materials/minimap", "materials/minimap", "panorama/styles", "panorama/styles", "animgraphs/animgraph2/hero/necro"),
-    @("modifiers", "npc_units", "dl_defense", "hl_defense", "hud", "hud_minimap", "necro_shambler"),
-    @($modOutBytes, $npcOutBytes, $minimapBytes, $minimapBytes, $hudCssBytes, $hudMinimapCssBytes, $shamblerOutBytes)
+    $vpkExts.ToArray(),
+    $vpkPaths.ToArray(),
+    $vpkNames.ToArray(),
+    $vpkContents.ToArray()
 )
-Write-Output "Wrote $pak20Path ($((Get-Item $pak20Path).Length) bytes)."
+Write-Output "Wrote $pak20Path ($((Get-Item $pak20Path).Length) bytes, $($vpkNames.Count) entries)."

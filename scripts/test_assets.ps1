@@ -16,9 +16,11 @@ function Assert-True([bool]$cond, [string]$msg) {
 
 Write-Host "=== Tier 2: Binary KV3 VData & Map VPK Asset Verification ===" -ForegroundColor Cyan
 
-# 1. Verify pak20_dir.vpk structure
+# 1. Verify pak20_dir.vpk structure (installed as td_addons/pak01_dir.vpk ahead of addons/pak01_dir.vpk HUD++)
 $pak20 = Join-Path $buildDir "pak20_dir.vpk"
+$legacyPak00 = Join-Path $buildDir "pak00_dir.vpk"
 Assert-True (Test-Path $pak20) "build/pak20_dir.vpk exists"
+Assert-True (-not (Test-Path $legacyPak00)) "invalid build/pak00_dir.vpk is removed"
 $pak20List = (& $viewer -i $pak20 --vpk_list) -join "`n"
 Assert-True ($pak20List -match "scripts/modifiers\.vdata_c") "pak20_dir.vpk contains scripts/modifiers.vdata_c"
 Assert-True ($pak20List -match "scripts/npc_units\.vdata_c") "pak20_dir.vpk contains scripts/npc_units.vdata_c"
@@ -26,6 +28,23 @@ Assert-True ($pak20List -match "materials/minimap/hl_defense\.vmat_c") "pak20_di
 Assert-True ($pak20List -match "panorama/styles/hud\.vcss_c") "pak20_dir.vpk contains patched panorama/styles/hud.vcss_c"
 Assert-True ($pak20List -match "panorama/styles/hud_minimap\.vcss_c") "pak20_dir.vpk contains patched panorama/styles/hud_minimap.vcss_c"
 Assert-True ($pak20List -match "animgraphs/animgraph2/hero/necro/necro_shambler\.vnmgraph_c") "pak20_dir.vpk contains patched necro_shambler.vnmgraph_c"
+$expectedNeutralGraphs = @(
+    "npc_neutral.vnmgraph+library_watcher.vnmgraph_c",
+    "npc_neutral.vnmgraph+lantern.vnmgraph_c",
+    "npc_neutral.vnmgraph+puppeteer.vnmgraph_c",
+    "npc_neutral.vnmgraph+bookmoth.vnmgraph_c",
+    "npc_neutral.vnmgraph+mushroom_large.vnmgraph_c",
+    "npc_neutral_movement_library_watcher.vnmgraph_c",
+    "npc_neutral_movement_flying.vnmgraph+lantern.vnmgraph_c",
+    "npc_neutral_movement_puppeteer.vnmgraph_c",
+    "npc_neutral_movement_flying.vnmgraph+bookmoth.vnmgraph_c",
+    "npc_neutral_movement_mushroom_small.vnmgraph_c",
+    "npc_neutral_movement_mushroom_small.vnmgraph+mushroom_large.vnmgraph_c"
+)
+foreach ($ng in $expectedNeutralGraphs) {
+    $escapedNg = [regex]::Escape("animgraphs/animgraph2/npc_units/neutrals/$ng")
+    Assert-True ($pak20List -match $escapedNg) "pak20_dir.vpk contains patched $ng"
+}
 
 $mainHudCssBin = Join-Path $buildDir "td_panorama_overrides\styles\hud.vcss_c"
 Assert-True (Test-Path $mainHudCssBin) "build/td_panorama_overrides/styles/hud.vcss_c exists"
@@ -38,15 +57,34 @@ Assert-True (Test-Path $hudCssBin) "build/td_panorama_overrides/styles/hud_minim
 $hudCssText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($hudCssBin))
 Assert-True (-not $hudCssText.Contains(".connectedToHeroTesting:not(.isDefaultMap)")) "hud_minimap.vcss_c neutralizes .connectedToHeroTesting:not(.isDefaultMap) collapse rule"
 Assert-True ($hudCssText.Contains(".connectedToHeroTestXng:not(.isDefaultMap)")) "hud_minimap.vcss_c preserves exact byte length via .connectedToHeroTestXng:not(.isDefaultMap)"
+Assert-True (-not $hudCssText.Contains(".NewMinimapBackgroundsContainer,.HideOldZiplines")) "hud_minimap.vcss_c neutralizes .NewMinimapBackgroundsContainer default collapse rule on hl_defense"
+Assert-True ($hudCssText.Contains(".NewMinimapBackgroundsContainXX,.HideOldZiplines")) "hud_minimap.vcss_c preserves exact byte length on .NewMinimapBackgroundsContainXX"
+Assert-True ($hudCssText.Contains(".NewMinimapBackgroundsContainer{height: 100%;width: 100%;}")) "hud_minimap.vcss_c retains 100%x100% sizing on .NewMinimapBackgroundsContainer"
 Assert-True (-not $hudCssText.Contains(".dl_midtown")) "hud_minimap.vcss_c replaces .dl_midtown sublayer selector with .HudMinimap"
 Assert-True ($hudCssText.Contains(".HudMinimap .backgroundImage2")) "hud_minimap.vcss_c hides underground sublayers cleanly on hl_defense"
 
 $shamblerBin = Join-Path $buildDir "td_panorama_overrides\animgraphs\animgraph2\hero\necro\necro_shambler.vnmgraph_c"
 Assert-True (Test-Path $shamblerBin) "build/td_panorama_overrides/animgraphs/animgraph2/hero/necro/necro_shambler.vnmgraph_c exists"
 $shamblerDecomp = (& $viewer -i $shamblerBin -b DATA) -join "`n"
-Assert-True (-not ($shamblerDecomp -match "\bm_nInputValueNodeIdx = 9\b")) "necro_shambler.vnmgraph_c replaces all forward_speed (9) checks with move_speed (12)"
+Assert-True (-not ($shamblerDecomp -match "\bm_nInputValueNodeIdx = 9\b")) "necro_shambler.vnmgraph_c replaces all forward_speed (9) checks with run_speed (12)"
+Assert-True ($shamblerDecomp -match '"run_speed"') "necro_shambler.vnmgraph_c renames move_speed -> run_speed for CNPC_Trooper"
+Assert-True ($shamblerDecomp -match '"attack"') "necro_shambler.vnmgraph_c renames action_melee -> attack for CNPC_Trooper"
+Assert-True ($shamblerDecomp -match '"in_air_forced"') "necro_shambler.vnmgraph_c renames in_air -> in_air_forced for CNPC_Trooper"
+Assert-True ($shamblerDecomp -match '"trooper_action"') "necro_shambler.vnmgraph_c renames base_action -> trooper_action for CNPC_Trooper"
 Assert-True ($shamblerDecomp -match "m_nNodeIdx = 17[\s\S]{1,2500}?m_nDefaultStateIndex = 1") "necro_shambler.vnmgraph_c starts Shambler Locomotion (Node 17) directly in State 1 (MOVEMENT)"
 Assert-True ($shamblerDecomp -match "m_nNodeIdx = 19[\s\S]{1,300}?m_bAllowLooping = false") "necro_shambler.vnmgraph_c disables looping on Spawn clip (Node 19)"
+
+$watcherParentBin = Join-Path $buildDir "td_panorama_overrides\animgraphs\animgraph2\npc_units\neutrals\npc_neutral.vnmgraph+library_watcher.vnmgraph_c"
+$watcherParentDecomp = (& $viewer -i $watcherParentBin -b DATA) -join "`n"
+Assert-True ($watcherParentDecomp -match "m_nNodeIdx = 16[\s\S]{1,3500}?m_nDefaultStateIndex = 3") "npc_neutral.vnmgraph+library_watcher.vnmgraph_c starts SM_Neutral_NPC (Node 16) in State 3 (Active)"
+Assert-True ($watcherParentDecomp -match '"run_speed"') "npc_neutral.vnmgraph+library_watcher.vnmgraph_c maps move_speed -> run_speed"
+Assert-True ($watcherParentDecomp -match '"trooper_action"') "npc_neutral.vnmgraph+library_watcher.vnmgraph_c maps movement_type -> trooper_action"
+Assert-True ($watcherParentDecomp -match '"RUN"') "npc_neutral.vnmgraph+library_watcher.vnmgraph_c accepts CNPC_Trooper uppercase RUN"
+
+$bookmothMoveBin = Join-Path $buildDir "td_panorama_overrides\animgraphs\animgraph2\npc_units\neutrals\npc_neutral_movement_flying.vnmgraph+bookmoth.vnmgraph_c"
+$bookmothMoveDecomp = (& $viewer -i $bookmothMoveBin -b DATA) -join "`n"
+Assert-True ($bookmothMoveDecomp -match "m_nInputParameterNodeIdx1 = 2") "npc_neutral_movement_flying.vnmgraph+bookmoth.vnmgraph_c drives Blend2D +Y axis from run_speed (node 2)"
+Assert-True ($bookmothMoveDecomp -match '"RUN"') "npc_neutral_movement_flying.vnmgraph+bookmoth.vnmgraph_c enters running state on CNPC_Trooper RUN"
 
 # 2. Decompile and verify modifiers.vdata_c
 $modBin = Join-Path $buildDir "scripts\modifiers.vdata_c"
@@ -84,6 +122,8 @@ Assert-True ($npcDecomp -match "necro_zombie_explode_on_death") "npc_units.vdata
 Assert-True ($npcDecomp -match "models/npc_units/neutral_library_watcher_01/neutral_library_watcher_01\.vmdl") "npc_units.vdata_c converts trooper_medic to Library Watcher neutral creep"
 $trooperMedicSlice = $npcDecomp.Substring($npcDecomp.IndexOf("trooper_medic ="), 6500)
 Assert-True (-not ($trooperMedicSlice -match "neutral_underhand_01")) "trooper_medic block has zero broken pve_underhand neutral_underhand_01 references"
+Assert-True ($trooperMedicSlice -match 'm_sAnimGraphIdentifier = "Neutrals"') "trooper_medic sets m_sAnimGraphIdentifier = Neutrals (inherited by all td_neutral_* variants)"
+Assert-True ($npcDecomp -match "models/npc_units/neutral_library_bookmoth/neutral_library_bookmoth\.vmdl") "td_neutral_pigeon uses fully-animated neutral_library_bookmoth.vmdl"
 foreach ($neutralVariant in @("td_neutral_lantern", "td_neutral_puppeteer", "td_neutral_pigeon", "td_neutral_mushroom")) {
     Assert-True ($npcDecomp -match "$neutralVariant\b") "npc_units.vdata_c defines custom wave neutral variant $neutralVariant"
 }
