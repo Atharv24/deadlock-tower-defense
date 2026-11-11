@@ -164,7 +164,7 @@ export class TomeManager {
       p.sound('Powerup.Pickup.Generic')
       toast(
         p,
-        `MILESTONE BOON READY! Click your chosen Boon on the HUD (or type /boon 1, /boon 2, /boon 3).`,
+        `BOSS DEFEATED · MAJOR BOON READY! Hold TAB to click a Boon (or type /boon 1, /boon 2, /boon 3).`,
       )
     }
   }

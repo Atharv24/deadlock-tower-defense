@@ -14,6 +14,7 @@ import {
   entityPosition,
   findEntities,
   fireInput,
+  holdModifierState,
   killEntity,
   Layers,
   log,
@@ -87,6 +88,8 @@ export interface ActiveBoss {
   readonly ai: BossAiState
   pawnEntity: number
   configuredPawnEntity: number
+  currentHp: number
+  currentMaxHp: number
   initialHealDone: boolean
 }
 
@@ -278,7 +281,6 @@ export class WaveManager {
 
     if (isBossWave(this.wave)) {
       this.spawnBossForWave(this.wave, now)
-      this.onMilestoneWaveCallback?.(this.wave)
     } else {
       for (const conn of players()) {
         if (!conn.ready) continue
@@ -492,13 +494,25 @@ export class WaveManager {
     return this.detonateZombie(hit.attacker, spec, guardian, hitGuardian, false)
   }
 
-  /** Records provocation aggro when a live Team 2 Defender Hero damages an Enemy Boss. */
+  /** Records provocation aggro when a Defender damages a Boss, and awards Major Boon on Boss kill. */
   handleBossDamaged(hit: DamagedEvent, now: number): void {
-    if (this.activeBosses.length === 0 || hit.dealt <= 0 || hit.attacker <= 0) {
+    if (this.activeBosses.length === 0 || hit.dealt <= 0) {
       return
     }
-    const boss = this.activeBosses.find((b) => b.pawnEntity === hit.victim)
-    if (!boss) {
+    const bossIdx = this.activeBosses.findIndex((b) => b.pawnEntity === hit.victim)
+    if (bossIdx < 0) {
+      return
+    }
+    const boss = this.activeBosses[bossIdx]
+    if (
+      boss.configuredPawnEntity > 0 &&
+      hit.healthBefore > 0 &&
+      hit.healthLost >= hit.healthBefore
+    ) {
+      this.rewardAndRetireBoss(bossIdx)
+      return
+    }
+    if (hit.attacker <= 0) {
       return
     }
     const isDefenderHero = players().some((c) => {
@@ -778,6 +792,7 @@ export class WaveManager {
     }
     if (!bot) {
       log(`Boss bot slot unavailable on Wave ${wave}`)
+      this.onMilestoneWaveCallback?.(wave)
       return
     }
     this.activeBosses.push({
@@ -795,8 +810,30 @@ export class WaveManager {
       ai: createBossAiState(spawnOrigin, now),
       pawnEntity: 0,
       configuredPawnEntity: 0,
+      currentHp: 0,
+      currentMaxHp: 0,
       initialHealDone: false,
     })
+  }
+
+  private rewardAndRetireBoss(index: number): void {
+    const boss = this.activeBosses[index]
+    if (!boss) {
+      return
+    }
+    const defeatedWave = boss.wave
+    if ((boss.bot.pawn()?.health ?? 0) > 0) {
+      boss.bot.drive()
+    }
+    boss.bot.removeBot()
+    this.activeBosses.splice(index, 1)
+    for (const conn of players()) {
+      if (conn.bot || !conn.ready) continue
+      conn.player.addMetric('td.bosses_slain', 1)
+      toast(conn.player, `Wave ${defeatedWave} Boss defeated! +400 Souls & Major Boon unlocked!`)
+      conn.player.adjustSouls(400, false)
+    }
+    this.onMilestoneWaveCallback?.(defeatedWave)
   }
 
   /**
@@ -834,6 +871,13 @@ export class WaveManager {
                   ? 'hero_forge'
                   : spec.hero
 
+      const estMaxHp = Math.max(
+        pawn.effectiveMaxHealth ?? 0,
+        pawn.maxHealth,
+        pawn.health,
+        750 + spec.bonusHp,
+      )
+      holdModifierState(pawn.entity, 'MODIFIER_STATE_VISIBLE_TO_ENEMY', true)
       this.activeBosses.push({
         wave: bossWave,
         tier: spec.tier,
@@ -849,6 +893,8 @@ export class WaveManager {
         ai: createBossAiState(pawn.position, now),
         pawnEntity: pawn.entity,
         configuredPawnEntity: pawn.entity,
+        currentHp: pawn.health,
+        currentMaxHp: estMaxHp,
         initialHealDone: true,
       })
       log(
@@ -898,22 +944,17 @@ export class WaveManager {
       }
       boss.pawnEntity = pawn.entity
 
-      if (boss.configuredPawnEntity === pawn.entity && pawn.health <= 0) {
+      if (
+        boss.configuredPawnEntity > 0 &&
+        (pawn.health <= 0 || boss.configuredPawnEntity !== pawn.entity)
+      ) {
         // Real Boss hero pawn was defeated!
-        boss.bot.drive()
-        boss.bot.removeBot()
-        this.activeBosses.splice(i, 1)
-        for (const conn of players()) {
-          if (conn.bot || !conn.ready) continue
-          conn.player.addMetric('td.bosses_slain', 1)
-          toast(conn.player, `Boss defeated! Bonus +400 Souls!`)
-          conn.player.adjustSouls(400, false)
-        }
+        this.rewardAndRetireBoss(i)
         continue
       }
 
       let justConfigured = false
-      if (boss.configuredPawnEntity !== pawn.entity && pawn.health > 0) {
+      if (boss.configuredPawnEntity === 0 && pawn.health > 0) {
         const abils = boss.bot.abilities()
         if (abils.length === 0) {
           continue
@@ -932,18 +973,24 @@ export class WaveManager {
         for (let s = 0; s < boss.extraSizeStacks; s++) {
           boss.bot.giveModifier('td_boss_size_step', -1)
         }
-        // Grant +60% ammo capacity so Bosses sustain heavy weapon bursts with fewer reloads.
+        // Grant +60% ammo capacity and +12% CDR so Bosses sustain weapon fire & abilities!
         for (let s = 0; s < 3; s++) {
           boss.bot.giveModifier('td_tome_ammo', -1)
+        }
+        for (let s = 0; s < 2; s++) {
+          boss.bot.giveModifier('td_tome_cdr', -1)
         }
 
         const upgradeMask = computeBossAbilityUpgradeMask(boss.tier)
         for (const abil of abils) {
           if (abil.slot >= 0 && abil.slot <= 3) {
             boss.bot.setAbility({ ability: abil.name, upgrades: upgradeMask })
+            boss.bot.refreshAbility(abil.name)
           }
         }
 
+        // Reveal Boss through fog-of-war so Deadlock always draws its 3D overhead HP bar!
+        holdModifierState(pawn.entity, 'MODIFIER_STATE_VISIBLE_TO_ENEMY', true)
         this.applyCreepScale(pawn.entity, boss.targetScale)
         boss.bot.heal(1_000_000)
         boss.ai.waypointIndex = 0
@@ -962,16 +1009,37 @@ export class WaveManager {
         )
       }
 
-      if (boss.configuredPawnEntity === pawn.entity && pawn.health > 0) {
+      const activePawn = (justConfigured ? boss.bot.pawn() : pawn) ?? pawn
+      if (boss.configuredPawnEntity === activePawn.entity && activePawn.health > 0) {
         if (!justConfigured && !boss.initialHealDone) {
           // Ensure HP filled to 100% once CCitadelPlayerPawn::GetMaxHealth expands from MODIFIER_VALUE_HEALTH_MAX.
-          if (pawn.health < 1500) {
+          if (activePawn.health < 1500) {
             boss.bot.heal(1_000_000)
           }
           boss.initialHealDone = true
         }
+
+        // Sync networked CBaseEntity.m_iMaxHealth (which otherwise omits modifier maxHP until respawn)
+        // so both native 3D unit_status bars and our top-center Raid Boss HUD show accurate HP!
+        const trueMaxHp = Math.max(
+          activePawn.effectiveMaxHealth ?? 0,
+          activePawn.maxHealth,
+          activePawn.health,
+          boss.currentMaxHp,
+        )
+        boss.currentHp = Math.max(0, Math.round(activePawn.health))
+        boss.currentMaxHp = Math.round(trueMaxHp)
+        if (activePawn.maxHealth < boss.currentMaxHp) {
+          writeField(
+            activePawn.entity,
+            'CBaseEntity',
+            'm_iMaxHealth',
+            'int32',
+            boss.currentMaxHp,
+          )
+        }
         const curScale = readField(
-          pawn.entity,
+          activePawn.entity,
           'CGameSceneNode',
           'm_flScale',
           'float32',
@@ -980,11 +1048,11 @@ export class WaveManager {
           typeof curScale === 'number' &&
           Math.abs(curScale - boss.targetScale) > 0.05
         ) {
-          this.applyCreepScale(pawn.entity, boss.targetScale)
+          this.applyCreepScale(activePawn.entity, boss.targetScale)
         }
 
-        const bossPos: Vector = justConfigured ? boss.spawnOrigin : pawn.position
-        const rawEye = justConfigured ? undefined : pawn.eyePosition
+        const bossPos: Vector = justConfigured ? boss.spawnOrigin : activePawn.position
+        const rawEye = justConfigured ? undefined : activePawn.eyePosition
         const bossEyePos: Vector =
           rawEye && rawEye.z > bossPos.z + 20
             ? rawEye
@@ -1006,7 +1074,7 @@ export class WaveManager {
               start: bossEyePos,
               end: heroTorso,
               layers: Layers.solid | Layers.staticLevel,
-              ignore: [pawn.entity, hpawn.entity],
+              ignore: [activePawn.entity, hpawn.entity],
             })
             hasLineOfSight =
               !hit ||
@@ -1027,8 +1095,8 @@ export class WaveManager {
           hero: boss.hero,
           bossPos,
           bossEyePos,
-          bossHealth: pawn.health,
-          bossMaxHealth: pawn.effectiveMaxHealth ?? pawn.maxHealth,
+          bossHealth: activePawn.health,
+          bossMaxHealth: activePawn.effectiveMaxHealth ?? activePawn.maxHealth,
           abilities: boss.bot.abilities(),
           heroes: heroCandidates,
           guardian: guardianCandidate,
@@ -1067,7 +1135,9 @@ export class WaveManager {
 
   private cleanupBosses(): void {
     for (const boss of this.activeBosses) {
-      boss.bot.drive()
+      if ((boss.bot.pawn()?.health ?? 0) > 0) {
+        boss.bot.drive()
+      }
       boss.bot.removeBot()
     }
     this.activeBosses.length = 0

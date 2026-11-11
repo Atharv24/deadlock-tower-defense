@@ -57,6 +57,13 @@ export interface BossAiState {
   nextAbilityAt: number
   channelLockUntil: number
   slamTapAt: number
+  pendingConfirmAt: number
+  pendingVerifySlot: number
+  pendingVerifyAt: number
+  pendingVerifyChargesBefore: number
+  groundAimUntil: number
+  releasePrimaryUntil: number
+  slotBackoffUntil: [number, number, number, number]
   provokedHeroEntity: number
   provokedUntil: number
 }
@@ -143,11 +150,18 @@ export function createBossAiState(spawnOrigin: Vector, now = 0): BossAiState {
     lastCheckPos: { x: spawnOrigin.x, y: spawnOrigin.y, z: spawnOrigin.z },
     lastCheckAt: now,
     stuckCount: 0,
-    nextDashAt: now + 2.0,
+    nextDashAt: now + 1.4,
     nextMeleeAt: now,
-    nextAbilityAt: now + 1.2,
+    nextAbilityAt: now + 0.25,
     channelLockUntil: 0,
     slamTapAt: 0,
+    pendingConfirmAt: 0,
+    pendingVerifySlot: -1,
+    pendingVerifyAt: 0,
+    pendingVerifyChargesBefore: 0,
+    groundAimUntil: 0,
+    releasePrimaryUntil: 0,
+    slotBackoffUntil: [0, 0, 0, 0],
     provokedHeroEntity: 0,
     provokedUntil: 0,
   }
@@ -344,11 +358,23 @@ function getHeroPreferredRange(hero: string): { readonly min: number; readonly m
   }
 }
 
-function isAbilityReady(abil: Ability | undefined, now: number): abil is Ability {
+function isAbilityReady(
+  abil: Ability | undefined,
+  now: number,
+  slotBackoffUntil?: readonly [number, number, number, number],
+): abil is Ability {
   if (!abil) return false
   if ((abil.upgrades & 1) === 0) return false
   if (abil.cooldownEnd > now) return false
   if (abil.charges === 0 && abil.rechargeEnd > now) return false
+  if (
+    slotBackoffUntil &&
+    abil.slot >= 0 &&
+    abil.slot <= 3 &&
+    slotBackoffUntil[abil.slot] > now
+  ) {
+    return false
+  }
   return true
 }
 
@@ -367,16 +393,20 @@ function slotToButton(slot: number, buttons: BossButtonMask): bigint {
   }
 }
 
-interface AbilityDecision {
+export interface AbilityDecision {
+  readonly slot: number
   readonly pressed: bigint
   readonly channelDuration: number
   readonly slamDelay?: number
+  readonly needsConfirmClick?: boolean
+  readonly groundAim?: boolean
 }
 
 /**
- * Chooses safe, high-impact hero abilities for all 6 `BOSS_HERO_POOL` archetypes without
- * entering stuck two-click blueprint previews (such as McGinnis turret/wall placement)
- * or canceling active channeled ultimates.
+ * Chooses responsive, combo-chaining hero abilities for all 6 `BOSS_HERO_POOL` archetypes.
+ * Supports 2-tick Confirm-Cast rising edges (`needsConfirmClick`), ground-pitched turret/specter
+ * deployment (`groundAim`), and per-slot backoff (`slotBackoffUntil`) so if a unit-targeted
+ * ability cannot lock on, the Boss immediately fires its next ready ability 200ms later!
  */
 export function chooseBossAbilityPress(
   hero: string,
@@ -386,6 +416,7 @@ export function chooseBossAbilityPress(
   bossHealthRatio: number,
   now: number,
   buttons: BossButtonMask,
+  slotBackoffUntil?: readonly [number, number, number, number],
 ): AbilityDecision | undefined {
   const bySlot = (slot: number) => abilities.find((a) => a.slot === slot)
   const s0 = bySlot(0)
@@ -394,123 +425,188 @@ export function chooseBossAbilityPress(
   const s3 = bySlot(3)
   const dist = target.distance2D
   const isHero = target.kind === 'hero'
+  const ready = (a: Ability | undefined) => isAbilityReady(a, now, slotBackoffUntil)
 
   switch (hero) {
     case 'hero_atlas': {
-      // Slot 3: Seismic Impact (leap + slam onto Hero)
-      if (isHero && dist >= 220 && dist <= 780 && isAbilityReady(s3, now)) {
-        return { pressed: buttons.ultimate, channelDuration: 1.8, slamDelay: 0.65 }
+      // Slot 3: Seismic Impact (leap + meteor slam onto Hero or Guardian plaza)
+      if (dist >= 150 && dist <= 950 && ready(s3)) {
+        return {
+          slot: 3,
+          pressed: buttons.ultimate,
+          channelDuration: 1.75,
+          slamDelay: 0.6,
+        }
       }
-      // Slot 1: Shoulder Charge
-      if (isHero && dist >= 200 && dist <= 700 && isAbilityReady(s1, now)) {
-        return { pressed: buttons.ability2, channelDuration: 1.4 }
+      // Slot 1: Shoulder Charge (bull rush into Defender Hero or down lane)
+      if (dist >= 130 && dist <= 850 && ready(s1)) {
+        return { slot: 1, pressed: buttons.ability2, channelDuration: 1.35 }
       }
-      // Slot 0: Siphon Life aura drain
-      if ((isHero || dist <= 450) && dist <= 440 && isAbilityReady(s0, now)) {
-        return { pressed: buttons.ability1, channelDuration: 0 }
+      // Slot 0: Siphon Life aura drain (active throughout close/mid combat)
+      if (dist <= 580 && ready(s0)) {
+        return { slot: 0, pressed: buttons.ability1, channelDuration: 0 }
       }
       // Slot 2 is passive (Infernal Resilience)
       return undefined
     }
 
     case 'hero_warden': {
-      // Slot 3: Last Stand AoE windup
-      if (isHero && dist <= 560 && isAbilityReady(s3, now)) {
-        return { pressed: buttons.ultimate, channelDuration: 2.4 }
+      // Slot 1: Willpower barrier + sprint speed surge immediately on contact!
+      if (dist <= 1550 && ready(s1)) {
+        return { slot: 1, pressed: buttons.ability2, channelDuration: 0 }
       }
-      // Slot 1: Willpower barrier + speed buff
-      if (dist <= 1250 && isAbilityReady(s1, now)) {
-        return { pressed: buttons.ability2, channelDuration: 0 }
+      // Slot 0: Alchemical Flask grenade (damages & weakens Heroes & Guardian)
+      if (dist <= 1350 && ready(s0)) {
+        return {
+          slot: 0,
+          pressed: buttons.ability1,
+          channelDuration: 0,
+          needsConfirmClick: true,
+        }
       }
-      // Slot 2: Binding Word root curse (Hero-targeted)
-      if (isHero && dist <= 820 && isAbilityReady(s2, now)) {
-        return { pressed: buttons.ability3, channelDuration: 0 }
+      // Slot 2: Binding Word root curse (Hero-targeted; falls back via slotBackoffUntil if out of cone)
+      if (isHero && dist <= 760 && ready(s2)) {
+        return {
+          slot: 2,
+          pressed: buttons.ability3,
+          channelDuration: 0,
+          needsConfirmClick: true,
+        }
       }
-      // Slot 0: Alchemical Flask grenade (damages Heroes & Guardian)
-      if (dist <= 1050 && isAbilityReady(s0, now)) {
-        return { pressed: buttons.ability1, channelDuration: 0 }
+      // Slot 3: Last Stand massive AoE pulse aura
+      if (dist <= 650 && ready(s3)) {
+        return { slot: 3, pressed: buttons.ultimate, channelDuration: 2.35 }
       }
       return undefined
     }
 
     case 'hero_bebop': {
+      // Slot 2: Hook skillshot (pulls Defender right into Sticky Bomb + Uppercut combo!)
+      if (isHero && dist >= 220 && dist <= 1450 && ready(s2)) {
+        return { slot: 2, pressed: buttons.ability3, channelDuration: 0.35 }
+      }
+      // Slot 1: Sticky Bomb attach at close range
+      if (isHero && dist <= 250 && ready(s1)) {
+        return {
+          slot: 1,
+          pressed: buttons.ability2,
+          channelDuration: 0,
+          needsConfirmClick: true,
+        }
+      }
+      // Slot 0: Exploding Uppercut melee launch
+      if (isHero && dist <= 240 && ready(s0)) {
+        return { slot: 0, pressed: buttons.ability1, channelDuration: 0 }
+      }
       // Slot 3: Hyper Beam giant orbital laser (shreds Heroes & Guardian!)
-      if (dist >= 320 && dist <= 1250 && isAbilityReady(s3, now)) {
-        return { pressed: buttons.ultimate, channelDuration: 6.0 }
-      }
-      // Slot 2: Hook skillshot
-      if (isHero && dist >= 280 && dist <= 1200 && isAbilityReady(s2, now)) {
-        return { pressed: buttons.ability3, channelDuration: 0.4 }
-      }
-      // Slot 1: Sticky Bomb
-      if (isHero && dist <= 280 && isAbilityReady(s1, now)) {
-        return { pressed: buttons.ability2, channelDuration: 0 }
-      }
-      // Slot 0: Exploding Uppercut
-      if (isHero && dist <= 230 && isAbilityReady(s0, now)) {
-        return { pressed: buttons.ability1, channelDuration: 0 }
+      if (dist >= 260 && dist <= 1450 && ready(s3)) {
+        return { slot: 3, pressed: buttons.ultimate, channelDuration: 5.8 }
       }
       return undefined
     }
 
     case 'hero_shiv': {
-      // Slot 3: Killing Blow execute on low-HP Defender Hero
-      if (isHero && target.healthRatio <= 0.45 && dist <= 620 && isAbilityReady(s3, now)) {
-        return { pressed: buttons.ultimate, channelDuration: 0.6 }
-      }
-      // Slot 2: Bloodletting damage shrug when damaged
-      if (bossHealthRatio < 0.85 && isAbilityReady(s2, now)) {
-        return { pressed: buttons.ability3, channelDuration: 0 }
+      // Slot 3: Killing Blow execute leap on damaged Defender Hero
+      if (isHero && target.healthRatio <= 0.55 && dist <= 600 && ready(s3)) {
+        return {
+          slot: 3,
+          pressed: buttons.ultimate,
+          channelDuration: 0.55,
+          needsConfirmClick: true,
+        }
       }
       // Slot 1: Slice and Dice dash-slash
-      if (isHero && dist >= 160 && dist <= 620 && isAbilityReady(s1, now)) {
-        return { pressed: buttons.ability2, channelDuration: 0.45 }
+      if (dist >= 120 && dist <= 720 && ready(s1)) {
+        return { slot: 1, pressed: buttons.ability2, channelDuration: 0.4 }
       }
-      // Slot 0: Serrated Knives projectile
-      if (dist <= 1150 && isAbilityReady(s0, now)) {
-        return { pressed: buttons.ability1, channelDuration: 0 }
+      // Slot 0: Serrated Knives bleeding projectile
+      if (dist <= 1400 && ready(s0)) {
+        return { slot: 0, pressed: buttons.ability1, channelDuration: 0 }
+      }
+      // Slot 2: Bloodletting active damage shrug
+      if (bossHealthRatio < 0.92 && ready(s2)) {
+        return { slot: 2, pressed: buttons.ability3, channelDuration: 0 }
       }
       return undefined
     }
 
     case 'hero_chrono': {
-      // Slot 2: Kinetic Carbine (held attack fires the charged shot as soon as ready)
-      if (isHero && dist <= 1300 && isAbilityReady(s2, now)) {
-        return { pressed: buttons.ability3, channelDuration: 0 }
+      // Slot 0: Pulse Grenade AoE (checked first so Paradox immediately throws grenades!)
+      if (dist <= 1300 && ready(s0)) {
+        return {
+          slot: 0,
+          pressed: buttons.ability1,
+          channelDuration: 0,
+          needsConfirmClick: true,
+        }
       }
-      // Slot 0: Pulse Grenade AoE (damages Heroes & Guardian)
-      if (dist <= 1050 && isAbilityReady(s0, now)) {
-        return { pressed: buttons.ability1, channelDuration: 0 }
+      // Slot 1: Time Wall barrier
+      if (dist <= 1100 && ready(s1)) {
+        return {
+          slot: 1,
+          pressed: buttons.ability2,
+          channelDuration: 0,
+          needsConfirmClick: true,
+        }
       }
-      // Slot 1: Time Wall protective barrier
-      if (dist <= 950 && isAbilityReady(s1, now)) {
-        return { pressed: buttons.ability2, channelDuration: 0 }
+      // Slot 2: Kinetic Carbine empowered shot
+      if (dist <= 1450 && ready(s2)) {
+        return {
+          slot: 2,
+          pressed: buttons.ability3,
+          channelDuration: 0,
+          needsConfirmClick: true,
+        }
       }
       // Slot 3: Paradoxical Swap (only when Hero is south/even so Boss never swaps backward)
       if (
         isHero &&
-        dist >= 360 &&
-        dist <= 1050 &&
+        dist >= 260 &&
+        dist <= 1250 &&
         target.position.y <= bossPos.y + 80 &&
-        isAbilityReady(s3, now)
+        ready(s3)
       ) {
-        return { pressed: buttons.ultimate, channelDuration: 0.4 }
+        return { slot: 3, pressed: buttons.ultimate, channelDuration: 0.35 }
       }
       return undefined
     }
 
     case 'hero_forge': {
-      // McGinnis: Slot 0/1/2 use ground deployment previews that can block her Heavy Minigun,
-      // whereas Slot 3 (Heavy Barrage) rains rockets across Heroes & Guardian for ~6s!
-      if (dist >= 340 && dist <= 1350 && isAbilityReady(s3, now)) {
-        return { pressed: buttons.ultimate, channelDuration: 5.5 }
+      // Slot 3: Heavy Barrage rocket volley (~5.5s channel vs Hero or Guardian)
+      if (dist >= 280 && dist <= 1500 && ready(s3)) {
+        return { slot: 3, pressed: buttons.ultimate, channelDuration: 5.4 }
+      }
+      // Slot 0: Mini Turret — ground-aimed + 2-tick LMB confirm + Tick 3 altFire cancel safety!
+      if (dist <= 1250 && ready(s0)) {
+        return {
+          slot: 0,
+          pressed: buttons.ability1,
+          channelDuration: 0,
+          needsConfirmClick: true,
+          groundAim: true,
+        }
+      }
+      // Slot 1: Medicinal Specter AoE heal — ground-aimed when injured
+      if (bossHealthRatio < 0.92 && dist <= 1150 && ready(s1)) {
+        return {
+          slot: 1,
+          pressed: buttons.ability2,
+          channelDuration: 0,
+          needsConfirmClick: true,
+          groundAim: true,
+        }
       }
       return undefined
     }
 
     default: {
-      if (isHero && dist <= 800 && isAbilityReady(s0, now)) {
-        return { pressed: slotToButton(0, buttons), channelDuration: 0 }
+      if (dist <= 950 && ready(s0)) {
+        return {
+          slot: 0,
+          pressed: slotToButton(0, buttons),
+          channelDuration: 0,
+          needsConfirmClick: true,
+        }
       }
       return undefined
     }
@@ -655,9 +751,18 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
     }
   }
 
-  // 2. Compute 360° Aiming Angles
+  // 2. Compute 360° Aiming Angles (pitching down briefly when ground-deploying Mini Turret / Specter)
   let lookPoint: Vector
-  if (target) {
+  if (now < state.groundAimUntil && target) {
+    const dirX = target.position.x - bossPos.x
+    const dirY = target.position.y - bossPos.y
+    const len = Math.max(1, Math.hypot(dirX, dirY))
+    lookPoint = {
+      x: bossPos.x + (dirX / len) * 180,
+      y: bossPos.y + (dirY / len) * 180,
+      z: bossPos.z + 4,
+    }
+  } else if (target) {
     if (hero === 'hero_forge' && inChannelLock) {
       // Aim McGinnis Heavy Barrage rockets at the ground around the target's base.
       lookPoint = {
@@ -702,14 +807,38 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
     state.lastCheckAt = now
   }
 
-  // 4. Primary Weapon Attack, Melee Weave, Mobility Dash, and Hero Ability Casting
-  if (target && target.distance3D <= 1900) {
-    // Hold primary fire whenever a target is locked (except during McGinnis/Bebop channel ultimates).
-    const suppressPrimaryForChannel =
-      inChannelLock && (hero === 'hero_forge' || hero === 'hero_bebop')
-    if (!suppressPrimaryForChannel) {
-      held |= buttons.attack
+  // 4. Handle pending 2-tick Confirm-Cast rising edge & subsequent-tick verification / backoff
+  // Using `else if` guarantees Confirm (`Buttons.attack`) is always sent on its own tick
+  // BEFORE Verify checks whether the engine accepted the cast and started cooldown!
+  if (state.pendingConfirmAt > 0 && now >= state.pendingConfirmAt) {
+    pressed |= buttons.attack
+    state.pendingConfirmAt = 0
+    if (state.pendingVerifySlot >= 0) {
+      state.pendingVerifyAt = now + 0.12
     }
+  } else if (
+    state.pendingVerifySlot >= 0 &&
+    state.pendingVerifyAt > 0 &&
+    now >= state.pendingVerifyAt
+  ) {
+    const slot = state.pendingVerifySlot
+    const checked = abilities.find((a) => a.slot === slot)
+    const didFire = Boolean(
+      checked &&
+        (checked.cooldownEnd > now ||
+          checked.charges < state.pendingVerifyChargesBefore),
+    )
+    if (!didFire) {
+      // Cancel any leftover preview with altFire and back off this slot so the
+      // Boss immediately casts its NEXT ready ability and keeps shooting!
+      pressed |= buttons.altFire
+      if (slot >= 0 && slot <= 3) {
+        state.slotBackoffUntil[slot] = now + 2.5
+      }
+      state.nextAbilityAt = Math.min(state.nextAbilityAt, now + 0.2)
+    }
+    state.pendingVerifySlot = -1
+    state.pendingVerifyAt = 0
   }
 
   // Trigger Abrams Seismic Impact ground-slam tap once airborne!
@@ -738,11 +867,11 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
       flatDistance2D(bossPos, wp) > 230
     ) {
       pressed |= buttons.dash
-      state.nextDashAt = now + 4.5
+      state.nextDashAt = now + 4.0
     }
 
-    // Hero-specific ability / ultimate cast
-    if (target && now >= state.nextAbilityAt) {
+    // Hero-specific ability / ultimate cast (fast 0.65s combo chaining!)
+    if (target && now >= state.nextAbilityAt && state.pendingConfirmAt === 0) {
       const hpRatio = bossMaxHealth > 0 ? bossHealth / bossMaxHealth : 1
       const decision = chooseBossAbilityPress(
         hero,
@@ -752,17 +881,43 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
         hpRatio,
         now,
         buttons,
+        state.slotBackoffUntil,
       )
       if (decision) {
+        const castAbil = abilities.find((a) => a.slot === decision.slot)
         pressed |= decision.pressed
-        state.nextAbilityAt = now + Math.max(1.8, decision.channelDuration + 0.6)
+        // Release primary fire briefly for 100ms so firing/reload never blocks cast activation
+        // and so Tick 2's Buttons.attack confirm produces a true rising edge!
+        state.releasePrimaryUntil = now + 0.1
+        state.nextAbilityAt =
+          decision.channelDuration > 0
+            ? now + decision.channelDuration + 0.4
+            : now + 0.65
         if (decision.channelDuration > 0) {
           state.channelLockUntil = now + decision.channelDuration
         }
         if (decision.slamDelay) {
           state.slamTapAt = now + decision.slamDelay
         }
+        if (decision.groundAim) {
+          state.groundAimUntil = now + 0.22
+        }
+        if (decision.needsConfirmClick && decision.channelDuration === 0) {
+          state.pendingConfirmAt = now + 0.08
+          state.pendingVerifySlot = decision.slot
+          state.pendingVerifyAt = 0
+          state.pendingVerifyChargesBefore = castAbil?.charges ?? 0
+        }
       }
+    }
+  }
+
+  // 5. Primary Weapon Attack (held whenever not in a 100ms cast-initiation release or channel ultimate)
+  if (target && target.distance3D <= 1900 && now >= state.releasePrimaryUntil) {
+    const suppressPrimaryForChannel =
+      inChannelLock && (hero === 'hero_forge' || hero === 'hero_bebop')
+    if (!suppressPrimaryForChannel) {
+      held |= buttons.attack
     }
   }
 

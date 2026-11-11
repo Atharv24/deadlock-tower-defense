@@ -525,16 +525,136 @@ describe('Tier 1 — Enemy Hero Boss AI Navigation, Aiming & Combat Brain', () =
     assert.equal(kitePlan.mode, 'hero_combat')
     assert.ok(Math.abs(kitePlan.drive.facing.yaw - 90) < 2, 'Should aim North at kiting player')
     assert.ok(kitePlan.drive.forward < -0.5, 'Should backpedal South down the lane instead of chasing North')
-    assert.equal(
-      kitePlan.drive.pressed & TEST_BUTTONS.ability1,
-      0n,
-      'McGinnis must NOT open turret placement preview',
-    )
     assert.notEqual(
       kitePlan.drive.pressed & TEST_BUTTONS.ultimate,
       0n,
-      'McGinnis should cast Heavy Barrage ultimate when ready in range',
+      'McGinnis should prioritize Heavy Barrage ultimate when ready in range',
     )
+
+    // Verify 2-tick Confirm-Cast rising-edge & per-slot backoff fallthrough (#14):
+    // When McGinnis Heavy Barrage is on cooldown, she ground-aims & casts Mini Turret (slot 0),
+    // releases primary fire on Tick 1, taps fresh Buttons.attack on Tick 2, and if the turret
+    // failed to place (charges unchanged & cooldownEnd === 0), cancels with altFire on Tick 3
+    // and falls through to Medicinal Specter (slot 1) 200ms later!
+    const comboState = createBossAiState({ x: -190, y: 900, z: 388 }, 0)
+    const forgeAbils = [
+      {
+        name: 'citadel_ability_mini_turret',
+        slot: 0,
+        entity: 501,
+        upgrades: 0b1111,
+        charges: 2,
+        cooldownEnd: 0,
+        id: 1,
+        state: 0,
+        cooldownStart: 0,
+        rechargeStart: 0,
+        rechargeEnd: 0,
+        imbues: [],
+      },
+      {
+        name: 'citadel_ability_medicinal_specter',
+        slot: 1,
+        entity: 502,
+        upgrades: 0b1111,
+        charges: 0,
+        cooldownEnd: 0,
+        id: 2,
+        state: 0,
+        cooldownStart: 0,
+        rechargeStart: 0,
+        rechargeEnd: 0,
+        imbues: [],
+      },
+      {
+        name: 'citadel_ability_heavy_barrage',
+        slot: 3,
+        entity: 504,
+        upgrades: 0b1111,
+        charges: 0,
+        cooldownEnd: 99,
+        id: 4,
+        state: 0,
+        cooldownStart: 0,
+        rechargeStart: 0,
+        rechargeEnd: 0,
+        imbues: [],
+      },
+    ]
+    const heroTargetList = [
+      {
+        entity: 10,
+        position: { x: -190, y: 500, z: 388 },
+        velocity: { x: 0, y: 0, z: 0 },
+        health: 700,
+        maxHealth: 700,
+        hasLineOfSight: true,
+      },
+    ]
+    const tick1 = planBossDriveStep({
+      hero: 'hero_forge',
+      bossPos: { x: -190, y: 900, z: 388 },
+      bossEyePos: { x: -190, y: 900, z: 480 },
+      bossHealth: 4000,
+      bossMaxHealth: 5000,
+      abilities: forgeAbils,
+      heroes: heroTargetList,
+      state: comboState,
+      now: 1.0,
+      buttons: TEST_BUTTONS,
+    })
+    assert.notEqual(tick1.drive.pressed & TEST_BUTTONS.ability1, 0n, 'Tick 1 presses Mini Turret')
+    assert.equal(
+      tick1.drive.held & TEST_BUTTONS.attack,
+      0n,
+      'Tick 1 releases held primary fire so Tick 2 creates a clean rising edge',
+    )
+
+    const tick2 = planBossDriveStep({
+      hero: 'hero_forge',
+      bossPos: { x: -190, y: 900, z: 388 },
+      bossEyePos: { x: -190, y: 900, z: 480 },
+      bossHealth: 4000,
+      bossMaxHealth: 5000,
+      abilities: forgeAbils,
+      heroes: heroTargetList,
+      state: comboState,
+      now: 1.1,
+      buttons: TEST_BUTTONS,
+    })
+    assert.notEqual(tick2.drive.pressed & TEST_BUTTONS.attack, 0n, 'Tick 2 confirms placement with fresh LMB')
+    assert.ok(tick2.drive.facing.pitch > 15, 'Tick 2 pitches view downward toward ground for turret placement')
+
+    // Simulate failed placement (charges stayed 2, cooldownEnd stayed 0) -> Tick 3 cancels & backs off slot 0
+    const tick3 = planBossDriveStep({
+      hero: 'hero_forge',
+      bossPos: { x: -190, y: 900, z: 388 },
+      bossEyePos: { x: -190, y: 900, z: 480 },
+      bossHealth: 4000,
+      bossMaxHealth: 5000,
+      abilities: forgeAbils,
+      heroes: heroTargetList,
+      state: comboState,
+      now: 1.25,
+      buttons: TEST_BUTTONS,
+    })
+    assert.notEqual(tick3.drive.pressed & TEST_BUTTONS.altFire, 0n, 'Tick 3 cancels stuck preview via altFire')
+    assert.ok(comboState.slotBackoffUntil[0] > 2.0, 'Slot 0 enters temporary backoff')
+
+    // 200ms later (t=1.5s), Boss immediately falls through to slot 1 (Medicinal Specter) without hesitation!
+    const tick4 = planBossDriveStep({
+      hero: 'hero_forge',
+      bossPos: { x: -190, y: 900, z: 388 },
+      bossEyePos: { x: -190, y: 900, z: 480 },
+      bossHealth: 4000,
+      bossMaxHealth: 5000,
+      abilities: forgeAbils,
+      heroes: heroTargetList,
+      state: comboState,
+      now: 1.5,
+      buttons: TEST_BUTTONS,
+    })
+    assert.notEqual(tick4.drive.pressed & TEST_BUTTONS.ability2, 0n, 'Tick 4 immediately casts next ready ability')
 
     // Verify Guardian siege priority ignores unprovoked distant heroes (> 950u) once in siege zone
     const siegeTarget = selectBossTarget(
@@ -632,6 +752,8 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   })
 
   const appliedModifiers: string[] = []
+  const refreshedAbilities: string[] = []
+  const heldModifierStates: Array<{ entity: number; state: string; active: boolean }> = []
   const executedServerCommands: string[] = []
   const spawnedTrooperUnits: string[] = []
   const emittedSounds: Array<{ entity: number; sound: string }> = []
@@ -766,6 +888,15 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       const found = this.abilityList.find((a) => a.name === opts.ability)
       if (found && opts.upgrades !== undefined) {
         found.upgrades = opts.upgrades
+      }
+      return true
+    }
+    refreshAbility(ability: string) {
+      refreshedAbilities.push(ability)
+      const found = this.abilityList.find((a) => a.name === ability)
+      if (found) {
+        found.cooldownEnd = 0
+        found.rechargeEnd = 0
       }
       return true
     }
@@ -966,7 +1097,10 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       globalThis.__mockModlock.lifeStateStore.set(opts.victim, 2);
       return true;
     };
-    export const holdModifierState = () => true;
+    export const holdModifierState = (entity, state, active) => {
+      globalThis.__mockModlock.heldModifierStates.push({ entity, state, active: active !== false });
+      return true;
+    };
     export const entityClass = (entity) => {
       if (entity >= 1600 && entity < 1700) return { className: 'CNPC_TrooperNeutral', designerName: 'npc_trooper_neutral' };
       return { className: 'CNPC_Trooper', designerName: 'npc_trooper' };
@@ -1050,6 +1184,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     firedInputs,
     scaleStore,
     lifeStateStore,
+    heldModifierStates,
   }
 
   registerHooks({
@@ -1093,8 +1228,8 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     tomes.reset()
     waves.reset(0)
 
-    // Advance all 8 probe steps: world -> defender -> wave_scale -> tome_grant -> boon_and_guardian -> zombie_kamikaze -> boss_scale -> boss_combat
-    for (let step = 1; step <= 26 && !probePassed; step++) {
+    // Advance all 8 probe steps at 4 Hz (0.25s ticks): world -> defender -> wave_scale -> tome_grant -> boon_and_guardian -> zombie_kamikaze -> boss_scale -> boss_combat
+    for (let step = 1; step <= 40 && !probePassed; step++) {
       // Simulate spawned trooper_melee marching south to the Guardian pedestal ring (y = -1350, 442u from Guardian y = -1792)
       for (const [ent, model] of modelStore.entries()) {
         if (model.includes('necro_shambler')) {
@@ -1104,7 +1239,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
           }
         }
       }
-      probe.tick(step * 2, waves, guardian, tomes)
+      probe.tick(step * 0.25, waves, guardian, tomes)
       assert.equal(probeFailedReason, '', `TdProbe failed: ${probeFailedReason}`)
     }
 
@@ -1285,18 +1420,26 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     defenderPlayer.hero = 1
   })
 
-  it('skips placeholder Boss pawn (hero === 0) and applies scaled HP, Size, and Damage once real Boss hero spawns', () => {
+  it('skips placeholder Boss pawn (hero === 0), configures HP bar visibility & refreshed abilities, and awards Major Boon ONLY on Boss kill (#13, #14, #15)', () => {
     appliedModifiers.length = 0
+    refreshedAbilities.length = 0
+    heldModifierStates.length = 0
     scaleStore.clear()
     npcStore.clear()
 
-    const waves = new WaveManager()
+    const awardedMilestoneWaves: number[] = []
+    const waves = new WaveManager((w) => awardedMilestoneWaves.push(w))
     waves.reset(0)
     waves.wave = 9
 
-    // Spawn Wave 10 Boss (Tier 2: +5500 HP, 1.75x Size, 1.35x Damage mult)
+    // Spawn Wave 10 Boss (Tier 2: +5500 HP, 1.9x Size, 1.35x Damage mult)
     waves.spawnNextWave(50, true)
     assert.equal(waves.activeBosses.length, 1)
+    assert.deepEqual(
+      awardedMilestoneWaves,
+      [],
+      'Major Boon must NOT be awarded on Boss spawn (#13)',
+    )
     const boss = waves.activeBosses[0]
 
     // Simulate 1-frame placeholder pawn right after addBot (hero=0, abilities=[], pawnEntity=900)
@@ -1320,23 +1463,40 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     botMock.pawnEntity = 999
     botMock.health = 700
     botMock.maxHealth = 700
+    npcStore.set(999, {
+      health: 700,
+      maxHealth: 700,
+      team: 3,
+      position: { x: -55, y: 1200, z: 390 },
+    })
     botMock.abilityList = [
-      { name: 'citadel_ability_bull_charge', slot: 0 },
-      { name: 'citadel_ability_bull_leap', slot: 3 },
+      { name: 'citadel_ability_bull_charge', slot: 0, cooldownEnd: 25 },
+      { name: 'citadel_ability_bull_leap', slot: 3, cooldownEnd: 60 },
     ]
 
     waves.tickActiveBosses(51)
     assert.equal(boss.configuredPawnEntity, 999)
     assert.equal(appliedModifiers.includes('td_boss_hero_stats_2'), true)
     assert.equal(appliedModifiers.includes('td_tome_ammo'), true)
+    assert.equal(appliedModifiers.includes('td_tome_cdr'), true)
     assert.equal(botMock.abilityList[0].upgrades, 0b0111)
+    assert.equal(botMock.abilityList[0].cooldownEnd, 0, 'Expected refreshAbility to clear initial cooldowns (#14)')
+    assert.ok(refreshedAbilities.includes('citadel_ability_bull_leap'))
+    assert.ok(
+      heldModifierStates.some(
+        (s) => s.entity === 999 && s.state === 'MODIFIER_STATE_VISIBLE_TO_ENEMY' && s.active,
+      ),
+      'Expected MODIFIER_STATE_VISIBLE_TO_ENEMY to keep Boss 3D overhead HP bar visible (#15)',
+    )
     assert.ok(botMock.lastDrive !== undefined, 'Expected Boss bot.drive(...) to be active immediately')
     assert.ok(botMock.position.y < 1200, 'Expected Boss to start marching south out of spawn')
     assert.equal(scaleStore.get(999), 1.9)
     assert.equal(botMock.maxHealth, 6200)
     assert.equal(botMock.health, 6200)
+    assert.equal(boss.currentHp, 6200)
+    assert.equal(boss.currentMaxHp, 6200)
 
-    // Verify Defender damaging Boss records provocation aggro on Boss AI state
+    // Verify Defender damaging Boss (non-lethal) records provocation aggro WITHOUT granting Boon yet
     waves.handleCreepPostDamage(
       {
         victim: 999,
@@ -1351,6 +1511,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     )
     assert.equal(boss.ai.provokedHeroEntity, defenderPlayer.pawnEntity)
     assert.equal(boss.ai.provokedUntil, 58)
+    assert.deepEqual(awardedMilestoneWaves, [])
 
     // Verify Boss outgoing damage is scaled in modifyIncomingDamage
     const bossHit = waves.modifyIncomingDamage({
@@ -1363,6 +1524,24 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       amount: 100,
     })
     assert.equal(bossHit?.amount, 135)
+
+    // Verify lethal hit on Boss retires Boss AND awards Wave 10 Major Boon + 400 Souls (#13)!
+    const soulsBeforeKill = defenderPlayer.souls
+    waves.handleCreepPostDamage(
+      {
+        victim: 999,
+        attacker: defenderPlayer.pawnEntity,
+        ability: 0,
+        healthBefore: 400,
+        healthLost: 400,
+        dealt: 450,
+      },
+      undefined,
+      60,
+    )
+    assert.equal(waves.activeBosses.length, 0)
+    assert.deepEqual(awardedMilestoneWaves, [10])
+    assert.equal(defenderPlayer.souls, soulsBeforeKill + 400)
   })
 
   it('arms and detonates Graves Zombies on Guardian & Hero proximity AND on direct damage, killing the zombie 100% of the time without killing ranged troopers', () => {

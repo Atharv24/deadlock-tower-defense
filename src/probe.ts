@@ -93,9 +93,9 @@ export class TdProbe {
       case 'zombie_kamikaze':
         return this.checkZombieKamikaze(now, waves, guardian)
       case 'boss_scale':
-        return this.checkBossScale(now, waves, guardian)
+        return this.checkBossScale(now, waves, guardian, tomes)
       case 'boss_combat':
-        return this.checkBossCombat(now, waves, guardian)
+        return this.checkBossCombat(now, waves, guardian, tomes)
     }
   }
 
@@ -371,14 +371,19 @@ export class TdProbe {
     now: number,
     waves: WaveManager,
     guardian: GuardianManager,
+    tomes: TomeManager,
   ): boolean | string {
     if (!this.bossSpawned) {
       // Park defender behind Guardian so newly spawned Bosses begin marching down Center Lane undisturbed.
       this.defender?.teleport({ x: 0, y: -2750, z: 390 }, PLAYER_SPAWN_ANGLES)
+      tomes.pendingBoonChoices.clear()
       waves.wave = 4
       waves.spawnNextWave(now, true)
       waves.wave = 9
       waves.spawnNextWave(now, true)
+      if (this.defender && tomes.pendingBoonChoices.has(this.defender.slot)) {
+        return 'Major Boon was erroneously granted on Boss spawn instead of Boss kill!'
+      }
       this.bossSpawned = true
       return false
     }
@@ -415,9 +420,12 @@ export class TdProbe {
       'float32',
     )
     log(
-      `Probe: Boss Wave 5 (${b5.hero}) HP=${p5?.health}/${p5?.maxHealth} m_flScale=${scale5} (target=${b5.targetScale}) | Wave 10 (${b10.hero}) HP=${p10?.health}/${p10?.maxHealth} m_flScale=${scale10} (target=${b10.targetScale})`,
+      `Probe: Boss Wave 5 (${b5.hero}) HP=${b5.currentHp}/${b5.currentMaxHp} (pawn=${p5?.health}/${p5?.maxHealth}) m_flScale=${scale5} | Wave 10 (${b10.hero}) HP=${b10.currentHp}/${b10.currentMaxHp} (pawn=${p10?.health}/${p10?.maxHealth}) m_flScale=${scale10}`,
     )
 
+    if (b10.currentMaxHp < 5500) {
+      return `Boss Wave 10 synced currentMaxHp too low: ${b10.currentMaxHp}`
+    }
     if (typeof scale5 !== 'number' || typeof scale10 !== 'number') {
       return `failed to read Boss CGameSceneNode.m_flScale: scale5=${scale5}, scale10=${scale10}`
     }
@@ -436,7 +444,7 @@ export class TdProbe {
       waves.activeBosses.splice(idx5, 1)
     }
 
-    log('Probe: verified Boss HP & 3.5x Size scaling — advancing to Boss lane march & combat check')
+    log('Probe: verified Boss HP, HP bar sync & 3.5x Size scaling — advancing to Boss lane march & combat check')
     this.step = 'boss_combat'
     return false
   }
@@ -445,6 +453,7 @@ export class TdProbe {
     now: number,
     waves: WaveManager,
     guardian: GuardianManager,
+    tomes: TomeManager,
   ): boolean | string {
     waves.tickActiveBosses(now, guardian)
 
@@ -496,8 +505,27 @@ export class TdProbe {
       return false
     }
 
+    // Sub-phase 3: Verify Major Boon is awarded upon Boss kill (#13)!
+    const bossEnt = b10.configuredPawnEntity
+    const bossHp = Math.max(1, b10.currentHp)
+    waves.handleCreepPostDamage(
+      {
+        victim: bossEnt,
+        attacker: this.defender?.pawn()?.entity ?? 1,
+        ability: 0,
+        healthBefore: bossHp,
+        healthLost: bossHp,
+        dealt: bossHp,
+      },
+      guardian,
+      now,
+    )
+    if (!this.defender || !tomes.pendingBoonChoices.has(this.defender.slot)) {
+      return 'Major Boon was NOT awarded when Wave 10 Boss was killed!'
+    }
+
     log(
-      `Probe: verified Boss Wave 10 (${b10.hero}) aimed & dealt live combat damage via Player.drive (Defender HP ${this.defenderHpBeforeBoss} -> ${defHp}, Guardian HP ${this.guardianHpBeforeBoss} -> ${guardian.health}, dmgMult=${b10.damageMult}x) — ALL CHECKS PASSED`,
+      `Probe: verified Boss Wave 10 (${b10.hero}) aimed & dealt live combat damage (Defender HP ${this.defenderHpBeforeBoss} -> ${defHp}, Guardian HP ${this.guardianHpBeforeBoss} -> ${guardian.health}, dmgMult=${b10.damageMult}x) and granted Major Boon on Boss kill — ALL CHECKS PASSED`,
     )
     return true
   }

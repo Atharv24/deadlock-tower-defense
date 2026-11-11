@@ -216,8 +216,8 @@ elseif ($Action -eq "Install") {
 elseif ($Action -eq "Dev") {
     Invoke-InstallFiles
     if ($Probe) {
-        Write-Host "`nLaunching Modlock Dev Session in Automated Probe Mode (modlock dev --arg probe)..." -ForegroundColor Cyan
-        & $modlockExe dev --arg probe
+        Write-Host "`nLaunching Modlock Dev Session in Automated Probe Mode (modlock dev --no-game --arg probe)..." -ForegroundColor Cyan
+        & $modlockExe dev --no-game --arg probe
     } else {
         Write-Host "`nLaunching Modlock Play Session with Live Hot-Reload (modlock play)..." -ForegroundColor Cyan
         & $modlockExe play
