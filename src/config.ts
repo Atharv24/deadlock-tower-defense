@@ -86,6 +86,11 @@ export interface WaveNeutralVarietyDef {
     | 'td_neutral_puppeteer'
     | 'td_neutral_pigeon'
     | 'td_neutral_mushroom'
+  readonly vanillaUnit:
+    | 'neutral_lantern_normal'
+    | 'neutral_theater_normal'
+    | 'neutral_rooftop_pigeon_normal'
+    | 'neutral_mushroom_strong'
   readonly label: string
   readonly model: string
   readonly hpMult: number
@@ -95,6 +100,7 @@ export interface WaveNeutralVarietyDef {
 export const WAVE_NEUTRAL_VARIETY_POOL: readonly WaveNeutralVarietyDef[] = [
   {
     unit: 'td_neutral_lantern',
+    vanillaUnit: 'neutral_lantern_normal',
     label: 'Chinatown Lantern',
     model: 'models/npc_units/neutral_ct_lanterns/neutral_ct_lantern.vmdl',
     hpMult: 1.0,
@@ -102,6 +108,7 @@ export const WAVE_NEUTRAL_VARIETY_POOL: readonly WaveNeutralVarietyDef[] = [
   },
   {
     unit: 'td_neutral_puppeteer',
+    vanillaUnit: 'neutral_theater_normal',
     label: 'Theatre Puppeteer',
     model: 'models/npc_units/neutral_theatre_puppeteer_02/neutral_theatre_puppeteer_02.vmdl',
     hpMult: 1.1,
@@ -109,6 +116,7 @@ export const WAVE_NEUTRAL_VARIETY_POOL: readonly WaveNeutralVarietyDef[] = [
   },
   {
     unit: 'td_neutral_pigeon',
+    vanillaUnit: 'neutral_rooftop_pigeon_normal',
     label: 'Cerberus Pigeon',
     model: 'models/npc_units/neutral_pigeon_cerberus/neutral_pigeon_cerberus.vmdl',
     hpMult: 0.95,
@@ -116,6 +124,7 @@ export const WAVE_NEUTRAL_VARIETY_POOL: readonly WaveNeutralVarietyDef[] = [
   },
   {
     unit: 'td_neutral_mushroom',
+    vanillaUnit: 'neutral_mushroom_strong',
     label: 'Giant Spore Mushroom',
     model: 'models/npc_units/neutral_mushroom_large_01/neutral_mushroom_large_01.vmdl',
     hpMult: 1.35,
@@ -360,10 +369,6 @@ export const TD_SERVER_CVARS: readonly (readonly [string, string | number])[] = 
   ['citadel_tutorial_close_shop', 0],
   ['citadel_allow_purchasing_anywhere', 1],
   ['citadel_disable_purchasing_in_combat', 0],
-  ['citadel_coop_sandbox', 1],
-  ['citadel_hero_testing_enabled', 1],
-  ['citadel_hero_testing_infinite_money', 0],
-  ['citadel_hero_demo_no_troopers', 0],
   ['citadel_hero_testing_legendary_items', 1],
 ] as const
 
@@ -527,11 +532,33 @@ export function parseSlashCommandLine(
 
 /**
  * Identifies whether an unscaled `npc_trooper` base maxHealth corresponds to
- * `trooper_melee` (Graves Zombie: base `m_nMaxHealth = 413`, vs `150` for
- * `trooper_normal`, `trooper_medic`, and `td_neutral_*`).
+ * `trooper_melee` (Graves Zombie: base `m_nMaxHealth = 413` custom / `400` vanilla,
+ * vs `150`–`300` for `trooper_normal`, `trooper_medic`, and `td_neutral_*`).
  */
 export function isExplodingZombieBaseMaxHp(unscaledMaxHp: number): boolean {
   return unscaledMaxHp >= 380 && unscaledMaxHp <= 440
+}
+
+/**
+ * Pure model/designer check identifying exploding melee troopers & Graves Shamblers
+ * across both `pak20_dir.vpk` (`necro_shambler.vmdl`) and stock vanilla Deadlock
+ * (`npc_necro_skele` and `amber_trooper_01_melee` / `sapphire_trooper_01_melee`).
+ */
+export function isExplodingZombieIdentity(
+  designerName: string | undefined,
+  modelName: string | undefined,
+  unscaledMaxHp: number,
+): boolean {
+  if (designerName === 'npc_necro_skele') {
+    return true
+  }
+  if (designerName && designerName !== 'npc_trooper') {
+    return false
+  }
+  if (typeof modelName === 'string' && modelName.length > 0) {
+    return modelName.includes('necro_shambler') || modelName.includes('_melee')
+  }
+  return isExplodingZombieBaseMaxHp(unscaledMaxHp)
 }
 
 export type ZombieDetonationTargetKind =
@@ -574,6 +601,7 @@ export function isWithinZombieDetonationRange(
 
 export interface WaveNeutralSpawnSpec {
   readonly unit: WaveNeutralVarietyDef['unit']
+  readonly vanillaUnit: WaveNeutralVarietyDef['vanillaUnit']
   readonly label: string
   readonly targetHp: number
   readonly targetScale: number
@@ -602,6 +630,7 @@ export function getWaveNeutralSpawns(wave: number): WaveNeutralSpawnSpec[] {
     )
     out.push({
       unit: def.unit,
+      vanillaUnit: def.vanillaUnit,
       label: def.label,
       targetHp: scaledHp,
       targetScale: scaledSize,
@@ -609,6 +638,65 @@ export function getWaveNeutralSpawns(wave: number): WaveNeutralSpawnSpec[] {
     })
   }
   return out
+}
+
+export interface VanillaTomeBonuses {
+  readonly weaponDamageMult: number
+  readonly abilityDamageMult: number
+  readonly bonusMaxHp: number
+  readonly regenPerSecond: number
+  readonly cooldownReductionFraction: number
+}
+
+/**
+ * Computes runtime stat multipliers for Minor Tomes & Major Boons on vanilla
+ * servers where `pak20_dir.vpk` (`td_tome_*`) is not mounted on `server.dll`.
+ */
+export function computeVanillaTomeBonuses(
+  tally: Readonly<Record<string, number>>,
+): VanillaTomeBonuses {
+  const weapon = Math.max(0, tally.weapon ?? 0)
+  const firerate = Math.max(0, tally.firerate ?? 0)
+  const spirit = Math.max(0, tally.spirit ?? 0)
+  const range = Math.max(0, tally.range ?? 0)
+  const health = Math.max(0, tally.health ?? 0)
+  const cooldown = Math.max(0, tally.cooldown ?? 0)
+  const omni = Math.max(0, tally.omni ?? 0)
+
+  const weaponDamageMult = Number(
+    (1 + 0.1 * weapon + 0.05 * firerate + 0.075 * omni).toFixed(4),
+  )
+  const abilityDamageMult = Number(
+    (1 + 0.06 * spirit + 0.03 * range + 0.04 * omni).toFixed(4),
+  )
+  const bonusMaxHp = Math.round(80 * health + 40 * omni)
+  const regenPerSecond = Number((2 * health + 1 * omni).toFixed(2))
+  const cooldownReductionFraction = Number(
+    Math.min(0.6, 0.03 * cooldown + 0.015 * omni).toFixed(4),
+  )
+
+  return {
+    weaponDamageMult,
+    abilityDamageMult,
+    bonusMaxHp,
+    regenPerSecond,
+    cooldownReductionFraction,
+  }
+}
+
+/**
+ * Computes incoming damage scale (`baseMaxHp / (baseMaxHp + bonusMaxHp)`) so
+ * Vitality & Omni Tomes grant exact Effective Max HP on vanilla servers without
+ * `CCitadelPlayerPawn` health clamping.
+ */
+export function computeVanillaEffectiveHpDamageScale(
+  baseMaxHp: number,
+  bonusMaxHp: number,
+): number {
+  if (baseMaxHp <= 0 || bonusMaxHp <= 0) {
+    return 1
+  }
+  return Number((baseMaxHp / (baseMaxHp + bonusMaxHp)).toFixed(4))
 }
 
 /** Reports whether the given 1-indexed wave number is a Boss Hero wave. */

@@ -1,8 +1,8 @@
 {
   "slug": "deadlock-td",
   "name": "Deadlock Tower Defense",
-  "version": "0.5.0",
-  "description": "Endless single-lane wave survival from Blue Guardian down to the Amber Patron, featuring Enemy Hero Bosses, Graves Kamikaze Zombies, last-hit Tomes, 1-of-3 Major Boons, and All-Structure Fortification. Download the tiny client VData addon from https://github.com/Atharv24/deadlock-tower-defense/releases for full custom modifiers, zombies, and wave neutral creeps!",
+  "version": "0.5.1",
+  "description": "Endless single-lane wave survival from Blue Guardian down to the Amber Patron — works out-of-the-box on Hyperline servers with Raid Bosses, Graves Shambler kamikaze zombies, steered wave neutrals, last-hit Tomes, 1-of-3 Major Boons, and All-Structure Fortification! Optional client VData addon at https://github.com/Atharv24/deadlock-tower-defense/releases",
   "repository": "https://github.com/Atharv24/deadlock-tower-defense",
   "language": "LANGUAGE_TYPESCRIPT",
   "map": "dl_midtown",

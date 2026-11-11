@@ -483,6 +483,68 @@ export class TdProbe {
       return false
     }
 
+    if (!waves.hasCustomVdata) {
+      waves.tickActiveBosses(now, guardian)
+      const scale5 = readField(
+        b5.configuredPawnEntity,
+        'CGameSceneNode',
+        'm_flScale',
+        'float32',
+      )
+      const scale10 = readField(
+        b10.configuredPawnEntity,
+        'CGameSceneNode',
+        'm_flScale',
+        'float32',
+      )
+      if (b10.currentMaxHp < 5500 || b10.currentMaxHp <= b5.currentMaxHp) {
+        return `Vanilla Boss Max HP did not scale across waves: Wave 5=${b5.currentMaxHp}, Wave 10=${b10.currentMaxHp}`
+      }
+      if (typeof scale10 === 'number' && scale10 < 1.12) {
+        return `Expected Vanilla Boss Colossus scale >= 1.12, got ${scale10}`
+      }
+      // Verify Vanilla Tome outgoing damage scaling for Team 2 Defender!
+      if (this.defender) {
+        tomes.applyMinorTome(this.defender, {
+          id: 'weapon',
+          name: 'Tome of Arms',
+          shortLabel: 'Weapon',
+          description: '+10% Weapon Damage',
+          kind: 'modifier',
+          modifier: 'td_tome_weapon',
+          color: '#fb923c',
+        })
+        const defEnt = this.defender.pawn()?.entity ?? 0
+        const boosted = waves.modifyIncomingDamage(
+          {
+            victim: this.testCreepEntity || 999,
+            attacker: defEnt,
+            ability: 0,
+            inflictor: defEnt,
+            amount: 100,
+            flags: 0n,
+            hitGroup: 0,
+          },
+          guardian,
+          tomes,
+        )
+        if (!boosted || (boosted.amount ?? 100) <= 105) {
+          return `Vanilla Tome outgoing weapon damage did not scale above 105 (got ${boosted?.amount})`
+        }
+      }
+      log(
+        `Probe (Vanilla Server Mode): verified Wave 5 (${b5.currentMaxHp} HP, scale=${scale5}) & Wave 10 (${b10.currentMaxHp} HP, scale=${scale10}) Colossus Raid Bosses + Vanilla Tome scaling!`,
+      )
+      const idx5 = waves.activeBosses.findIndex((b) => b.wave === 5)
+      if (idx5 >= 0) {
+        waves.activeBosses[idx5].bot.drive()
+        waves.activeBosses[idx5].bot.removeBot()
+        waves.activeBosses.splice(idx5, 1)
+      }
+      this.step = 'boss_combat'
+      return false
+    }
+
     // Sub-phase 1: Spawn a live enemy trooper under Wave 51's hidden C++ aura (`td_creep_scale_aura_16`, 1.65x)
     // and verify BOTH `m_flScale ~= 1.65` AND real Defender gun bullets hit its scaled high torso/head (`z + 98`,
     // 20u above an unscaled 1.0x trooper's 78u top — which previously missed 100% under SetAbsScale, #16!).

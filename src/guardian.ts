@@ -137,6 +137,7 @@ export class GuardianManager {
     readonly modifier: string
     expiresAt: number
   }
+  private customFortifyAuraAvailable: boolean | undefined = undefined
 
   /** Resets all structure tracking for a new world or `/restarttd`. */
   reset(): void {
@@ -349,6 +350,9 @@ export class GuardianManager {
    * Defender Hero so ALL friendly structures fire & cycle abilities faster as fortified!
    */
   syncStructureFortifyAura(now = 0): void {
+    if (this.customFortifyAuraAvailable === false) {
+      return
+    }
     const spec = getStructureFortifyAuraSpec(this.upgradeLevel)
     if (!spec.active) {
       this.activeFortifyAura = undefined
@@ -380,11 +384,14 @@ export class GuardianManager {
       now >= this.activeFortifyAura.expiresAt + 0.05
     ) {
       if (carrierPlayer.giveModifier(spec.modifier, leaseSeconds)) {
+        this.customFortifyAuraAvailable = true
         this.activeFortifyAura = {
           pawnEntity: carrierPawnEntity,
           modifier: spec.modifier,
           expiresAt: now > 0 ? now + leaseSeconds : 0,
         }
+      } else if (carrierPlayer.abilities().length > 0) {
+        this.customFortifyAuraAvailable = false
       }
       return
     }

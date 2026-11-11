@@ -24,6 +24,8 @@ import {
   computeGuardianRepair,
   computeGuardianUpgradeCost,
   computeStructureDamageMult,
+  computeVanillaEffectiveHpDamageScale,
+  computeVanillaTomeBonuses,
   computeWaveCreepDamageMult,
   computeWaveCreepHp,
   computeWaveCreepScale,
@@ -50,6 +52,7 @@ import {
   GUARDIAN_UPGRADE_COST_STEP_SOULS,
   isBossWave,
   isExplodingZombieBaseMaxHp,
+  isExplodingZombieIdentity,
   isWithinZombieDetonationRange,
   MAX_CREEP_HP,
   MAX_CREEP_SCALE,
@@ -160,10 +163,9 @@ describe('Tier 1 — Wave Scaling & Boss Wave Math', () => {
     assert.equal(cvarMap.get('citadel_trooper_max_per_lane'), 36)
     assert.equal(cvarMap.get('citadel_trooper_squad_size'), ZIPLINE_SQUAD_SIZE)
     assert.equal(cvarMap.get('citadel_trooper_health_mult_gametime'), 9999)
-    assert.equal(cvarMap.get('citadel_hero_testing_enabled'), 1)
     assert.equal(cvarMap.get('citadel_hero_testing_legendary_items'), 1)
-    assert.equal(cvarMap.get('citadel_hero_testing_infinite_money'), 0)
-    assert.equal(cvarMap.get('citadel_hero_demo_no_troopers'), 0)
+    assert.equal(cvarMap.has('citadel_hero_testing_enabled'), false)
+    assert.equal(cvarMap.has('citadel_coop_sandbox'), false)
     assert.equal(cvarMap.has('citadel_SoloLane'), false)
     assert.equal(cvarMap.has('citadel_TrooperMax_Simultanous'), false)
   })
@@ -420,11 +422,60 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
     assert.equal(parseSlashCommandLine('/   '), undefined)
   })
 
-  it('distinguishes Graves Zombie base maxHP (400) from ranged troopers (300/350)', () => {
+  it('distinguishes Graves Zombie base maxHP (400) and vanilla/custom melee & shambler identities from ranged troopers', () => {
     assert.equal(isExplodingZombieBaseMaxHp(400), true)
     assert.equal(isExplodingZombieBaseMaxHp(300), false)
     assert.equal(isExplodingZombieBaseMaxHp(350), false)
     assert.equal(isExplodingZombieBaseMaxHp(1), false)
+
+    assert.equal(
+      isExplodingZombieIdentity('npc_necro_skele', 'models/heroes_wip/necro/necro_shambler.vmdl', 100),
+      true,
+    )
+    assert.equal(
+      isExplodingZombieIdentity('npc_trooper', 'models/npc_units/trooper/sapphire_trooper_01_melee.vmdl', 400),
+      true,
+    )
+    assert.equal(
+      isExplodingZombieIdentity('npc_trooper', 'models/npc_units/trooper/amber_trooper_01_melee.vmdl', 400),
+      true,
+    )
+    assert.equal(
+      isExplodingZombieIdentity('npc_trooper', 'models/heroes_wip/necro/necro_shambler.vmdl', 413),
+      true,
+    )
+    assert.equal(
+      isExplodingZombieIdentity('npc_trooper', 'models/npc_units/trooper/sapphire_trooper_01.vmdl', 300),
+      false,
+    )
+    assert.equal(
+      isExplodingZombieIdentity('npc_trooper_neutral', 'models/npc_units/neutral_ct_lanterns/neutral_ct_lantern.vmdl', 400),
+      false,
+    )
+
+    // Verify vanilla unit mappings & vanilla Tome scaling math
+    const w1Vanilla = getWaveNeutralSpawns(1).map((s) => s.vanillaUnit)
+    const w2Vanilla = getWaveNeutralSpawns(2).map((s) => s.vanillaUnit)
+    assert.deepEqual(w1Vanilla, ['neutral_lantern_normal', 'neutral_theater_normal'])
+    assert.deepEqual(w2Vanilla, ['neutral_rooftop_pigeon_normal', 'neutral_mushroom_strong'])
+
+    const vanillaTomes = computeVanillaTomeBonuses({
+      weapon: 3,
+      firerate: 2,
+      spirit: 4,
+      range: 1,
+      health: 2,
+      cooldown: 5,
+      omni: 2,
+    })
+    assert.equal(vanillaTomes.weaponDamageMult, 1.55)
+    assert.equal(vanillaTomes.abilityDamageMult, 1.35)
+    assert.equal(vanillaTomes.bonusMaxHp, 240)
+    assert.equal(vanillaTomes.regenPerSecond, 6)
+    assert.equal(vanillaTomes.cooldownReductionFraction, 0.18)
+
+    assert.equal(computeVanillaEffectiveHpDamageScale(700, 0), 1)
+    assert.equal(computeVanillaEffectiveHpDamageScale(700, 700), 0.5)
   })
 
   it('auto-quits server 30s after last human disconnects, ignoring cold startup and cancelling on reconnect', () => {
@@ -1047,6 +1098,11 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   const lifeStateStore = new Map<number, number>()
   const modelStore = new Map<number, string>()
   const trooperIds = new Set<number>()
+  const neutralIds = new Set<number>()
+  const necroSkeleIds = new Set<number>()
+  const failedCustomModifiers: string[] = []
+  const givenItems: Array<{ slot: number; item: string }> = []
+  let mockVanillaMode = false
   let nextSpawnedEntityId = 2000
   let probePassed = false
   let probeFailedReason = ''
@@ -1140,12 +1196,22 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       this.ap += pts
       return true
     }
+    giveItem(item: string) {
+      givenItems.push({ slot: this.slot, item })
+      return true
+    }
     giveModifier(mod: string) {
       if (this.hero === 0 || this.abilityList.length === 0) {
         return false
       }
+      if (mockVanillaMode && mod.startsWith('td_')) {
+        failedCustomModifiers.push(mod)
+        return false
+      }
       appliedModifiers.push(mod)
-      if (mod.startsWith('td_boss_hero_stats_')) {
+      if (mod === 'upgrade_colossus/modifier_colossus_active') {
+        scaleStore.set(this.pawnEntity, 1.2)
+      } else if (mod.startsWith('td_boss_hero_stats_')) {
         const tier = Number(mod.replace('td_boss_hero_stats_', '')) || 1
         this.maxHealth = 700 + [2500, 5500, 10000, 16000, 25000][tier - 1]
         scaleStore.set(this.pawnEntity, [1.35, 1.5, 1.65, 1.8, 1.95][tier - 1])
@@ -1324,9 +1390,20 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       if (maxHp !== undefined) s.maxHealth = maxHp
       return true
     }
+    move(position: { x: number; y: number; z: number }) {
+      const s = npcStore.get(this.entity)
+      if (!s) return false
+      s.position = { ...position }
+      return true
+    }
+    holdModifier(_mod: string, _active?: boolean) {
+      return true
+    }
     remove() {
       const existed = npcStore.delete(this.entity)
       trooperIds.delete(this.entity)
+      neutralIds.delete(this.entity)
+      necroSkeleIds.delete(this.entity)
       modelStore.delete(this.entity)
       return existed
     }
@@ -1399,7 +1476,8 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       if (cls === 'info_trooper_spawn') return [14053, 14315, 14318, 14319, 14291, 14051];
       if (cls === 'info_neutral_trooper_camp') return [];
       if (cls === 'npc_trooper') return [...globalThis.__mockModlock.npcStore.keys()].filter((id) => (id >= 800 && id < 900) || globalThis.__mockModlock.trooperIds.has(id));
-      if (cls === 'npc_trooper_neutral') return [...globalThis.__mockModlock.npcStore.keys()].filter((id) => id >= 1600 && id < 1700);
+      if (cls === 'npc_trooper_neutral') return [...globalThis.__mockModlock.npcStore.keys()].filter((id) => (id >= 1600 && id < 1700) || globalThis.__mockModlock.neutralIds.has(id));
+      if (cls === 'npc_necro_skele') return [...globalThis.__mockModlock.npcStore.keys()].filter((id) => globalThis.__mockModlock.necroSkeleIds.has(id));
       if (cls === 'npc_trooper_boss') return globalThis.__mockModlock.npcStore.has(700) ? [700] : [];
       if (cls === 'npc_boss_tier2') return globalThis.__mockModlock.npcStore.has(701) ? [701] : [];
       if (cls === 'npc_barrack_boss') return [702, 703].filter((id) => globalThis.__mockModlock.npcStore.has(id));
@@ -1450,7 +1528,8 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     };
     export const entityClass = (entity) => {
       if (entity === 704 || entity === 705) return { className: 'CDestroyableBuilding', designerName: 'destroyable_building' };
-      if (entity >= 1600 && entity < 1700) return { className: 'CNPC_TrooperNeutral', designerName: 'npc_trooper_neutral' };
+      if ((entity >= 1600 && entity < 1700) || globalThis.__mockModlock.neutralIds.has(entity)) return { className: 'CNPC_TrooperNeutral', designerName: 'npc_trooper_neutral' };
+      if (globalThis.__mockModlock.necroSkeleIds.has(entity)) return { className: 'CNPC_NecroSkele', designerName: 'npc_necro_skele' };
       return { className: 'CNPC_Trooper', designerName: 'npc_trooper' };
     };
     export const moveEntity = (entity, pos) => {
@@ -1508,13 +1587,27 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       return true;
     };
     export const spawnNpc = (opts) => {
+      if (globalThis.__mockModlock.isVanillaMode() && opts.unit.startsWith('td_')) {
+        return undefined;
+      }
       const ent = globalThis.__mockModlock.allocSpawnEntity();
       globalThis.__mockModlock.spawnedTrooperUnits.push(opts.unit);
       if (opts.className === 'npc_trooper') {
         globalThis.__mockModlock.trooperIds.add(ent);
+      } else if (opts.className === 'npc_trooper_neutral') {
+        globalThis.__mockModlock.neutralIds.add(ent);
+      } else if (opts.className === 'npc_necro_skele') {
+        globalThis.__mockModlock.necroSkeleIds.add(ent);
       }
-      const defaultHp = opts.unit === 'trooper_melee' ? 413 : 150;
+      const defaultHp = opts.unit === 'trooper_melee' ? (globalThis.__mockModlock.isVanillaMode() ? 400 : 413) : 150;
       if (opts.unit === 'trooper_melee') {
+        globalThis.__mockModlock.modelStore.set(
+          ent,
+          globalThis.__mockModlock.isVanillaMode()
+            ? 'models/npc_units/trooper/sapphire_trooper_01_melee.vmdl'
+            : 'models/heroes_wip/necro/necro_shambler.vmdl'
+        );
+      } else if (opts.unit === 'npc_necro_skele') {
         globalThis.__mockModlock.modelStore.set(ent, 'models/heroes_wip/necro/necro_shambler.vmdl');
       }
       globalThis.__mockModlock.npcStore.set(ent, {
@@ -1542,6 +1635,9 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     spawnedTrooperUnits,
     emittedSounds,
     trooperIds,
+    neutralIds,
+    necroSkeleIds,
+    isVanillaMode: () => mockVanillaMode,
     modelStore,
     allocSpawnEntity: () => ++nextSpawnedEntityId,
     activeBossBots,
@@ -2151,6 +2247,152 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.ok(executedServerCommands.includes('citadel_respawn_boss_t2'))
     assert.ok(executedServerCommands.includes('citadel_respawn_boss_shrines'))
     assert.ok(executedServerCommands.includes('citadel_boss_tier_3_testing_reset'))
+  })
+
+  it('runs 100% cleanly on vanilla stock servers without pak20_dir.vpk (steered neutrals + Graves Shamblers, Colossus Bosses, Tome scaling, and zero missing-modifier spam)', () => {
+    mockVanillaMode = true
+    try {
+      npcStore.clear()
+      trooperIds.clear()
+      neutralIds.clear()
+      necroSkeleIds.clear()
+      modelStore.clear()
+      lifeStateStore.clear()
+      scaleStore.clear()
+      appliedModifiers.length = 0
+      failedCustomModifiers.length = 0
+      givenItems.length = 0
+      spawnedTrooperUnits.length = 0
+      activeBossBots.length = 0
+      seedMockTeam2Structures()
+      defenderPlayer.souls = 5000
+      defenderPlayer.health = 700
+      defenderPlayer.maxHealth = 700
+      defenderPlayer.position = { x: 0, y: -1950, z: 390 }
+
+      const guardian = new GuardianManager()
+      const tomes = new TomeManager()
+      const waves = new WaveManager((w) => tomes.offerMajorBoonForWave(w))
+      guardian.reset()
+      tomes.reset()
+      waves.reset(0)
+
+      // Spawn Wave 5 (Boss wave + vanilla steered neutrals + stock npc_necro_skele Shamblers)
+      waves.wave = 4
+      waves.spawnNextWave(20, true)
+      assert.equal(waves.hasCustomVdata, false, 'Should detect vanilla server mode immediately')
+      assert.ok(
+        spawnedTrooperUnits.includes('neutral_lantern_normal') ||
+          spawnedTrooperUnits.includes('neutral_rooftop_pigeon_normal'),
+        'Expected stock npc_trooper_neutral variants to spawn in vanilla mode',
+      )
+      assert.ok(
+        spawnedTrooperUnits.includes('npc_necro_skele'),
+        'Expected stock npc_necro_skele Graves Shamblers to spawn in vanilla mode',
+      )
+      assert.ok(
+        waves.spawnedWaveNeutrals.length >= 3,
+        'Expected steered wave neutrals + shamblers to be tracked',
+      )
+
+      // Verify tickSteeredWaveCreeps marches vanilla neutrals south down Center Lane!
+      const steeredEnt = waves.spawnedWaveNeutrals[0].entity
+      const startY = npcStore.get(steeredEnt)!.position.y
+      waves.tickSteeredWaveCreeps(0.5, guardian)
+      const movedY = npcStore.get(steeredEnt)!.position.y
+      assert.ok(movedY < startY, `Expected steered vanilla creep to march south (${movedY} < ${startY})`)
+
+      // Configure Boss bot in vanilla mode -> must NOT loop infinitely when td_boss_hero_stats_1 fails!
+      const boss = waves.activeBosses[0]
+      assert.ok(boss, 'Expected Wave 5 Boss to spawn')
+      const botMock = boss.bot as unknown as MockPlayer
+      botMock.hero = 6
+      botMock.health = 700
+      botMock.maxHealth = 700
+      botMock.abilityList = [
+        { name: 'citadel_ability_bull_charge', slot: 0, cooldownEnd: 0 },
+        { name: 'citadel_ability_bull_leap', slot: 3, cooldownEnd: 0 },
+      ]
+      waves.tickActiveBosses(21)
+      assert.equal(boss.configuredPawnEntity, botMock.pawnEntity, 'Boss must finish configuring in vanilla mode')
+      assert.ok(
+        appliedModifiers.includes('upgrade_colossus/modifier_colossus_active'),
+        'Expected stock Colossus modifier to scale Boss model + hitbox cleanly',
+      )
+      assert.equal(scaleStore.get(botMock.pawnEntity), 1.2)
+      assert.ok(
+        givenItems.some((g) => g.item === 'upgrade_colossus'),
+        'Expected stock Boss items to be granted',
+      )
+      assert.ok(boss.currentMaxHp >= 3200, `Expected Wave 5 vanilla Boss effective Max HP >= 3200, got ${boss.currentMaxHp}`)
+
+      // Grant multiple Tomes & Fortifications -> must probe custom VData at most ONCE per manager and never spam!
+      for (let i = 0; i < 6; i++) {
+        tomes.applyMinorTome(defenderPlayer as never, MINOR_TOME_POOL[1]) // Weapon Tome
+        tomes.applyMinorTome(defenderPlayer as never, MINOR_TOME_POOL[0]) // Spirit Tome
+        tomes.applyMinorTome(defenderPlayer as never, MINOR_TOME_POOL[3]) // Vitality Tome
+      }
+      guardian.upgradeByPlayer(defenderPlayer as never)
+      guardian.poll(5, 22)
+      guardian.poll(5, 23)
+      waves.tick(24, true)
+      waves.tick(25, true)
+      assert.ok(
+        failedCustomModifiers.length <= 3,
+        `Expected zero repeated failed td_* modifier spam, got ${failedCustomModifiers.length}: ${failedCustomModifiers.join(', ')}`,
+      )
+
+      // Verify vanilla Tome weapon/ability damage mult + Boss Effective-HP incoming damage scaling!
+      const weaponShot = waves.modifyIncomingDamage(
+        {
+          victim: steeredEnt,
+          attacker: defenderPlayer.pawnEntity,
+          inflictor: defenderPlayer.pawnEntity,
+          ability: 0,
+          flags: 0n,
+          hitGroup: 0,
+          amount: 100,
+        },
+        guardian,
+        tomes,
+      )
+      assert.equal(weaponShot?.amount, 160, 'Expected 6 Weapon Tomes (+60%) to boost weapon damage to 160 in vanilla mode')
+
+      const spiritCast = waves.modifyIncomingDamage(
+        {
+          victim: steeredEnt,
+          attacker: defenderPlayer.pawnEntity,
+          inflictor: 400,
+          ability: 400,
+          flags: 0n,
+          hitGroup: 0,
+          amount: 100,
+        },
+        guardian,
+        tomes,
+      )
+      assert.equal(spiritCast?.amount, 136, 'Expected 6 Spirit Tomes (+36%) to boost ability damage to 136 in vanilla mode')
+
+      // Verify vanilla TdProbe passes all steps end-to-end!
+      probePassed = false
+      probeFailedReason = ''
+      const vanillaProbe = new TdProbe()
+      for (let step = 1; step <= 90 && !probePassed; step++) {
+        for (const [ent, model] of modelStore.entries()) {
+          if (model.includes('necro_shambler') || model.includes('_melee')) {
+            const s = npcStore.get(ent)
+            if (s && s.health > 0 && s.position.y > -1350) {
+              s.position = { ...s.position, y: -1350 }
+            }
+          }
+        }
+        vanillaProbe.tick(100 + step * 0.25, waves, guardian, tomes)
+        assert.equal(probeFailedReason, '', `Vanilla TdProbe failed: ${probeFailedReason}`)
+      }
+      assert.equal(probePassed, true, 'Expected TdProbe to reach PASS in Vanilla Server Mode')
+    } finally {
+      mockVanillaMode = false
+    }
   })
 })
 

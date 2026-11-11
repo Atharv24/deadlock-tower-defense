@@ -48,12 +48,14 @@ const pendingHeroPickUntil = new Map<number, number>()
 const heroSearchBySlot = new Map<number, string>()
 const lastCursorKeyBySlot = new Map<number, string>()
 const lastHudSigBySlot = new Map<number, string>()
+const lastHudSentAtBySlot = new Map<number, number>()
 const cachedHudModeBySlot = new Map<number, { mode: string; expiresAt: number }>()
 
 /** Opens the Panorama Hero Selection UI for a player (e.g. via `/hero`). */
 export function openHeroPickerForPlayer(player: Player): void {
   forceHeroPickerSlots.add(player.slot)
   lastHudSigBySlot.delete(player.slot)
+  lastHudSentAtBySlot.delete(player.slot)
 }
 
 /** Selects a hero for the player on Team 2 (The Hidden King) and closes the picker. */
@@ -66,6 +68,7 @@ export function selectDefenderHero(
   heroSearchBySlot.delete(player.slot)
   pendingHeroPickUntil.set(player.slot, now + 6)
   lastHudSigBySlot.delete(player.slot)
+  lastHudSentAtBySlot.delete(player.slot)
   player.selectHero(hero.name, DEFENDER_TEAM)
   toast(player, `Deploying as ${hero.title} (The Hidden King)!`)
 }
@@ -100,16 +103,13 @@ export function renderTdHud(
       heroSearchBySlot.delete(player.slot)
       lastCursorKeyBySlot.delete(player.slot)
       lastHudSigBySlot.delete(player.slot)
+      lastHudSentAtBySlot.delete(player.slot)
       cachedHudModeBySlot.delete(player.slot)
     }
 
     const pawn = player.pawn()
-    // Only draw HUD for human defenders on Team 2 (or spectators/unassigned).
-    if (pawn && pawn.team === 3) {
-      continue
-    }
 
-    if (pawn && pawn.hero > 0) {
+    if (pawn && pawn.hero > 0 && pawn.team === DEFENDER_TEAM) {
       spawnedHeroSlots.add(player.slot)
       pendingHeroPickUntil.delete(player.slot)
     }
@@ -144,10 +144,12 @@ export function renderTdHud(
     const boonSig = pendingBoons ? pendingBoons.map((b) => b.id).join(',') : ''
     const searchSig = needsHeroPick ? (heroSearchBySlot.get(player.slot) ?? '') : ''
     const hudSig = `${displayWave};${waves.waitingForDefenderHero ? 1 : 0};${nextWaveSeconds};${waves.aliveCreepCount};${guardian.currentStage};${guardian.health};${guardian.maxHealth};${guardian.walkerHealth};${guardian.baseGuardiansHealth};${guardian.shrinesHealth};${guardian.patronHealth};${guardian.patronPhase};${guardian.upgradeLevel};${guardian.matchState};${compact ? 1 : 0};${needsHeroPick ? 1 : 0};${canCancelHeroPick ? 1 : 0};${searchSig};${boonSig};${tomes.getKills(player.slot)};${tomes.getTotalTomes(player.slot)};${bossSig}`
-    if (lastHudSigBySlot.get(player.slot) === hudSig) {
+    const lastSentAt = lastHudSentAtBySlot.get(player.slot) ?? -999
+    if (lastHudSigBySlot.get(player.slot) === hudSig && now - lastSentAt < 4.0) {
       continue
     }
     lastHudSigBySlot.set(player.slot, hudSig)
+    lastHudSentAtBySlot.set(player.slot, now)
 
     show(
       player,
@@ -601,6 +603,7 @@ function DefenseSidePanel(props: {
           if (count <= 0) return null
           return (
             <StatRow
+              key={tomeDef.id}
               label={tomeDef.shortLabel}
               value={`x${count}`}
               color={tomeDef.color}
@@ -737,7 +740,10 @@ function MajorBoonModal(props: {
           Hold TAB to click a blessing or type /boon 1, /boon 2, /boon 3
         </label>
         {boons.map((boon, idx) => (
-          <panel style={{ flow: 'down', width: 'fill', margin: [4, 0, 4, 0] }}>
+          <panel
+            key={boon.id}
+            style={{ flow: 'down', width: 'fill', margin: [4, 0, 4, 0] }}
+          >
             <Action
               kind="primary"
               style={{ width: 'fill' }}

@@ -38,11 +38,13 @@ import {
   computeBossAbilityUpgradeMask,
   createBossAiState,
   distance3D,
+  getBossWaypointsForObjective,
   planBossDriveStep,
 } from './boss_ai'
 import {
   BOSS_SPAWN_ANGLES,
   BOSS_SPAWN_ORIGIN,
+  computeVanillaEffectiveHpDamageScale,
   computeWaveCreepDamageMult,
   computeWaveCreepHp,
   computeWaveCreepScale,
@@ -56,7 +58,7 @@ import {
   getWaveNeutralSpawns,
   INITIAL_WAVE_DELAY_SECONDS,
   isBossWave,
-  isExplodingZombieBaseMaxHp,
+  isExplodingZombieIdentity,
   isWithinZombieDetonationRange,
   MAX_ACTIVE_CREEPS_FOR_WAVE_NEUTRALS,
   selectUnscaledCreeps,
@@ -67,6 +69,7 @@ import {
   ZOMBIE_BASE_KAMIKAZE_DAMAGE,
 } from './config'
 import type { GuardianManager } from './guardian'
+import type { TomeManager } from './tomes'
 
 export interface CreepWaveSpec {
   readonly wave: number
@@ -100,7 +103,16 @@ export interface ActiveBoss {
   configuredPawnEntity: number
   currentHp: number
   currentMaxHp: number
+  vanillaMaxHpTarget: number
+  appliedScale: number
   initialHealDone: boolean
+}
+
+interface SteeredWaveCreep {
+  readonly npc: Npc
+  readonly kind: 'ranged_neutral' | 'shambler'
+  readonly routeIndex: 0 | 1
+  waypointIndex: number
 }
 
 const BOSS_SPAWN_X_OFFSETS = [-165, -55, 55, 165] as const
@@ -118,6 +130,8 @@ export class WaveManager {
   readonly detonatedZombies = new Set<number>()
   readonly spawnedWaveNeutrals: Npc[] = []
   readonly activeBosses: ActiveBoss[] = []
+  private customVdataAvailable: boolean | undefined = undefined
+  private readonly steeredWaveCreeps = new Map<number, SteeredWaveCreep>()
   private activeCreepAura?: {
     readonly pawnEntity: number
     readonly modifier: string
@@ -134,6 +148,21 @@ export class WaveManager {
 
   constructor(onMilestoneWave?: (wave: number) => void) {
     this.onMilestoneWaveCallback = onMilestoneWave
+  }
+
+  /** True when `pak20_dir.vpk` custom VData modifiers/subclasses are mounted on `server.dll`. */
+  get hasCustomVdata(): boolean {
+    return this.customVdataAvailable === true
+  }
+
+  private markVanillaServerMode(): void {
+    if (this.customVdataAvailable === false) {
+      return
+    }
+    this.customVdataAvailable = false
+    log(
+      'Custom VData addon (pak20_dir.vpk) not mounted on server — running Vanilla Server Mode (Colossus Raid Bosses, steered Center Lane neutrals & Graves Shamblers, and runtime Tome scaling)',
+    )
   }
 
   /** Applies server CVars for single-lane Tower Defense. */
@@ -202,6 +231,7 @@ export class WaveManager {
     this.armedZombies.clear()
     this.detonatedZombies.clear()
     this.spawnedWaveNeutrals.length = 0
+    this.steeredWaveCreeps.clear()
     this.cachedBuildingTargets = undefined
     this.restoreIntervalAt = 0
     this.applyServerConfig()
@@ -224,6 +254,7 @@ export class WaveManager {
     this.armedZombies.clear()
     this.detonatedZombies.clear()
     this.spawnedWaveNeutrals.length = 0
+    this.steeredWaveCreeps.clear()
     this.cachedBuildingTargets = undefined
     this.restoreIntervalAt = 0
 
@@ -366,12 +397,17 @@ export class WaveManager {
     return this.wave
   }
 
-  /** Spawns varied custom lane-marching neutral creeps (`td_neutral_*`) on Enemy Center Lane. */
+  /**
+   * Spawns varied lane-marching neutral creeps (`td_neutral_*` with `pak20_dir.vpk`,
+   * or steered stock `npc_trooper_neutral` + `npc_necro_skele` Graves Shamblers on
+   * vanilla servers such as `hyperline.gg`) on Enemy Center Lane.
+   */
   spawnWaveNeutralVariety(wave: number): number {
     // Prune dead handles from spawnedWaveNeutrals before checking active lane cap.
     for (let i = this.spawnedWaveNeutrals.length - 1; i >= 0; i--) {
       const state = this.spawnedWaveNeutrals[i].read()
       if (!state || state.health <= 0) {
+        this.steeredWaveCreeps.delete(this.spawnedWaveNeutrals[i].entity)
         this.spawnedWaveNeutrals.splice(i, 1)
       }
     }
@@ -382,17 +418,52 @@ export class WaveManager {
     const damageMult = computeWaveCreepDamageMult(wave)
     let spawned = 0
     for (const spawn of spawns) {
-      const npc = spawnNpc({
-        className: 'npc_trooper',
-        unit: spawn.unit,
-        team: 3,
-        lane: 4,
-        position: spawn.origin,
-        facing: { pitch: 0, yaw: 270, roll: 0 },
-        health: spawn.targetHp,
-        maxHealth: spawn.targetHp,
-      })
+      let npc: Npc | undefined
+      let isVanillaNeutral = false
+      if (this.customVdataAvailable !== false) {
+        npc = spawnNpc({
+          className: 'npc_trooper',
+          unit: spawn.unit,
+          team: 3,
+          lane: 4,
+          position: spawn.origin,
+          facing: { pitch: 0, yaw: 270, roll: 0 },
+          health: spawn.targetHp,
+          maxHealth: spawn.targetHp,
+        })
+        if (npc && npc.entity > 0) {
+          this.customVdataAvailable = true
+        } else {
+          this.markVanillaServerMode()
+        }
+      }
+
+      if ((!npc || npc.entity <= 0) && this.customVdataAvailable === false) {
+        npc = spawnNpc({
+          className: 'npc_trooper_neutral',
+          unit: spawn.vanillaUnit,
+          team: 3,
+          position: spawn.origin,
+          facing: { pitch: 0, yaw: 270, roll: 0 },
+          health: spawn.targetHp,
+          maxHealth: spawn.targetHp,
+        })
+        isVanillaNeutral = true
+      }
+
       if (npc && npc.entity > 0) {
+        if (isVanillaNeutral) {
+          // Wake stock `npc_trooper_neutral` out of `modifier_sleep` and register for Center Lane steering.
+          damage({ victim: npc.entity, amount: 1 })
+          this.applyCreepHealth(npc.entity, spawn.targetHp, spawn.targetHp)
+          holdModifierState(npc.entity, 'MODIFIER_STATE_VISIBLE_TO_ENEMY', true)
+          this.steeredWaveCreeps.set(npc.entity, {
+            npc,
+            kind: 'ranged_neutral',
+            routeIndex: spawn.origin.x <= 0 ? 0 : 1,
+            waypointIndex: 0,
+          })
+        }
         this.spawnedWaveNeutrals.push(npc)
         this.scaledCreeps.add(npc.entity)
         this.creepSpecs.set(npc.entity, {
@@ -405,7 +476,130 @@ export class WaveManager {
         spawned++
       }
     }
+
+    // On vanilla servers (`!hasCustomVdata`), also spawn real stock `npc_necro_skele`
+    // Graves Shambler exploding zombies (`necro_shambler.vmdl` + `necro_corpse_explosion.vpcf`)!
+    if (this.customVdataAvailable === false) {
+      const shamblerHp = computeWaveCreepHp(wave)
+      const shamblerScale = computeWaveCreepScale(wave)
+      const shamblerCount = wave >= 8 ? 2 : 1
+      for (let s = 0; s < shamblerCount; s++) {
+        const shamblerX = (wave + s) % 2 === 0 ? -65 : 65
+        const shambler = spawnNpc({
+          className: 'npc_necro_skele',
+          unit: 'npc_necro_skele',
+          team: 3,
+          position: { x: shamblerX, y: 1185, z: 392 },
+          facing: { pitch: 0, yaw: 270, roll: 0 },
+          health: shamblerHp,
+          maxHealth: shamblerHp,
+        })
+        if (shambler && shambler.entity > 0) {
+          this.applyCreepHealth(shambler.entity, shamblerHp, shamblerHp)
+          holdModifierState(shambler.entity, 'MODIFIER_STATE_VISIBLE_TO_ENEMY', true)
+          this.spawnedWaveNeutrals.push(shambler)
+          this.scaledCreeps.add(shambler.entity)
+          this.explodingZombies.add(shambler.entity)
+          this.creepSpecs.set(shambler.entity, {
+            wave,
+            targetHp: shamblerHp,
+            targetScale: shamblerScale,
+            damageMult,
+            isExplodingZombie: true,
+          })
+          this.steeredWaveCreeps.set(shambler.entity, {
+            npc: shambler,
+            kind: 'shambler',
+            routeIndex: shamblerX <= 0 ? 0 : 1,
+            waypointIndex: 0,
+          })
+          spawned++
+        }
+      }
+    }
+
     return spawned
+  }
+
+  /**
+   * Smoothly steers vanilla wave neutrals (`npc_trooper_neutral`) and Graves Shamblers
+   * (`npc_necro_skele`) down Center Lane waypoints (`Npc.move`) until they enter combat
+   * range of a Defender Hero or the active Team 2 structure. Runs in O(1) (0 host calls)
+   * whenever `steeredWaveCreeps` is empty.
+   */
+  tickSteeredWaveCreeps(dtSeconds = 0.1, guardian?: GuardianManager): void {
+    if (this.steeredWaveCreeps.size === 0) {
+      return
+    }
+    const heroPositions: Vector[] = []
+    for (const conn of players()) {
+      const pawn = conn.player.pawn()
+      if (pawn && pawn.team === DEFENDER_TEAM && pawn.hero > 0 && pawn.health > 0) {
+        heroPositions.push(pawn.position)
+      }
+    }
+
+    for (const [handle, entry] of [...this.steeredWaveCreeps.entries()]) {
+      const st = entry.npc.read()
+      if (!st || st.health <= 0) {
+        this.steeredWaveCreeps.delete(handle)
+        continue
+      }
+      const pos = st.position
+      let minHeroDist = Infinity
+      for (const hp of heroPositions) {
+        const d = Math.hypot(hp.x - pos.x, hp.y - pos.y)
+        if (d < minHeroDist) minHeroDist = d
+      }
+      const activeObj = guardian?.getActiveBossObjective(pos)
+      const objDist = activeObj
+        ? Math.hypot(activeObj.position.x - pos.x, activeObj.position.y - pos.y)
+        : Infinity
+
+      const heroEngageDist = entry.kind === 'shambler' ? 520 : 420
+      const objEngageDist = entry.kind === 'shambler' ? 620 : 480
+      if (minHeroDist <= heroEngageDist || objDist <= objEngageDist) {
+        // Let native C++ ranged attack / melee charge AI take over in combat range!
+        continue
+      }
+
+      const route = getBossWaypointsForObjective(
+        entry.routeIndex,
+        activeObj?.kind ?? 'guardian',
+      )
+      while (entry.waypointIndex < route.length - 1) {
+        const wp = route[entry.waypointIndex]
+        if (Math.hypot(wp.x - pos.x, wp.y - pos.y) <= 95) {
+          entry.waypointIndex += 1
+        } else {
+          break
+        }
+      }
+      const targetWp = route[Math.min(entry.waypointIndex, route.length - 1)] ??
+        activeObj?.position ?? { x: 0, y: -1180, z: 384 }
+      const dx = targetWp.x - pos.x
+      const dy = targetWp.y - pos.y
+      const dz = targetWp.z - pos.z
+      const dist2D = Math.hypot(dx, dy)
+      if (dist2D <= 24) {
+        continue
+      }
+      const speed = entry.kind === 'shambler' ? 255 : 225
+      const step = Math.min(dist2D, speed * dtSeconds)
+      const nx = dx / dist2D
+      const ny = dy / dist2D
+      const nextPos: Vector = {
+        x: pos.x + nx * step,
+        y: pos.y + ny * step,
+        z: pos.z + Math.max(-28, Math.min(28, dz * (step / dist2D))),
+      }
+      const yaw = (Math.atan2(dy, dx) * 180) / Math.PI
+      entry.npc.move(
+        nextPos,
+        { pitch: 0, yaw, roll: 0 },
+        { x: nx * speed, y: ny * speed, z: 0 },
+      )
+    }
   }
 
   /**
@@ -415,6 +609,9 @@ export class WaveManager {
    * scale synchronously in C++ (#16) and transition cleanly across wave tiers.
    */
   syncCreepScaleAura(now = 0): void {
+    if (this.customVdataAvailable === false) {
+      return
+    }
     const effectiveWave = Math.max(1, this.wave)
     const { modifier } = getCreepScaleAuraModifier(effectiveWave)
 
@@ -443,11 +640,14 @@ export class WaveManager {
       now >= this.activeCreepAura.expiresAt + 0.05
     ) {
       if (carrierPlayer.giveModifier(modifier, leaseSeconds)) {
+        this.customVdataAvailable = true
         this.activeCreepAura = {
           pawnEntity: carrierPawnEntity,
           modifier,
           expiresAt: now > 0 ? now + leaseSeconds : 0,
         }
+      } else if (carrierPlayer.abilities().length > 0) {
+        this.markVanillaServerMode()
       }
       return
     }
@@ -457,9 +657,6 @@ export class WaveManager {
         this.activeCreepAura.expiresAt = now + leaseSeconds
       }
     }
-    // If `modifier` changed and the previous lease hasn't expired yet (`<= 0.85s`),
-    // let the old aura expire cleanly first so `modifier_citadel_trooper_shrine_down_buff`
-    // removes the prior scale before the next 250ms/500ms tick applies the new step.
   }
 
   /**
@@ -485,6 +682,7 @@ export class WaveManager {
         this.explodingZombies.delete(trackedHandle)
         this.armedZombies.delete(trackedHandle)
         this.detonatedZombies.delete(trackedHandle)
+        this.steeredWaveCreeps.delete(trackedHandle)
       }
     }
     for (const scaledHandle of [...this.scaledCreeps]) {
@@ -493,12 +691,14 @@ export class WaveManager {
         this.explodingZombies.delete(scaledHandle)
         this.armedZombies.delete(scaledHandle)
         this.detonatedZombies.delete(scaledHandle)
+        this.steeredWaveCreeps.delete(scaledHandle)
       }
     }
     for (let i = this.spawnedWaveNeutrals.length - 1; i >= 0; i--) {
       if (!snapByHandle.has(this.spawnedWaveNeutrals[i].entity)) {
         const st = this.spawnedWaveNeutrals[i].read()
         if (!st || st.health <= 0) {
+          this.steeredWaveCreeps.delete(this.spawnedWaveNeutrals[i].entity)
           this.spawnedWaveNeutrals.splice(i, 1)
         }
       }
@@ -565,47 +765,88 @@ export class WaveManager {
 
   /**
    * Scales outgoing damage dealt by fortified Team 2 structures (`+25%` per level),
-   * enemy wave creeps, and Enemy Hero Bosses in Modlock's `onDamage` hook.
+   * enemy wave creeps, Enemy Hero Bosses, and (on vanilla servers) Defender Tomes &
+   * Boss/Hero Effective-HP ratios in Modlock's `onDamage` hook.
    */
   modifyIncomingDamage(
     hit: DamageEvent,
     guardian?: GuardianManager,
+    tomes?: TomeManager,
   ): DamageResult | undefined {
-    if (hit.attacker <= 0 || hit.amount <= 0) {
+    if (hit.amount <= 0) {
       return undefined
     }
-    if (
-      guardian &&
-      guardian.upgradeLevel > 0 &&
-      guardian.isFriendlyStructureEntity(hit.attacker)
-    ) {
-      const structMult = guardian.damageMultiplier()
-      if (Math.abs(structMult - 1) >= 0.001) {
-        return {
-          amount: hit.amount * structMult,
+    let totalMult = 1
+
+    if (hit.attacker > 0) {
+      if (
+        guardian &&
+        guardian.upgradeLevel > 0 &&
+        guardian.isFriendlyStructureEntity(hit.attacker)
+      ) {
+        totalMult *= guardian.damageMultiplier()
+      } else {
+        const spec = this.creepSpecs.get(hit.attacker)
+        if (spec) {
+          totalMult *= spec.damageMult
+        } else {
+          for (const boss of this.activeBosses) {
+            if (boss.pawnEntity > 0 && boss.pawnEntity === hit.attacker) {
+              totalMult *= boss.damageMult
+              break
+            }
+          }
+          if (this.customVdataAvailable === false && tomes && tomes.playerTomes.size > 0) {
+            for (const conn of players()) {
+              const pawn = conn.player.pawn()
+              if (pawn && pawn.entity === hit.attacker && pawn.team === DEFENDER_TEAM) {
+                const bonuses = tomes.getVanillaBonuses(conn.player.slot)
+                totalMult *=
+                  hit.ability > 0 ? bonuses.abilityDamageMult : bonuses.weaponDamageMult
+                break
+              }
+            }
+          }
         }
       }
     }
-    const spec = this.creepSpecs.get(hit.attacker)
-    if (spec) {
-      if (Math.abs(spec.damageMult - 1) < 0.001) {
-        return undefined
-      }
-      return {
-        amount: hit.amount * spec.damageMult,
-      }
-    }
-    for (const boss of this.activeBosses) {
-      if (boss.pawnEntity > 0 && boss.pawnEntity === hit.attacker) {
-        if (Math.abs(boss.damageMult - 1) < 0.001) {
-          return undefined
-        }
-        return {
-          amount: hit.amount * boss.damageMult,
+
+    if (hit.victim > 0 && this.customVdataAvailable === false) {
+      for (const boss of this.activeBosses) {
+        if (
+          boss.pawnEntity > 0 &&
+          boss.pawnEntity === hit.victim &&
+          boss.vanillaMaxHpTarget > 0
+        ) {
+          const pawn = boss.bot.pawn()
+          const engineMax = Math.max(1, pawn?.effectiveMaxHealth ?? pawn?.maxHealth ?? 1000)
+          if (boss.vanillaMaxHpTarget > engineMax) {
+            totalMult *= engineMax / boss.vanillaMaxHpTarget
+          }
+          break
         }
       }
+      if (tomes && tomes.playerTomes.size > 0) {
+        for (const conn of players()) {
+          const pawn = conn.player.pawn()
+          if (pawn && pawn.entity === hit.victim && pawn.team === DEFENDER_TEAM) {
+            const bonuses = tomes.getVanillaBonuses(conn.player.slot)
+            if (bonuses.bonusMaxHp > 0) {
+              const baseMax = Math.max(1, pawn.effectiveMaxHealth ?? pawn.maxHealth)
+              totalMult *= computeVanillaEffectiveHpDamageScale(baseMax, bonuses.bonusMaxHp)
+            }
+            break
+          }
+        }
+      }
     }
-    return undefined
+
+    if (Math.abs(totalMult - 1) < 0.001) {
+      return undefined
+    }
+    return {
+      amount: hit.amount * totalMult,
+    }
   }
 
   /**
@@ -873,14 +1114,9 @@ export class WaveManager {
 
   private detectExplodingZombie(handle: number, unscaledMaxHp: number): boolean {
     const cls = entityClass(handle)
-    if (cls && cls.designerName !== 'npc_trooper') {
-      return false
-    }
-    const modelName = readField(handle, 'CModelState', 'm_ModelName', 'string')
-    if (typeof modelName === 'string' && modelName.length > 0) {
-      return modelName.includes('necro_shambler')
-    }
-    return isExplodingZombieBaseMaxHp(unscaledMaxHp)
+    const rawModel = readField(handle, 'CModelState', 'm_ModelName', 'string')
+    const modelName = typeof rawModel === 'string' ? rawModel : undefined
+    return isExplodingZombieIdentity(cls?.designerName, modelName, unscaledMaxHp)
   }
 
   /**
@@ -892,8 +1128,9 @@ export class WaveManager {
     const out: LiveCreepSnapshot[] = []
     const troopers = findEntities('npc_trooper')
     const neutrals = findEntities('npc_trooper_neutral')
+    const shamblers = findEntities('npc_necro_skele')
 
-    for (const ent of [...troopers, ...neutrals]) {
+    for (const ent of [...troopers, ...neutrals, ...shamblers]) {
       const npc = new Npc(ent).read()
       if (npc) {
         if (npc.health <= 0 || npc.maxHealth <= 1) {
@@ -965,7 +1202,8 @@ export class WaveManager {
     if (
       cls &&
       (cls.designerName === 'npc_trooper' ||
-        cls.designerName === 'npc_trooper_neutral')
+        cls.designerName === 'npc_trooper_neutral' ||
+        cls.designerName === 'npc_necro_skele')
     ) {
       const team = readField(victim, 'CBaseEntity', 'm_iTeamNum', 'int32')
       return team !== DEFENDER_TEAM
@@ -1030,6 +1268,8 @@ export class WaveManager {
       configuredPawnEntity: 0,
       currentHp: 0,
       currentMaxHp: 0,
+      vanillaMaxHpTarget: 0,
+      appliedScale: spec.targetScale,
       initialHealDone: false,
     })
   }
@@ -1113,6 +1353,8 @@ export class WaveManager {
         configuredPawnEntity: pawn.entity,
         currentHp: pawn.health,
         currentMaxHp: estMaxHp,
+        vanillaMaxHpTarget: this.customVdataAvailable === false ? estMaxHp : 0,
+        appliedScale: this.customVdataAvailable === false ? 1.2 : spec.targetScale,
         initialHealDone: true,
       })
       log(
@@ -1169,14 +1411,34 @@ export class WaveManager {
 
         boss.bot.teleport(boss.spawnOrigin, BOSS_SPAWN_ANGLES)
         const primaryMod = boss.extraSizeStacks > 0 ? 'td_boss_size_step' : boss.modifier
-        const applied = boss.bot.giveModifier(primaryMod, -1)
-        boss.bot.holdModifier(primaryMod, true)
-        if (!applied) {
-          continue
+        let customBossApplied = false
+        if (this.customVdataAvailable !== false) {
+          customBossApplied = boss.bot.giveModifier(primaryMod, -1)
+          if (customBossApplied) {
+            this.customVdataAvailable = true
+            boss.bot.holdModifier(primaryMod, true)
+            for (let s = 0; s < boss.endlessBoostStacks; s++) {
+              boss.bot.giveModifier('td_boss_endless_boost', -1)
+            }
+          } else {
+            this.markVanillaServerMode()
+          }
         }
 
-        for (let s = 0; s < boss.endlessBoostStacks; s++) {
-          boss.bot.giveModifier('td_boss_endless_boost', -1)
+        if (!customBossApplied) {
+          // Vanilla Server Raid Boss Configuration (`hyperline.gg` / stock `server.dll`):
+          // Grant stock `upgrade_colossus` + hold `modifier_colossus_active` for native C++
+          // 1.20x model + skeletal hitbox scaling & shield aura, Tier-4 Boss items, and
+          // wave-scaled Effective Max HP (`3,500` -> `26,000+` HP)!
+          boss.bot.giveItem('upgrade_colossus')
+          boss.bot.giveModifier('upgrade_colossus/modifier_colossus_active', -1)
+          boss.bot.holdModifier('upgrade_colossus/modifier_colossus_active', true)
+          if (boss.tier >= 2) boss.bot.giveItem('upgrade_titan_round')
+          if (boss.tier >= 3) boss.bot.giveItem('upgrade_boundless_spirit')
+          if (boss.tier >= 4) boss.bot.giveItem('upgrade_juggernaut')
+          if (boss.tier >= 5) boss.bot.giveItem('upgrade_damage_recycler')
+          boss.appliedScale = 1.2
+          boss.vanillaMaxHpTarget = 1000 + boss.targetMaxHp
         }
 
         const upgradeMask = computeBossAbilityUpgradeMask(boss.tier)
@@ -1188,8 +1450,6 @@ export class WaveManager {
         }
 
         // Reveal Boss through fog-of-war so Deadlock always draws its 3D overhead HP bar!
-        // Note: never call SetAbsScale — MODIFIER_VALUE_MODEL_SCALE in td_boss_hero_stats_*
-        // scales BOTH the visual model AND skeletal hitboxes synchronously (#16).
         holdModifierState(pawn.entity, 'MODIFIER_STATE_VISIBLE_TO_ENEMY', true)
         boss.bot.heal(1_000_000)
         boss.ai.waypointIndex = 0
@@ -1204,38 +1464,62 @@ export class WaveManager {
         boss.initialHealDone = false
         justConfigured = true
         log(
-          `Configured Wave ${boss.wave} Boss (${boss.hero}, ent=${pawn.entity}, mod=${boss.modifier}, scale=${boss.targetScale}x, dmgMult=${boss.damageMult}x)`,
+          `Configured Wave ${boss.wave} Boss (${boss.hero}, ent=${pawn.entity}, mode=${customBossApplied ? boss.modifier : 'vanilla_colossus'}, scale=${boss.appliedScale}x, maxHp=${boss.vanillaMaxHpTarget || boss.targetMaxHp}, dmgMult=${boss.damageMult}x)`,
         )
       }
 
       const activePawn = (justConfigured ? boss.bot.pawn() : pawn) ?? pawn
       if (boss.configuredPawnEntity === activePawn.entity && activePawn.health > 0) {
         if (!justConfigured && !boss.initialHealDone) {
-          // Ensure HP filled to 100% once CCitadelPlayerPawn::GetMaxHealth expands from MODIFIER_VALUE_HEALTH_MAX.
-          if (activePawn.health < 1500) {
+          // Ensure HP filled to 100% once CCitadelPlayerPawn::GetMaxHealth expands from modifiers/items.
+          const targetEngineMax = activePawn.effectiveMaxHealth ?? activePawn.maxHealth
+          if (activePawn.health < targetEngineMax) {
             boss.bot.heal(1_000_000)
           }
           boss.initialHealDone = true
         }
 
-        // Sync networked CBaseEntity.m_iMaxHealth (which otherwise omits modifier maxHP until respawn)
-        // so both native 3D unit_status bars and our top-center Raid Boss HUD show accurate HP!
-        const trueMaxHp = Math.max(
-          activePawn.effectiveMaxHealth ?? 0,
-          activePawn.maxHealth,
-          activePawn.health,
-          boss.currentMaxHp,
-        )
-        boss.currentHp = Math.max(0, Math.round(activePawn.health))
-        boss.currentMaxHp = Math.round(trueMaxHp)
-        if (activePawn.maxHealth < boss.currentMaxHp) {
-          writeField(
-            activePawn.entity,
-            'CBaseEntity',
-            'm_iMaxHealth',
-            'int32',
+        if (boss.vanillaMaxHpTarget > 0) {
+          const engineMax = Math.max(
+            1,
+            activePawn.effectiveMaxHealth ?? activePawn.maxHealth,
+          )
+          const effectiveTotalMax = Math.max(engineMax, boss.vanillaMaxHpTarget)
+          const hpFraction = Math.max(0, Math.min(1, activePawn.health / engineMax))
+          boss.currentMaxHp = Math.round(effectiveTotalMax)
+          boss.currentHp = Math.max(
+            1,
+            Math.round(hpFraction * boss.currentMaxHp),
+          )
+          if (activePawn.maxHealth < engineMax) {
+            writeField(
+              activePawn.entity,
+              'CBaseEntity',
+              'm_iMaxHealth',
+              'int32',
+              Math.round(engineMax),
+            )
+          }
+        } else {
+          // Sync networked CBaseEntity.m_iMaxHealth (which otherwise omits modifier maxHP until respawn)
+          // so both native 3D unit_status bars and our top-center Raid Boss HUD show accurate HP!
+          const trueMaxHp = Math.max(
+            activePawn.effectiveMaxHealth ?? 0,
+            activePawn.maxHealth,
+            activePawn.health,
             boss.currentMaxHp,
           )
+          boss.currentHp = Math.max(0, Math.round(activePawn.health))
+          boss.currentMaxHp = Math.round(trueMaxHp)
+          if (activePawn.maxHealth < boss.currentMaxHp) {
+            writeField(
+              activePawn.entity,
+              'CBaseEntity',
+              'm_iMaxHealth',
+              'int32',
+              boss.currentMaxHp,
+            )
+          }
         }
 
         const bossPos: Vector = justConfigured ? boss.spawnOrigin : activePawn.position
@@ -1253,7 +1537,7 @@ export class WaveManager {
         const scaledEyePos: Vector = {
           x: bossPos.x,
           y: bossPos.y,
-          z: bossPos.z + 78 * boss.targetScale,
+          z: bossPos.z + 78 * boss.appliedScale,
         }
 
         const heroCandidates: BossHeroCandidate[] = liveDefenderPawns.map((hpawn) => {

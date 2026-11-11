@@ -233,7 +233,7 @@ onDamage((hit) => {
   if (guardian.matchState !== 'active') {
     return
   }
-  return waves.modifyIncomingDamage(hit, guardian)
+  return waves.modifyIncomingDamage(hit, guardian, tomes)
 })
 
 onDamaged((hit) => {
@@ -255,20 +255,22 @@ onDamaged((hit) => {
 })
 
 // Refresh Panorama JSX HUD (memoized on state change) and drive active Enemy Hero
-// Bosses at 10 Hz (smooth 100ms aim tracking, lane steering, and ability casting).
+// Bosses & vanilla steered Center Lane creeps at 10 Hz.
 every(0.1, () => {
   if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
     waves.tickActiveBosses(nowSeconds, guardian)
+    waves.tickSteeredWaveCreeps(0.1, guardian)
   }
   renderTdHud(nowSeconds, waves, guardian, tomes, restartMatch)
 })
 
 // Fast 250ms pass for Graves Zombie kamikaze proximity checks (0 host calls when
-// no zombies are alive) and Buy Anywhere shop state on newly spawned defenders.
+// no zombies are alive), Buy Anywhere shop state, and vanilla Tome CDR.
 every(0.25, () => {
   ensureDefenderShopAccess()
   if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
     waves.tickExplodingZombies(nowSeconds, guardian)
+    tomes.tickVanillaCooldowns(nowSeconds, waves.hasCustomVdata)
   }
 })
 
@@ -284,13 +286,20 @@ every(1, () => {
   guardian.poll(waves.wave, nowSeconds)
   const spawnOrigin = guardian.getDefenderSpawnOrigin()
 
-  // Place newly spawned/respawned Team 2 defender heroes safely behind the active frontline!
+  // Place newly spawned/respawned Team 2 defender heroes safely behind the active frontline,
+  // and ensure no human player is ever accidentally seated on Team 3!
   let humanCount = 0
   for (const conn of players()) {
     if (conn.bot) continue
     humanCount += 1
     const p = conn.player
     const pawn = p.pawn()
+    if (pawn && conn.ready && pawn.team === 3 && pawn.hero > 0) {
+      p.changeTeam(DEFENDER_TEAM)
+      p.teleport(spawnOrigin, PLAYER_SPAWN_ANGLES)
+      placedHeroEntityBySlot.set(p.slot, pawn.entity)
+      continue
+    }
     if (pawn && pawn.team === DEFENDER_TEAM && pawn.hero > 0 && pawn.health > 0) {
       const outOfBounds =
         pawn.position.z < -900 || Math.abs(pawn.position.y) > 11500
@@ -299,6 +308,9 @@ every(1, () => {
         placedHeroEntityBySlot.set(p.slot, pawn.entity)
       }
     }
+  }
+  if (guardian.matchState === 'active') {
+    tomes.tickVanillaRegen(waves.hasCustomVdata)
   }
 
   const prevEmptySince = emptyServerWatch.emptySinceSeconds

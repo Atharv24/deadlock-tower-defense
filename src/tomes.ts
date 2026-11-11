@@ -11,11 +11,14 @@ import {
 } from 'modlock'
 
 import {
+  computeVanillaTomeBonuses,
+  DEFENDER_TEAM,
   evaluateCreepLastHit,
   type LastHitEvaluation,
   type MajorBoonDef,
   type MinorTomeDef,
   pickThreeMajorBoons,
+  type VanillaTomeBonuses,
 } from './config'
 import type { GuardianManager } from './guardian'
 
@@ -28,6 +31,8 @@ export class TomeManager {
     readonly [MajorBoonDef, MajorBoonDef, MajorBoonDef]
   >()
   lastGrantedNotice = ''
+  private customModifiersAvailable: boolean | undefined = undefined
+  private readonly trimmedCooldownStarts = new Map<string, number>()
 
   /** Resets Tome & Boon state for a new match or /restarttd. */
   reset(): void {
@@ -35,6 +40,7 @@ export class TomeManager {
     this.playerTomes.clear()
     this.playerKills.clear()
     this.pendingBoonChoices.clear()
+    this.trimmedCooldownStarts.clear()
     this.lastGrantedNotice = ''
   }
 
@@ -139,8 +145,19 @@ export class TomeManager {
   applyMinorTome(player: Player, tome: MinorTomeDef): void {
     switch (tome.kind) {
       case 'modifier':
-        if (tome.modifier) {
-          player.giveModifier(tome.modifier, -1)
+        if (tome.modifier && this.customModifiersAvailable !== false) {
+          const applied = player.giveModifier(tome.modifier, -1)
+          if (applied) {
+            this.customModifiersAvailable = true
+          } else if ((player.pawn()?.hero ?? 0) > 0 && player.abilities().length > 0) {
+            this.customModifiersAvailable = false
+          }
+        }
+        if (
+          this.customModifiersAvailable === false &&
+          (tome.id === 'health' || tome.id === 'omni')
+        ) {
+          player.heal(120)
         }
         break
       case 'ap':
@@ -197,12 +214,26 @@ export class TomeManager {
     this.pendingBoonChoices.delete(player.slot)
 
     for (const mod of boon.modifiers) {
-      for (let s = 0; s < mod.stacks; s++) {
-        player.giveModifier(mod.name, -1)
+      if (this.customModifiersAvailable !== false) {
+        for (let s = 0; s < mod.stacks; s++) {
+          const applied = player.giveModifier(mod.name, -1)
+          if (applied) {
+            this.customModifiersAvailable = true
+          } else if ((player.pawn()?.hero ?? 0) > 0 && player.abilities().length > 0) {
+            this.customModifiersAvailable = false
+            break
+          }
+        }
       }
       const tomeKey = mod.name.replace('td_tome_', '')
       this.incrementTally(player.slot, tomeKey, mod.stacks)
       player.addMetric('td.tomes_earned', mod.stacks)
+      if (
+        this.customModifiersAvailable === false &&
+        (tomeKey === 'health' || tomeKey === 'omni')
+      ) {
+        player.heal(280)
+      }
     }
 
     if (boon.bonusAp) {
@@ -243,6 +274,69 @@ export class TomeManager {
   /** Returns total creep last-hits by a player. */
   getKills(playerSlot: number): number {
     return this.playerKills.get(playerSlot) ?? 0
+  }
+
+  /** Returns computed vanilla-server stat bonuses for a player slot. */
+  getVanillaBonuses(playerSlot: number): VanillaTomeBonuses {
+    return computeVanillaTomeBonuses(this.getTally(playerSlot))
+  }
+
+  /** Applies Tome of Focus / Omni cooldown reduction on vanilla servers (`!hasCustomVdata`). */
+  tickVanillaCooldowns(nowSeconds: number, hasCustomVdata: boolean): void {
+    if (hasCustomVdata || this.playerTomes.size === 0) {
+      return
+    }
+    this.customModifiersAvailable = false
+    for (const conn of players()) {
+      const slot = conn.player.slot
+      if (!this.playerTomes.has(slot)) continue
+      const bonuses = this.getVanillaBonuses(slot)
+      if (bonuses.cooldownReductionFraction <= 0) continue
+      const pawn = conn.player.pawn()
+      if (!pawn || pawn.team !== DEFENDER_TEAM || pawn.hero <= 0 || pawn.health <= 0) {
+        continue
+      }
+      for (const abil of conn.player.abilities()) {
+        if (abil.slot < 0 || abil.slot > 3 || abil.cooldownEnd <= nowSeconds + 0.35) {
+          continue
+        }
+        const key = `${slot}:${abil.name}`
+        if (Math.abs((this.trimmedCooldownStarts.get(key) ?? -1) - abil.cooldownStart) < 0.05) {
+          continue
+        }
+        const fullDuration = Math.max(0, abil.cooldownEnd - abil.cooldownStart)
+        if (fullDuration <= 0.4) continue
+        const trimmedEnd =
+          abil.cooldownStart + fullDuration * (1 - bonuses.cooldownReductionFraction)
+        this.trimmedCooldownStarts.set(key, abil.cooldownStart)
+        conn.player.setAbility({
+          ability: abil.name,
+          cooldownEnd: Math.max(nowSeconds + 0.1, trimmedEnd),
+        })
+      }
+    }
+  }
+
+  /** Applies Tome of Vitality / Omni HP regeneration every second on vanilla servers (`!hasCustomVdata`). */
+  tickVanillaRegen(hasCustomVdata: boolean): void {
+    if (hasCustomVdata || this.playerTomes.size === 0) {
+      return
+    }
+    this.customModifiersAvailable = false
+    for (const conn of players()) {
+      const slot = conn.player.slot
+      if (!this.playerTomes.has(slot)) continue
+      const bonuses = this.getVanillaBonuses(slot)
+      if (bonuses.regenPerSecond <= 0) continue
+      const pawn = conn.player.pawn()
+      if (!pawn || pawn.team !== DEFENDER_TEAM || pawn.hero <= 0 || pawn.health <= 0) {
+        continue
+      }
+      const maxHp = pawn.effectiveMaxHealth ?? pawn.maxHealth
+      if (pawn.health < maxHp) {
+        conn.player.heal(Math.max(1, Math.ceil(bonuses.regenPerSecond)))
+      }
+    }
   }
 
   private incrementTally(playerSlot: number, key: string, delta: number): void {
