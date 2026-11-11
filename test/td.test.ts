@@ -2,6 +2,20 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
 import {
+  advanceBossWaypointIndex,
+  BOSS_GUARDIAN_MIN_STANDOFF,
+  BOSS_GUARDIAN_SIEGE_RANGE,
+  BOSS_LANE_ROUTES,
+  type BossButtonMask,
+  computeAimAngles,
+  computeBossAbilityUpgradeMask,
+  createBossAiState,
+  flatDistance2D,
+  planBossDriveStep,
+  selectBossTarget,
+  worldMoveToDriveAxes,
+} from '../src/boss_ai.ts'
+import {
   BASE_CREEP_HP,
   BASE_CREEP_SCALE,
   computeBossTier,
@@ -18,16 +32,20 @@ import {
   evaluateCreepLastHit,
   getBossWaveSpec,
   getWaveCreepModifiers,
+  getWaveNeutralSpawns,
   GUARDIAN_BASE_MAX_HP,
   GUARDIAN_REPAIR_AMOUNT_HP,
   GUARDIAN_REPAIR_COST_SOULS,
   GUARDIAN_UPGRADE_BASE_COST_SOULS,
   GUARDIAN_UPGRADE_COST_STEP_SOULS,
   isBossWave,
+  isExplodingZombieBaseMaxHp,
+  isWithinZombieDetonationRange,
   MAX_CREEP_HP,
   MAX_CREEP_SCALE,
   MIN_SPAWN_INTERVAL_SECONDS,
   MINOR_TOME_POOL,
+  parseSlashCommandLine,
   pickThreeMajorBoons,
   selectUnscaledCreeps,
   serializeTdHandoff,
@@ -356,6 +374,7 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
       guardianUpgradeLevel: 2,
       guardianBonusMaxHp: 2400,
       scaledCreeps: [101, 102, 205],
+      explodingZombies: [102],
       rewardedCreeps: [98, 99],
       playerTomes: { '0': { spirit: 3, weapon: 2 } },
       playerKills: { '0': 47 },
@@ -365,6 +384,223 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
     assert.deepEqual(restored, state)
     assert.equal(deserializeTdHandoff(undefined), undefined)
     assert.equal(deserializeTdHandoff('{invalid json'), undefined)
+  })
+
+  it('parses Team Chat and All-Chat slash commands cleanly', () => {
+    assert.deepEqual(parseSlashCommandLine('/boss'), { name: 'boss', args: '' })
+    assert.deepEqual(parseSlashCommandLine('  /BOON   2  '), {
+      name: 'boon',
+      args: '2',
+    })
+    assert.deepEqual(parseSlashCommandLine('/hero Seven'), {
+      name: 'hero',
+      args: 'Seven',
+    })
+    assert.equal(parseSlashCommandLine('hello team'), undefined)
+    assert.equal(parseSlashCommandLine('/'), undefined)
+    assert.equal(parseSlashCommandLine('/   '), undefined)
+  })
+
+  it('distinguishes Graves Zombie base maxHP (400) from ranged troopers (300/350)', () => {
+    assert.equal(isExplodingZombieBaseMaxHp(400), true)
+    assert.equal(isExplodingZombieBaseMaxHp(300), false)
+    assert.equal(isExplodingZombieBaseMaxHp(350), false)
+    assert.equal(isExplodingZombieBaseMaxHp(1), false)
+  })
+})
+
+describe('Tier 1 — Enemy Hero Boss AI Navigation, Aiming & Combat Brain', () => {
+  const TEST_BUTTONS: BossButtonMask = {
+    attack: 1n << 0n,
+    jump: 1n << 1n,
+    crouch: 1n << 2n,
+    dash: 1n << 3n,
+    altFire: 1n << 4n,
+    reload: 1n << 5n,
+    melee: 1n << 6n,
+    ability1: 1n << 7n,
+    ability2: 1n << 8n,
+    ability3: 1n << 9n,
+    ultimate: 1n << 10n,
+  }
+
+  it('unlocks bit 0 plus tier upgrades (0b0011 -> 0b0111 -> 0b1111) and validates Center Lane routes inside Guardian invul range', () => {
+    assert.equal(computeBossAbilityUpgradeMask(1), 0b0011)
+    assert.equal(computeBossAbilityUpgradeMask(2), 0b0111)
+    assert.equal(computeBossAbilityUpgradeMask(3), 0b1111)
+    assert.equal(computeBossAbilityUpgradeMask(5), 0b1111)
+
+    const guardianPos = { x: 0, y: -1792, z: 384 }
+    for (const route of BOSS_LANE_ROUTES) {
+      // Pit waypoints stay away from (0, 0) central cover block (|x| >= 100)
+      for (const wp of route.slice(0, -1)) {
+        assert.ok(Math.abs(wp.x) >= 100, `Waypoint ${JSON.stringify(wp)} too close to x=0 central block`)
+      }
+      // Final siege anchor must sit inside npc_boss_tier1 m_flInvulRange (944.882u) and outside pedestal (485u)
+      const finalWp = route[route.length - 1]
+      const dist = flatDistance2D(finalWp, guardianPos)
+      assert.ok(dist < BOSS_GUARDIAN_SIEGE_RANGE, `Expected siege dist ${dist} < ${BOSS_GUARDIAN_SIEGE_RANGE}`)
+      assert.ok(dist > BOSS_GUARDIAN_MIN_STANDOFF, `Expected siege dist ${dist} > ${BOSS_GUARDIAN_MIN_STANDOFF}`)
+    }
+  })
+
+  it('transforms world movement into yaw-relative (forward, left) axes so Bosses march south even while aiming 180° north', () => {
+    // Aiming North (+90°) at a kiting player while moving South (0, -1): forward = -1 (backpedal south), left = 0
+    const backpedalSouth = worldMoveToDriveAxes(0, -1, 90)
+    assert.ok(Math.abs(backpedalSouth.forward - -1) < 1e-6)
+    assert.ok(Math.abs(backpedalSouth.left) < 1e-6)
+
+    // Aiming South (-90°) while strafing East (+1, 0): forward = 0, left = +1
+    const strafeEast = worldMoveToDriveAxes(1, 0, -90)
+    assert.ok(Math.abs(strafeEast.forward) < 1e-6)
+    assert.ok(Math.abs(strafeEast.left - 1) < 1e-6)
+
+    // Aiming upward reduces pitch (negative in Source 2); aiming downward increases pitch (positive)
+    const upAngles = computeAimAngles({ x: 0, y: 0, z: 256 }, { x: 0, y: -300, z: 388 })
+    assert.ok(upAngles.pitch < -15)
+    assert.ok(Math.abs(upAngles.yaw - -90) < 1e-4)
+
+    // Waypoint index advances when within 165u OR already further south
+    const idx = advanceBossWaypointIndex({ x: -120, y: 40, z: 256 }, BOSS_LANE_ROUTES[0], 0)
+    assert.equal(idx, 3)
+  })
+
+  it('refuses to get kited north by a behind-spawn Defender, protects channeled ultimates, and recovers when stuck', () => {
+    const state = createBossAiState({ x: -165, y: 1200, z: 390 }, 0)
+    assert.equal(state.routeIndex, 0)
+
+    // Defender tries to kite Boss north from y=1450 while Boss is at y=900:
+    // Boss MUST aim north & hold attack, yet keep moving south (world moveY < 0 -> forward < 0)!
+    const kitePlan = planBossDriveStep({
+      hero: 'hero_forge',
+      bossPos: { x: -190, y: 900, z: 388 },
+      bossEyePos: { x: -190, y: 900, z: 480 },
+      bossHealth: 5000,
+      bossMaxHealth: 5000,
+      abilities: [
+        {
+          name: 'citadel_ability_MINI_turret',
+          slot: 0,
+          entity: 501,
+          upgrades: 0b1111,
+          charges: 2,
+          cooldownEnd: 0,
+          id: 1,
+          state: 0,
+          cooldownStart: 0,
+          rechargeStart: 0,
+          rechargeEnd: 0,
+          imbues: [],
+        },
+        {
+          name: 'citadel_ability_heavy_barrage',
+          slot: 3,
+          entity: 504,
+          upgrades: 0b1111,
+          charges: 0,
+          cooldownEnd: 0,
+          id: 4,
+          state: 0,
+          cooldownStart: 0,
+          rechargeStart: 0,
+          rechargeEnd: 0,
+          imbues: [],
+        },
+      ],
+      heroes: [
+        {
+          entity: 10,
+          position: { x: -190, y: 1450, z: 390 },
+          velocity: { x: 0, y: 0, z: 0 },
+          health: 700,
+          maxHealth: 700,
+          hasLineOfSight: true,
+        },
+      ],
+      state,
+      now: 2.0,
+      buttons: TEST_BUTTONS,
+    })
+
+    assert.equal(kitePlan.mode, 'hero_combat')
+    assert.ok(Math.abs(kitePlan.drive.facing.yaw - 90) < 2, 'Should aim North at kiting player')
+    assert.ok(kitePlan.drive.forward < -0.5, 'Should backpedal South down the lane instead of chasing North')
+    assert.equal(
+      kitePlan.drive.pressed & TEST_BUTTONS.ability1,
+      0n,
+      'McGinnis must NOT open turret placement preview',
+    )
+    assert.notEqual(
+      kitePlan.drive.pressed & TEST_BUTTONS.ultimate,
+      0n,
+      'McGinnis should cast Heavy Barrage ultimate when ready in range',
+    )
+
+    // Verify Guardian siege priority ignores unprovoked distant heroes (> 950u) once in siege zone
+    const siegeTarget = selectBossTarget(
+      { x: -85, y: -1180, z: 384 },
+      { x: -85, y: -1180, z: 480 },
+      [
+        {
+          entity: 10,
+          position: { x: 0, y: -2450, z: 390 },
+          velocity: { x: 0, y: 0, z: 0 },
+          health: 700,
+          maxHealth: 700,
+          hasLineOfSight: true,
+        },
+      ],
+      { entity: 700, position: { x: 0, y: -1792, z: 384 }, alive: true },
+      { provokedHeroEntity: 10, provokedUntil: 99 },
+      10,
+    )
+    assert.equal(siegeTarget?.kind, 'guardian')
+
+    // Verify 3-stage anti-stuck escalation: jump -> dash|jump -> teleport nudge
+    const stuckState = createBossAiState({ x: -165, y: 1200, z: 390 }, 0)
+    const p1 = planBossDriveStep({
+      hero: 'hero_warden',
+      bossPos: { x: -165, y: 1200, z: 390 },
+      bossEyePos: { x: -165, y: 1200, z: 470 },
+      bossHealth: 3200,
+      bossMaxHealth: 3200,
+      abilities: [],
+      heroes: [],
+      state: stuckState,
+      now: 1.5,
+      buttons: TEST_BUTTONS,
+    })
+    assert.notEqual(p1.drive.pressed & TEST_BUTTONS.jump, 0n)
+    assert.equal(p1.unstuckTeleport, undefined)
+
+    const p2 = planBossDriveStep({
+      hero: 'hero_warden',
+      bossPos: { x: -165, y: 1195, z: 390 },
+      bossEyePos: { x: -165, y: 1195, z: 470 },
+      bossHealth: 3200,
+      bossMaxHealth: 3200,
+      abilities: [],
+      heroes: [],
+      state: stuckState,
+      now: 3.0,
+      buttons: TEST_BUTTONS,
+    })
+    assert.notEqual(p2.drive.pressed & TEST_BUTTONS.dash, 0n)
+    assert.equal(p2.unstuckTeleport, undefined)
+
+    const p3 = planBossDriveStep({
+      hero: 'hero_warden',
+      bossPos: { x: -165, y: 1192, z: 390 },
+      bossEyePos: { x: -165, y: 1192, z: 470 },
+      bossHealth: 3200,
+      bossMaxHealth: 3200,
+      abilities: [],
+      heroes: [],
+      state: stuckState,
+      now: 4.5,
+      buttons: TEST_BUTTONS,
+    })
+    assert.ok(p3.unstuckTeleport !== undefined, 'Expected 3rd stuck check to issue waypoint teleport nudge')
   })
 })
 
@@ -398,9 +634,12 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   const appliedModifiers: string[] = []
   const executedServerCommands: string[] = []
   const spawnedTrooperUnits: string[] = []
+  const emittedSounds: Array<{ entity: number; sound: string }> = []
   const firedInputs: Array<{ entity: number; input: string }> = []
   const scaleStore = new Map<number, number>()
   const lifeStateStore = new Map<number, number>()
+  const modelStore = new Map<number, string>()
+  const trooperIds = new Set<number>()
   let nextSpawnedEntityId = 2000
   let probePassed = false
   let probeFailedReason = ''
@@ -415,8 +654,42 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     health = 700
     maxHealth = 700
     position = { x: 0, y: -1950, z: 390 }
-    abilityList: { name: string; slot: number }[] = [
-      { name: 'citadel_ability_primary', slot: 0 },
+    eyeAngles = { pitch: 0, yaw: 90, roll: 0 }
+    lastDrive?: {
+      facing: { pitch: number; yaw: number; roll: number }
+      forward: number
+      left: number
+      held: bigint
+      pressed: bigint
+    }
+    abilityList: {
+      name: string
+      slot: number
+      entity?: number
+      upgrades?: number
+      charges?: number
+      cooldownEnd?: number
+      id?: number
+      state?: number
+      cooldownStart?: number
+      rechargeStart?: number
+      rechargeEnd?: number
+      imbues?: string[]
+    }[] = [
+      {
+        name: 'citadel_ability_primary',
+        slot: 0,
+        entity: 400,
+        upgrades: 1,
+        charges: 0,
+        cooldownEnd: 0,
+        id: 1,
+        state: 0,
+        cooldownStart: 0,
+        rechargeStart: 0,
+        rechargeEnd: 0,
+        imbues: [],
+      },
     ]
     constructor(slot: number) {
       this.slot = slot
@@ -429,11 +702,15 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
         health: this.health,
         maxHealth: this.maxHealth,
         position: this.position,
-        eyeAngles: { pitch: 0, yaw: 90, roll: 0 },
-        cameraAngles: { pitch: 0, yaw: 90, roll: 0 },
+        eyeAngles: this.eyeAngles,
+        cameraAngles: this.eyeAngles,
         generation: 1,
         souls: this.souls,
-        eyePosition: this.position,
+        eyePosition: {
+          x: this.position.x,
+          y: this.position.y,
+          z: this.position.z + 64,
+        },
         velocity: { x: 0, y: 0, z: 0 },
         abilityPoints: this.ap,
         abilityUnlocks: 0,
@@ -471,9 +748,25 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       return true
     }
     abilities() {
-      return this.abilityList
+      return this.abilityList.map((a, idx) => ({
+        entity: a.entity ?? 400 + idx,
+        upgrades: a.upgrades ?? 1,
+        charges: a.charges ?? 0,
+        cooldownEnd: a.cooldownEnd ?? 0,
+        id: a.id ?? idx + 1,
+        state: a.state ?? 0,
+        cooldownStart: a.cooldownStart ?? 0,
+        rechargeStart: a.rechargeStart ?? 0,
+        rechargeEnd: a.rechargeEnd ?? 0,
+        imbues: a.imbues ?? [],
+        ...a,
+      }))
     }
-    setAbility(_opts: { ability: string; upgrades?: number }) {
+    setAbility(opts: { ability: string; upgrades?: number }) {
+      const found = this.abilityList.find((a) => a.name === opts.ability)
+      if (found && opts.upgrades !== undefined) {
+        found.upgrades = opts.upgrades
+      }
       return true
     }
     heal(amount: number) {
@@ -483,8 +776,61 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     sound(_s: string) {
       return true
     }
-    teleport(pos: { x: number; y: number; z: number }) {
-      this.position = pos
+    teleport(pos: { x: number; y: number; z: number }, facing?: { pitch: number; yaw: number; roll: number }) {
+      this.position = { ...pos }
+      if (facing) this.eyeAngles = { ...facing }
+      const s = npcStore.get(this.pawnEntity)
+      if (s) s.position = { ...pos }
+      return true
+    }
+    drive(cmd?: {
+      facing: { pitch: number; yaw: number; roll: number }
+      forward: number
+      left: number
+      held: bigint
+      pressed: bigint
+    }) {
+      this.lastDrive = cmd
+      if (!cmd) return true
+      this.eyeAngles = { ...cmd.facing }
+      const rad = (cmd.facing.yaw * Math.PI) / 180
+      const fx = Math.cos(rad)
+      const fy = Math.sin(rad)
+      const lx = -fy
+      const ly = fx
+      const wx = cmd.forward * fx + cmd.left * lx
+      const wy = cmd.forward * fy + cmd.left * ly
+      this.position = {
+        x: this.position.x + wx * 75,
+        y: this.position.y + wy * 75,
+        z: this.position.z,
+      }
+      const s = npcStore.get(this.pawnEntity)
+      if (s) s.position = { ...this.position }
+
+      // Simulate primary weapon fire when Buttons.attack (1n) is held
+      if ((cmd.held & 1n) !== 0n && this.team === 3) {
+        const angleDiff = (a: number, b: number) => {
+          let d = ((a - b + 540) % 360) - 180
+          if (d < -180) d += 360
+          return Math.abs(d)
+        }
+        const def = defenderPlayer
+        const dDef = Math.hypot(def.position.x - this.position.x, def.position.y - this.position.y)
+        const yawToDef = (Math.atan2(def.position.y - this.position.y, def.position.x - this.position.x) * 180) / Math.PI
+        if (def.health > 0 && dDef <= 950 && angleDiff(cmd.facing.yaw, yawToDef) <= 22) {
+          def.health = Math.max(0, def.health - 60)
+        } else {
+          const g = npcStore.get(700)
+          if (g && g.health > 0) {
+            const dG = Math.hypot(g.position.x - this.position.x, g.position.y - this.position.y)
+            const yawToG = (Math.atan2(g.position.y - this.position.y, g.position.x - this.position.x) * 180) / Math.PI
+            if (dG <= 944 && angleDiff(cmd.facing.yaw, yawToG) <= 22) {
+              g.health = Math.max(0, g.health - 60)
+            }
+          }
+        }
+      }
       return true
     }
     removeBot() {
@@ -514,6 +860,12 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       if (maxHp !== undefined) s.maxHealth = maxHp
       return true
     }
+    remove() {
+      const existed = npcStore.delete(this.entity)
+      trooperIds.delete(this.entity)
+      modelStore.delete(this.entity)
+      return existed
+    }
   }
 
   class MockProbeRun {
@@ -529,6 +881,34 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   }
 
   const mockModlockSource = `
+    export const Buttons = {
+      attack: 1n << 0n,
+      jump: 1n << 1n,
+      crouch: 1n << 2n,
+      dash: 1n << 3n,
+      use: 1n << 4n,
+      altFire: 1n << 5n,
+      reload: 1n << 6n,
+      melee: 1n << 7n,
+      ability1: 1n << 8n,
+      ability2: 1n << 9n,
+      ability3: 1n << 10n,
+      ultimate: 1n << 11n,
+      parry: 1n << 12n,
+    };
+    export const Layers = {
+      solid: 1n << 0n,
+      hitbox: 1n << 1n,
+      trigger: 1n << 2n,
+      playerClip: 1n << 4n,
+      player: 1n << 18n,
+      npc: 1n << 19n,
+      staticLevel: 1n << 20n,
+      hero: 1n << 21n,
+      trooper: 1n << 22n,
+      building: 1n << 23n,
+    };
+    export const trace = () => undefined;
     export const Npc = globalThis.__mockModlock.Npc;
     export const ProbeRun = globalThis.__mockModlock.ProbeRun;
     export const players = () => [{ player: globalThis.__mockModlock.defenderPlayer, name: 'Defender', bot: false, ready: true, steamId: 1n, generation: 1, roles: [] }];
@@ -537,16 +917,18 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       const p = new globalThis.__mockModlock.MockPlayer(2);
       p.team = opts.team;
       p.pawnEntity = ent;
-      globalThis.__mockModlock.npcStore.set(ent, { health: 2500, maxHealth: 2500, team: opts.team, position: opts.position ?? { x: 0, y: 1200, z: 390 } });
+      p.position = opts.position ? { ...opts.position } : { x: 0, y: 1200, z: 390 };
+      globalThis.__mockModlock.npcStore.set(ent, { health: 2500, maxHealth: 2500, team: opts.team, position: { ...p.position } });
       return p;
     };
     export const findEntitiesByName = (name) => name.includes('boss_rebel_t1_blue') ? [700] : [];
     export const findEntities = (cls) => {
       if (cls === 'info_super_trooper_spawn') return [14020, 14325];
-      if (cls === 'info_neutral_trooper_camp') return [15001];
-      if (cls === 'npc_trooper') return [801, 802];
-      if (cls === 'npc_trooper_neutral') return [];
+      if (cls === 'info_neutral_trooper_camp') return [];
+      if (cls === 'npc_trooper') return [...globalThis.__mockModlock.npcStore.keys()].filter((id) => (id >= 800 && id < 900) || globalThis.__mockModlock.trooperIds.has(id));
+      if (cls === 'npc_trooper_neutral') return [...globalThis.__mockModlock.npcStore.keys()].filter((id) => id >= 1600 && id < 1700);
       if (cls === 'npc_trooper_boss') return [700];
+      if (cls === 'npc_boss_tier2' || cls === 'destroyable_building') return [];
       return [];
     };
     export const fireInput = (entity, input, value) => {
@@ -554,14 +936,47 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       if (input === 'SetAbsScale' && value && typeof value.number === 'number') {
         globalThis.__mockModlock.scaleStore.set(entity, value.number);
       }
+      if (input === 'SetHealth' && value && typeof value.integer === 'number') {
+        const s = globalThis.__mockModlock.npcStore.get(entity);
+        if (s) s.health = value.integer;
+      }
+      if (input === 'OverrideHealth' && value && typeof value.integer === 'number') {
+        const s = globalThis.__mockModlock.npcStore.get(entity);
+        if (s) s.maxHealth = value.integer;
+      }
+      return true;
+    };
+    export const damage = (opts) => {
+      const def = globalThis.__mockModlock.defenderPlayer;
+      if (opts.victim === def.pawnEntity) {
+        def.health = Math.max(0, def.health - opts.amount);
+        return true;
+      }
+      const s = globalThis.__mockModlock.npcStore.get(opts.victim);
+      if (s) s.health = Math.max(0, s.health - opts.amount);
+      return true;
+    };
+    export const emitSound = (entity, sound) => {
+      globalThis.__mockModlock.emittedSounds.push({ entity, sound });
       return true;
     };
     export const killEntity = (opts) => {
       const s = globalThis.__mockModlock.npcStore.get(opts.victim);
       if (s) s.health = 0;
+      globalThis.__mockModlock.lifeStateStore.set(opts.victim, 2);
       return true;
     };
     export const holdModifierState = () => true;
+    export const entityClass = (entity) => {
+      if (entity >= 1600 && entity < 1700) return { className: 'CNPC_TrooperNeutral', designerName: 'npc_trooper_neutral' };
+      return { className: 'CNPC_Trooper', designerName: 'npc_trooper' };
+    };
+    export const moveEntity = (entity, pos) => {
+      const s = globalThis.__mockModlock.npcStore.get(entity);
+      if (s && pos) s.position = pos;
+      return true;
+    };
+    export const readModifierField = () => undefined;
     export const entityPosition = (entity) => {
       const s = globalThis.__mockModlock.npcStore.get(entity);
       return s ? { position: s.position, facing: { pitch: 0, yaw: 270, roll: 0 }, velocity: { x: 0, y: 0, z: 0 } } : undefined;
@@ -573,22 +988,43 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       if (cls === 'CBaseEntity' && field === 'm_lifeState') {
         return globalThis.__mockModlock.lifeStateStore.get(entity) ?? 0;
       }
+      if (cls === 'CModelState' && field === 'm_ModelName') {
+        return globalThis.__mockModlock.modelStore.get(entity);
+      }
+      const s = globalThis.__mockModlock.npcStore.get(entity);
+      if (s && cls === 'CBaseEntity') {
+        if (field === 'm_iHealth') return s.health;
+        if (field === 'm_iMaxHealth') return s.maxHealth;
+        if (field === 'm_iTeamNum') return s.team;
+      }
       return undefined;
     };
     export const writeField = (entity, cls, field, _type, val) => {
       if (cls === 'CGameSceneNode' && field === 'm_flScale' && typeof val === 'number') {
         globalThis.__mockModlock.scaleStore.set(entity, val);
       }
+      const s = globalThis.__mockModlock.npcStore.get(entity);
+      if (s && cls === 'CBaseEntity' && typeof val === 'number') {
+        if (field === 'm_iHealth') s.health = val;
+        if (field === 'm_iMaxHealth') s.maxHealth = val;
+      }
       return true;
     };
     export const spawnNpc = (opts) => {
       const ent = globalThis.__mockModlock.allocSpawnEntity();
       globalThis.__mockModlock.spawnedTrooperUnits.push(opts.unit);
+      if (opts.className === 'npc_trooper') {
+        globalThis.__mockModlock.trooperIds.add(ent);
+      }
+      const defaultHp = opts.unit === 'trooper_melee' ? 413 : 150;
+      if (opts.unit === 'trooper_melee') {
+        globalThis.__mockModlock.modelStore.set(ent, 'models/heroes_wip/necro/necro_shambler.vmdl');
+      }
       globalThis.__mockModlock.npcStore.set(ent, {
-        health: opts.health ?? 150,
-        maxHealth: opts.maxHealth ?? opts.health ?? 150,
+        health: opts.health ?? defaultHp,
+        maxHealth: opts.maxHealth ?? opts.health ?? defaultHp,
         team: opts.team,
-        position: opts.position,
+        position: { ...opts.position },
       });
       return new globalThis.__mockModlock.Npc(ent);
     };
@@ -607,6 +1043,9 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     npcStore,
     executedServerCommands,
     spawnedTrooperUnits,
+    emittedSounds,
+    trooperIds,
+    modelStore,
     allocSpawnEntity: () => ++nextSpawnedEntityId,
     firedInputs,
     scaleStore,
@@ -644,7 +1083,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   const { TomeManager } = await import('../src/tomes.ts')
   const { TdProbe } = await import('../src/probe.ts')
 
-  it('drives GuardianManager, WaveManager, TomeManager, and TdProbe through all 6 Probe steps (including Boss Size scaling) to PASS', () => {
+  it('drives GuardianManager, WaveManager, TomeManager, and TdProbe through all 8 Probe steps (including Graves Zombie kamikaze, Boss Size scaling & Boss combat AI) to PASS', () => {
     const guardian = new GuardianManager()
     const tomes = new TomeManager()
     const waves = new WaveManager((w) => tomes.offerMajorBoonForWave(w))
@@ -654,8 +1093,17 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     tomes.reset()
     waves.reset(0)
 
-    // Advance all 6 probe steps: world -> defender -> wave_scale -> tome_grant -> boon_and_guardian -> boss_scale
-    for (let step = 1; step <= 12 && !probePassed; step++) {
+    // Advance all 8 probe steps: world -> defender -> wave_scale -> tome_grant -> boon_and_guardian -> zombie_kamikaze -> boss_scale -> boss_combat
+    for (let step = 1; step <= 26 && !probePassed; step++) {
+      // Simulate spawned trooper_melee marching south to the Guardian pedestal ring (y = -1350, 442u from Guardian y = -1792)
+      for (const [ent, model] of modelStore.entries()) {
+        if (model.includes('necro_shambler')) {
+          const s = npcStore.get(ent)
+          if (s && s.health > 0 && s.position.y > -1350) {
+            s.position = { ...s.position, y: -1350 }
+          }
+        }
+      }
       probe.tick(step * 2, waves, guardian, tomes)
       assert.equal(probeFailedReason, '', `TdProbe failed: ${probeFailedReason}`)
     }
@@ -664,11 +1112,14 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.ok(appliedModifiers.length >= 2, 'Expected VData td_tome_* modifiers to be applied')
   })
 
-  it('ignores pooled skybase lifeState=2 & zipline 1/1 entities, recovers recycled handles, and scales 100% of landed creeps', () => {
+  it('ignores pooled skybase lifeState=2 & zipline 1/1 entities, spawns varied wave neutrals, recovers recycled handles, and scales 100% of landed creeps', () => {
     npcStore.clear()
+    trooperIds.clear()
+    modelStore.clear()
     lifeStateStore.clear()
     scaleStore.clear()
     executedServerCommands.length = 0
+    spawnedTrooperUnits.length = 0
     firedInputs.length = 0
 
     const waves = new WaveManager()
@@ -699,8 +1150,9 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     const expectedDmgMult = computeWaveCreepDamageMult(8)
     const expectedInterval = computeWaveSpawnIntervalSeconds(8) // 14s
 
-    // Alive count MUST be 1 (only landed 802, NOT pooled skybase 801!)
-    assert.equal(waves.aliveCreepCount, 1)
+    // Wave 8 spawns 3 varied neutral creeps + 1 landed creep 802 = 4 (pooled skybase 801 MUST be excluded!)
+    assert.equal(waves.spawnedWaveNeutrals.length, 3)
+    assert.equal(waves.aliveCreepCount, 4)
     assert.equal(waves.scaledCreeps.has(801), false)
     assert.equal(npcStore.get(802)?.maxHealth, expectedHp)
     assert.equal(scaleStore.get(802), expectedScale)
@@ -719,7 +1171,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
         `citadel_trooper_spawn_interval_early ${expectedInterval}`,
       ),
     )
-    assert.equal(waves.aliveCreepCount, 1)
+    assert.equal(waves.aliveCreepCount, 4)
     assert.equal(waves.scaledCreeps.has(801), false)
 
     // Next second: 801 dismounts onto Center Lane (lifeState=0, 150/150 @[0,400,384]) -> immediately scaled!
@@ -730,7 +1182,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       position: { x: 0, y: 400, z: 384 },
     })
     waves.scaleNewlySpawnedCreeps()
-    assert.equal(waves.aliveCreepCount, 2)
+    assert.equal(waves.aliveCreepCount, 5)
     assert.equal(waves.scaledCreeps.has(801), true)
     assert.equal(npcStore.get(801)?.maxHealth, expectedHp)
     assert.equal(npcStore.get(801)?.health, expectedHp)
@@ -873,12 +1325,32 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       { name: 'citadel_ability_bull_leap', slot: 3 },
     ]
 
-    waves.tickActiveBosses()
+    waves.tickActiveBosses(51)
     assert.equal(boss.configuredPawnEntity, 999)
     assert.equal(appliedModifiers.includes('td_boss_hero_stats_2'), true)
+    assert.equal(appliedModifiers.includes('td_tome_ammo'), true)
+    assert.equal(botMock.abilityList[0].upgrades, 0b0111)
+    assert.ok(botMock.lastDrive !== undefined, 'Expected Boss bot.drive(...) to be active immediately')
+    assert.ok(botMock.position.y < 1200, 'Expected Boss to start marching south out of spawn')
     assert.equal(scaleStore.get(999), 1.9)
     assert.equal(botMock.maxHealth, 6200)
     assert.equal(botMock.health, 6200)
+
+    // Verify Defender damaging Boss records provocation aggro on Boss AI state
+    waves.handleCreepPostDamage(
+      {
+        victim: 999,
+        attacker: defenderPlayer.pawnEntity,
+        ability: 0,
+        healthBefore: 6200,
+        healthLost: 120,
+        dealt: 120,
+      },
+      undefined,
+      52,
+    )
+    assert.equal(boss.ai.provokedHeroEntity, defenderPlayer.pawnEntity)
+    assert.equal(boss.ai.provokedUntil, 58)
 
     // Verify Boss outgoing damage is scaled in modifyIncomingDamage
     const bossHit = waves.modifyIncomingDamage({
@@ -891,6 +1363,127 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       amount: 100,
     })
     assert.equal(bossHit?.amount, 135)
+  })
+
+  it('arms and detonates Graves Zombies on Guardian & Hero proximity AND on direct damage, killing the zombie 100% of the time without killing ranged troopers', () => {
+    npcStore.clear()
+    trooperIds.clear()
+    modelStore.clear()
+    lifeStateStore.clear()
+    emittedSounds.length = 0
+
+    // Verify pure wave neutral variety rotation covers all 4 neutral types across Waves 1-2
+    const w1Neutrals = getWaveNeutralSpawns(1).map((s) => s.unit)
+    const w2Neutrals = getWaveNeutralSpawns(2).map((s) => s.unit)
+    const w6Neutrals = getWaveNeutralSpawns(6).map((s) => s.unit)
+    assert.deepEqual(w1Neutrals, ['td_neutral_lantern', 'td_neutral_puppeteer'])
+    assert.deepEqual(w2Neutrals, ['td_neutral_pigeon', 'td_neutral_mushroom'])
+    assert.equal(w6Neutrals.length, 3)
+
+    // Verify pure detonation range math
+    assert.equal(
+      isWithinZombieDetonationRange(
+        { x: 0, y: -1320, z: 384 },
+        { x: 0, y: -1792, z: 384 },
+        'guardian',
+      ),
+      true,
+    )
+    assert.equal(
+      isWithinZombieDetonationRange(
+        { x: 0, y: -1000, z: 384 },
+        { x: 0, y: -1792, z: 384 },
+        'guardian',
+      ),
+      false,
+    )
+    assert.equal(isExplodingZombieBaseMaxHp(413), true)
+    assert.equal(isExplodingZombieBaseMaxHp(150), false)
+
+    // Setup Guardian at [0, -1792, 384]
+    npcStore.set(700, {
+      health: 5500,
+      maxHealth: 5500,
+      team: 2,
+      position: { x: 0, y: -1792, z: 384 },
+    })
+    // 810: Graves Zombie (trooper_melee, base maxHP=413) at Guardian's 472u engagement ring (y = -1330)
+    // 811: Ranged Trooper (trooper_normal, base maxHP=150)
+    // 812: Second Graves Zombie hitting via onDamaged
+    npcStore.set(810, {
+      health: 413,
+      maxHealth: 413,
+      team: 3,
+      position: { x: 0, y: -1330, z: 384 },
+    })
+    npcStore.set(811, {
+      health: 150,
+      maxHealth: 150,
+      team: 3,
+      position: { x: 40, y: -1330, z: 384 },
+    })
+    npcStore.set(812, {
+      health: 413,
+      maxHealth: 413,
+      team: 3,
+      position: { x: 0, y: -600, z: 384 },
+    })
+
+    const guardian = new GuardianManager()
+    guardian.reset()
+    const waves = new WaveManager()
+    waves.reset(0)
+    waves.wave = 3
+    waves.scaleNewlySpawnedCreeps()
+
+    assert.equal(waves.creepSpecs.get(810)?.isExplodingZombie, true)
+    assert.equal(waves.creepSpecs.get(811)?.isExplodingZombie, false)
+    assert.equal(waves.creepSpecs.get(812)?.isExplodingZombie, true)
+
+    // First 250ms tick at t=10.0s: 810 arms with warning sound (still alive during 0.2s fuse)
+    const det1 = waves.tickExplodingZombies(10.0, guardian)
+    assert.equal(det1, 0)
+    assert.ok(
+      emittedSounds.some((s) => s.entity === 810 && s.sound === 'Necro.Shambler.Warning'),
+    )
+    assert.ok((npcStore.get(810)?.health ?? 0) > 0)
+
+    // Next 250ms tick at t=10.25s: 810 detonates kamikaze explosion, damages Guardian, and DIES!
+    const det2 = waves.tickExplodingZombies(10.25, guardian)
+    assert.equal(det2, 1)
+    assert.equal(npcStore.get(810)?.health, 0)
+    assert.equal(lifeStateStore.get(810), 2)
+    assert.ok(guardian.health < 5500, 'Expected Guardian to take kamikaze damage')
+
+    // Ranged trooper 811 MUST stay alive!
+    const rangedDied = waves.handleCreepPostDamage(
+      {
+        victim: 700,
+        attacker: 811,
+        ability: 0,
+        healthBefore: guardian.health,
+        healthLost: 24,
+        dealt: 24,
+      },
+      guardian,
+    )
+    assert.equal(rangedDied, false)
+    assert.ok((npcStore.get(811)?.health ?? 0) > 0)
+
+    // Second Graves Zombie 812 dealing direct damage MUST self-destruct immediately!
+    const zombieDied = waves.handleCreepPostDamage(
+      {
+        victim: 10,
+        attacker: 812,
+        ability: 0,
+        healthBefore: 700,
+        healthLost: 65,
+        dealt: 65,
+      },
+      guardian,
+    )
+    assert.equal(zombieDied, true)
+    assert.equal(npcStore.get(812)?.health, 0)
   })
 })
 

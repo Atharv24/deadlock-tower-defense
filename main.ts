@@ -4,6 +4,7 @@
 // patched Center Lane Map VPK (`maps/hl_defense.vpk` / `build/dl_defense.vpk`).
 
 import {
+  type ChatEvent,
   command,
   every,
   findHero,
@@ -11,6 +12,7 @@ import {
   handoff,
   holdModifierState,
   log,
+  onChat,
   onDamage,
   onDamaged,
   onFrame,
@@ -29,9 +31,11 @@ import {
   DEFENDER_TEAM,
   deserializeTdHandoff,
   MINOR_TOME_POOL,
+  parseSlashCommandLine,
   PLAYER_SPAWN_ANGLES,
   PLAYER_SPAWN_ORIGIN,
   serializeTdHandoff,
+  TD_PRECACHE_RESOURCES,
 } from './src/config'
 import { GuardianManager } from './src/guardian'
 import {
@@ -85,6 +89,7 @@ function persistHandoff(): void {
       guardianUpgradeLevel: guardian.upgradeLevel,
       guardianBonusMaxHp: guardian.bonusMaxHp,
       scaledCreeps: [...waves.scaledCreeps],
+      explodingZombies: waves.exportExplodingZombieHandles(),
       rewardedCreeps: [...tomes.rewardedCreeps],
       playerTomes,
       playerKills,
@@ -117,13 +122,19 @@ function restartMatch(): void {
 onStart((args) => {
   precache({
     heroes: [...BOSS_HERO_POOL, 'hero_inferno'],
+    resources: TD_PRECACHE_RESOURCES,
   })
   waves.applyServerConfig()
 
   const restored = deserializeTdHandoff(handedOff())
   if (restored) {
     skipInitialWorldReset = true
-    waves.restore(restored.wave, restored.nextWaveTime, restored.scaledCreeps)
+    waves.restore(
+      restored.wave,
+      restored.nextWaveTime,
+      restored.scaledCreeps,
+      restored.explodingZombies ?? [],
+    )
     guardian.restore(
       restored.guardianUpgradeLevel,
       restored.guardianBonusMaxHp,
@@ -179,19 +190,29 @@ onDamaged((hit) => {
   if (guardian.matchState !== 'active') {
     return
   }
+  waves.handleCreepPostDamage(hit, guardian, nowSeconds)
   const evalResult = tomes.onDamaged(hit, waves.validEnemyEntities(), guardian)
   if (evalResult.isPlayerKill) {
     persistHandoff()
   }
 })
 
-// Fast 250ms pass so newly dismounted zipline creeps and Boss Heroes get scaled immediately
-// and newly spawned defender heroes immediately receive Buy Anywhere (`MODIFIER_STATE_IN_SHOP`).
+// Refresh Panorama JSX HUD and drive active Enemy Hero Bosses at 10 Hz (smooth 100ms
+// aim tracking, lane steering, and ability casting while keeping frame times tiny).
+every(0.1, () => {
+  if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
+    waves.tickActiveBosses(nowSeconds, guardian)
+  }
+  renderTdHud(nowSeconds, waves, guardian, tomes, restartMatch)
+})
+
+// Fast 250ms pass so newly dismounted zipline creeps and Graves Zombie kamikaze
+// detonations run responsively and newly spawned defender heroes get Buy Anywhere.
 every(0.25, () => {
   ensureDefenderShopAccess()
   if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
     waves.scaleNewlySpawnedCreeps()
-    waves.tickActiveBosses()
+    waves.tickExplodingZombies(nowSeconds, guardian)
   }
 })
 
@@ -219,22 +240,45 @@ every(1, () => {
 
 onFrame((frame) => {
   nowSeconds = frame.timeSeconds
-  renderTdHud(nowSeconds, waves, guardian, tomes, restartMatch)
   probe?.tick(nowSeconds, waves, guardian, tomes)
 })
 
-// Player chat & console commands:
-command('repair', (player: Player) => {
+// Register slash commands for BOTH All-Chat/console (`command()`) and Team Chat (`onChat` with `!line.all`).
+type TdCommandHandler = (player: Player, args: string) => void
+const teamChatCommandHandlers = new Map<string, TdCommandHandler>()
+
+function registerTdCommand(name: string, handler: TdCommandHandler): void {
+  const key = name.toLowerCase()
+  teamChatCommandHandlers.set(key, handler)
+  command(key, handler)
+}
+
+onChat((line: ChatEvent) => {
+  if (line.all) {
+    return
+  }
+  const parsed = parseSlashCommandLine(line.text)
+  if (!parsed) {
+    return
+  }
+  const handler = teamChatCommandHandlers.get(parsed.name)
+  if (handler) {
+    handler(line.player, parsed.args)
+  }
+})
+
+// Player chat & console commands (available in both Team Chat and All-Chat):
+registerTdCommand('repair', (player: Player) => {
   guardian.repairByPlayer(player)
   persistHandoff()
 })
 
-command('upgrade', (player: Player) => {
+registerTdCommand('upgrade', (player: Player) => {
   guardian.upgradeByPlayer(player)
   persistHandoff()
 })
 
-command('boon', (player: Player, args: string) => {
+registerTdCommand('boon', (player: Player, args: string) => {
   const idx = Number(args.trim()) - 1
   if (Number.isNaN(idx) || idx < 0 || idx > 2) {
     toast(player, 'Usage: /boon 1, /boon 2, or /boon 3')
@@ -244,7 +288,7 @@ command('boon', (player: Player, args: string) => {
   persistHandoff()
 })
 
-command('skipwave', (player: Player) => {
+registerTdCommand('skipwave', (player: Player) => {
   if (guardian.matchState !== 'active') {
     toast(player, 'Match is not active. Type /restarttd first.')
     return
@@ -254,7 +298,7 @@ command('skipwave', (player: Player) => {
   persistHandoff()
 })
 
-command('boss', (player: Player) => {
+registerTdCommand('boss', (player: Player) => {
   if (guardian.matchState !== 'active') {
     toast(player, 'Match is not active. Type /restarttd first.')
     return
@@ -267,20 +311,20 @@ command('boss', (player: Player) => {
   persistHandoff()
 })
 
-command('granttome', (player: Player) => {
+registerTdCommand('granttome', (player: Player) => {
   const randomTome =
     MINOR_TOME_POOL[Math.floor(Math.random() * MINOR_TOME_POOL.length)]
   tomes.applyMinorTome(player, randomTome)
   persistHandoff()
 })
 
-command('souls', (player: Player, args: string) => {
+registerTdCommand('souls', (player: Player, args: string) => {
   const amount = Number(args.trim()) || 10_000
   player.adjustSouls(amount)
   toast(player, `Granted +${amount} Souls for testing!`)
 })
 
-command('hero', (player: Player, args: string) => {
+registerTdCommand('hero', (player: Player, args: string) => {
   const query = args.trim()
   if (!query) {
     openHeroPickerForPlayer(player)
@@ -295,6 +339,6 @@ command('hero', (player: Player, args: string) => {
   selectDefenderHero(player, found, nowSeconds)
 })
 
-command('restarttd', () => {
+registerTdCommand('restarttd', () => {
   restartMatch()
 })

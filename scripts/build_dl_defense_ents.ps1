@@ -1,9 +1,14 @@
 $ErrorActionPreference = "Stop"
 
-$srcTxtPath = "C:\Users\athar\.gemini\antigravity\brain\bc4be04f-aa74-4f2b-b4c1-e6569ea638df\scratch\dl_midtown_default_ents.vents_c.txt"
-$dstTxtPath = "C:\Users\athar\.gemini\antigravity\brain\bc4be04f-aa74-4f2b-b4c1-e6569ea638df\scratch\dl_defense_default_ents.vents_c.txt"
-$origBinPath = "C:\Users\athar\.gemini\antigravity\brain\bc4be04f-aa74-4f2b-b4c1-e6569ea638df\scratch\dl_midtown_default_ents.vents_c"
-$dstBinPath = "C:\Users\athar\.gemini\antigravity\brain\bc4be04f-aa74-4f2b-b4c1-e6569ea638df\scratch\dl_defense_default_ents.vents_c"
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$refMapDir = Join-Path $repoRoot "reference\map_base"
+$buildDir = Join-Path $repoRoot "build"
+if (-not (Test-Path $buildDir)) { New-Item -ItemType Directory -Path $buildDir -Force | Out-Null }
+
+$srcTxtPath = Join-Path $refMapDir "dl_midtown_default_ents.vents_c.txt"
+$dstTxtPath = Join-Path $buildDir "dl_defense_default_ents.vents_c.txt"
+$origBinPath = Join-Path $refMapDir "dl_midtown_default_ents.vents_c"
+$dstBinPath = Join-Path $buildDir "dl_defense_default_ents.vents_c"
 
 Write-Output "Reading $srcTxtPath..."
 $text = [System.IO.File]::ReadAllText($srcTxtPath)
@@ -106,126 +111,14 @@ $text = $text -replace 'classname = "point_template"', 'classname = "info_target
 $text = [regex]::Replace($text, '(graph_def = resource_name:"pulse/maps/prefabs/gameplay/(?:souls_dealer|basketball_hoop)\.vpulse"[\s\S]{1,200}?)classname = "point_pulse"', '$1classname = "info_target_server_only"')
 Write-Output "Disabled point_template and souls_dealer/basketball_hoop point_pulse entities."
 
-# 4B. Disable stock side-lane / underground info_neutral_trooper_camp and info_neutral_trooper_spawn entities
-# so only our Center Lane neutral camp ([PR#]td_lane_neutrals) spawns neutral creeps.
+# 4B. Disable all stock info_neutral_trooper_camp and info_neutral_trooper_spawn entities
+# (static neutral camps are disabled; varied neutral creeps march inside Center Lane waves instead).
 $text = $text -replace 'classname = "info_neutral_trooper_camp"', 'classname = "info_target_server_only"'
 $text = $text -replace 'classname = "info_neutral_trooper_spawn"', 'classname = "info_target_server_only"'
-Write-Output "Disabled stock side-lane/vault info_neutral_trooper_camp and info_neutral_trooper_spawn entities."
+Write-Output "Disabled all static info_neutral_trooper_camp and info_neutral_trooper_spawn entities."
 
-# 5. Add Center Lane neutral creep camp ([PR#]td_lane_neutrals + 4 info_neutral_trooper_spawn points)
-# and [PR#]td_servercmd (point_servercommand). Wave timers and scaling are driven dynamically by Modlock TypeScript.
+# 5. Add [PR#]td_servercmd (point_servercommand). Wave timers, marching neutral variety, and scaling are driven dynamically by Modlock TypeScript.
 $autoEnts = @"
-		{
-			m_connections = [  ]
-			m_keyValuesData = #[  ]
-			keyValues3Data = 
-			{
-				version = 1
-				values = 
-				{
-					TetherRadiusOverride = 1200.0
-					targetname = "[PR#]td_lane_neutrals"
-					vscripts = ""
-					subclass_name = "neutral_camp_medium"
-					CampName = ""
-					classname = "info_neutral_trooper_camp"
-					origin = [ 0.0, -1350.0, 140.0 ]
-					angles = [ 0.0, 270.0, 0.0 ]
-					scales = [ 1.0, 1.0, 1.0 ]
-				}
-				attributes = 
-				{
-				}
-			}
-		},
-		{
-			m_connections = [  ]
-			m_keyValuesData = #[  ]
-			keyValues3Data = 
-			{
-				version = 1
-				values = 
-				{
-					NeutralSubclass = "neutral_drain_creature_normal"
-					ENeutralTrooperType = "-1"
-					CampName = "[PR#]td_lane_neutrals"
-					teamnumber = "4"
-					classname = "info_neutral_trooper_spawn"
-					origin = [ -160.0, -1400.0, 140.0 ]
-					angles = [ 0.0, 270.0, 0.0 ]
-					scales = [ 1.0, 1.0, 1.0 ]
-				}
-				attributes = 
-				{
-				}
-			}
-		},
-		{
-			m_connections = [  ]
-			m_keyValuesData = #[  ]
-			keyValues3Data = 
-			{
-				version = 1
-				values = 
-				{
-					NeutralSubclass = "neutral_underground_normal"
-					ENeutralTrooperType = "-1"
-					CampName = "[PR#]td_lane_neutrals"
-					teamnumber = "4"
-					classname = "info_neutral_trooper_spawn"
-					origin = [ 160.0, -1400.0, 140.0 ]
-					angles = [ 0.0, 270.0, 0.0 ]
-					scales = [ 1.0, 1.0, 1.0 ]
-				}
-				attributes = 
-				{
-				}
-			}
-		},
-		{
-			m_connections = [  ]
-			m_keyValuesData = #[  ]
-			keyValues3Data = 
-			{
-				version = 1
-				values = 
-				{
-					NeutralSubclass = "neutral_lantern_normal"
-					ENeutralTrooperType = "-1"
-					CampName = "[PR#]td_lane_neutrals"
-					teamnumber = "4"
-					classname = "info_neutral_trooper_spawn"
-					origin = [ -160.0, -1200.0, 140.0 ]
-					angles = [ 0.0, 270.0, 0.0 ]
-					scales = [ 1.0, 1.0, 1.0 ]
-				}
-				attributes = 
-				{
-				}
-			}
-		},
-		{
-			m_connections = [  ]
-			m_keyValuesData = #[  ]
-			keyValues3Data = 
-			{
-				version = 1
-				values = 
-				{
-					NeutralSubclass = "neutral_specimen_normal"
-					ENeutralTrooperType = "-1"
-					CampName = "[PR#]td_lane_neutrals"
-					teamnumber = "4"
-					classname = "info_neutral_trooper_spawn"
-					origin = [ 160.0, -1200.0, 140.0 ]
-					angles = [ 0.0, 270.0, 0.0 ]
-					scales = [ 1.0, 1.0, 1.0 ]
-				}
-				attributes = 
-				{
-				}
-			}
-		},
 		{
 			m_connections = [  ]
 			m_keyValuesData = #[  ]

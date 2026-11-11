@@ -119,6 +119,15 @@ function Invoke-InstallFiles {
         }
     }
 
+    function Copy-SafeModFile([string]$Src, [string]$Dst, [string]$Label) {
+        try {
+            Copy-Item -Path $Src -Destination $Dst -Force -ErrorAction Stop
+            Write-Host "[Installed $Label] $(Split-Path $Dst -Leaf) -> $Dst" -ForegroundColor Green
+        } catch {
+            Write-Host "[Note] $(Split-Path $Dst -Leaf) is currently in use by running Deadlock; existing copy remains active." -ForegroundColor Yellow
+        }
+    }
+
     $buildScriptsDir = Join-Path $buildDir "scripts"
     if (Test-Path $buildScriptsDir) {
         if (-not (Test-Path $deadlockScriptsDir)) {
@@ -126,9 +135,55 @@ function Invoke-InstallFiles {
         }
         foreach ($vdataFile in Get-ChildItem -Path $buildScriptsDir -Filter "*.vdata_c") {
             $dstVdata = Join-Path $deadlockScriptsDir $vdataFile.Name
-            Copy-Item -Path $vdataFile.FullName -Destination $dstVdata -Force
+            Copy-SafeModFile $vdataFile.FullName $dstVdata "VData"
             $installedFiles += $dstVdata
-            Write-Host "[Installed VData] $($vdataFile.Name) -> $dstVdata" -ForegroundColor Green
+        }
+    }
+
+    $buildMinimapDir = Join-Path $buildDir "td_panorama_overrides\minimap"
+    if (Test-Path $buildMinimapDir) {
+        $deadlockMinimapDir = Join-Path $DeadlockDir "game\citadel\materials\minimap"
+        if (-not (Test-Path $deadlockMinimapDir)) {
+            New-Item -ItemType Directory -Path $deadlockMinimapDir -Force | Out-Null
+        }
+        foreach ($vmatFile in Get-ChildItem -Path $buildMinimapDir -Filter "*.vmat_c") {
+            $dstVmat = Join-Path $deadlockMinimapDir $vmatFile.Name
+            Copy-SafeModFile $vmatFile.FullName $dstVmat "Minimap Material"
+            $installedFiles += $dstVmat
+        }
+    }
+
+    # 5. Install loose Panorama CSS & AnimGraph2 overrides so Deadlock resolves them cleanly
+    $buildPanoramaStylesDir = Join-Path $buildDir "td_panorama_overrides\styles"
+    if (Test-Path $buildPanoramaStylesDir) {
+        $deadlockPanoramaStylesDir = Join-Path $DeadlockDir "game\citadel\panorama\styles"
+        if (-not (Test-Path $deadlockPanoramaStylesDir)) {
+            New-Item -ItemType Directory -Path $deadlockPanoramaStylesDir -Force | Out-Null
+        }
+        foreach ($vcssFile in Get-ChildItem -Path $buildPanoramaStylesDir -Filter "*.vcss_c") {
+            $dstVcss = Join-Path $deadlockPanoramaStylesDir $vcssFile.Name
+            Copy-SafeModFile $vcssFile.FullName $dstVcss "Panorama CSS"
+            $installedFiles += $dstVcss
+        }
+    }
+
+    $buildShamblerGraph = Join-Path $buildDir "td_panorama_overrides\animgraphs\animgraph2\hero\necro\necro_shambler.vnmgraph_c"
+    if (Test-Path $buildShamblerGraph) {
+        $deadlockShamblerDir = Join-Path $DeadlockDir "game\citadel\animgraphs\animgraph2\hero\necro"
+        if (-not (Test-Path $deadlockShamblerDir)) {
+            New-Item -ItemType Directory -Path $deadlockShamblerDir -Force | Out-Null
+        }
+        $dstShambler = Join-Path $deadlockShamblerDir "necro_shambler.vnmgraph_c"
+        Copy-SafeModFile $buildShamblerGraph $dstShambler "AnimGraph2"
+        $installedFiles += $dstShambler
+    }
+
+    # Remove any retired custom Panorama layout files from previous playtests
+    $deadlockPanoramaLayoutRoot = Join-Path $DeadlockDir "game\citadel\panorama\layout"
+    if (Test-Path $deadlockPanoramaLayoutRoot) {
+        foreach ($tdDir in Get-ChildItem -Path $deadlockPanoramaLayoutRoot -Directory -Filter "deadlock-td-*") {
+            Remove-Item -Path $tdDir.FullName -Recurse -Force
+            Write-Host "[Cleaned Legacy Panorama Layout] $($tdDir.FullName)" -ForegroundColor Yellow
         }
     }
 
@@ -175,6 +230,11 @@ elseif ($Action -eq "Clean" -or $Action -eq "Uninstall") {
         (Join-Path $deadlockAddonDir "pak20_dir.vpk"),
         (Join-Path $deadlockScriptsDir "modifiers.vdata_c"),
         (Join-Path $deadlockScriptsDir "npc_units.vdata_c"),
+        (Join-Path $DeadlockDir "game\citadel\materials\minimap\hl_defense.vmat_c"),
+        (Join-Path $DeadlockDir "game\citadel\materials\minimap\dl_defense.vmat_c"),
+        (Join-Path $DeadlockDir "game\citadel\panorama\styles\hud.vcss_c"),
+        (Join-Path $DeadlockDir "game\citadel\panorama\styles\hud_minimap.vcss_c"),
+        (Join-Path $DeadlockDir "game\citadel\animgraphs\animgraph2\hero\necro\necro_shambler.vnmgraph_c"),
         (Join-Path $deadlockCfgDir "start_td.cfg"),
         (Join-Path $deadlockCfgDir "td_apply_buffs.cfg"),
         (Join-Path $deadlockCfgDir "td_postload.cfg"),
@@ -193,6 +253,13 @@ elseif ($Action -eq "Clean" -or $Action -eq "Uninstall") {
         if (Test-Path $filePath) {
             Remove-Item -Path $filePath -Force
             Write-Host "[Removed] $filePath" -ForegroundColor Yellow
+        }
+    }
+    $deadlockPanoramaLayoutRoot = Join-Path $DeadlockDir "game\citadel\panorama\layout"
+    if (Test-Path $deadlockPanoramaLayoutRoot) {
+        foreach ($tdDir in Get-ChildItem -Path $deadlockPanoramaLayoutRoot -Directory -Filter "deadlock-td-*") {
+            Remove-Item -Path $tdDir.FullName -Recurse -Force
+            Write-Host "[Removed Dir] $($tdDir.FullName)" -ForegroundColor Yellow
         }
     }
     # Clean any // MODLOCK DEV lines from gameinfo.gi if left behind by an interrupted session

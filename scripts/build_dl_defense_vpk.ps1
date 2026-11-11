@@ -1,14 +1,17 @@
 $ErrorActionPreference = "Stop"
 
-$srcVpk = "D:\SteamLibrary\steamapps\common\Deadlock\game\citadel\maps\dl_midtown.vpk"
-$newEntsPath = "C:\Users\athar\.gemini\antigravity\brain\bc4be04f-aa74-4f2b-b4c1-e6569ea638df\scratch\dl_defense_default_ents.vents_c"
-$worldVrmanPath = "C:\Users\athar\.gemini\antigravity\brain\bc4be04f-aa74-4f2b-b4c1-e6569ea638df\scratch\world.vrman_c"
-$physVrmanPath = "C:\Users\athar\.gemini\antigravity\brain\bc4be04f-aa74-4f2b-b4c1-e6569ea638df\scratch\world_physics.vrman_c"
-$vmapPath = "C:\Users\athar\.gemini\antigravity\brain\bc4be04f-aa74-4f2b-b4c1-e6569ea638df\scratch\dl_midtown.vmap_c"
-$buildDir = "d:\Projects\deadlock-custom-game\build"
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$refMapDir = Join-Path $repoRoot "reference\map_base"
+$buildDir = Join-Path $repoRoot "build"
 if (-not (Test-Path $buildDir)) { New-Item -ItemType Directory -Path $buildDir -Force | Out-Null }
-$mapsDir = "d:\Projects\deadlock-custom-game\maps"
+$mapsDir = Join-Path $repoRoot "maps"
 if (-not (Test-Path $mapsDir)) { New-Item -ItemType Directory -Path $mapsDir -Force | Out-Null }
+
+$srcVpk = "D:\SteamLibrary\steamapps\common\Deadlock\game\citadel\maps\dl_midtown.vpk"
+$newEntsPath = Join-Path $buildDir "dl_defense_default_ents.vents_c"
+$worldVrmanPath = Join-Path $refMapDir "world.vrman_c"
+$physVrmanPath = Join-Path $refMapDir "world_physics.vrman_c"
+$vmapPath = Join-Path $refMapDir "dl_midtown.vmap_c"
 $dstVpk = Join-Path $buildDir "dl_defense.vpk"
 $dstHlVpk = Join-Path $mapsDir "hl_defense.vpk"
 

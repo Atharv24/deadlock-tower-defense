@@ -41,9 +41,71 @@ export const GUARDIAN_TARGETNAMES = [
   '[PR#]boss_rebel_t1_blue',
 ] as const
 
-export const NEUTRAL_CAMP_TARGETNAMES = [
-  'td_lane_neutrals',
-  '[PR#]td_lane_neutrals',
+export const ZOMBIE_BASE_KAMIKAZE_DAMAGE = 85
+export const ZOMBIE_ARM_FUSE_SECONDS = 0.2
+
+export interface WaveNeutralVarietyDef {
+  readonly unit:
+    | 'td_neutral_lantern'
+    | 'td_neutral_puppeteer'
+    | 'td_neutral_pigeon'
+    | 'td_neutral_mushroom'
+  readonly label: string
+  readonly model: string
+  readonly hpMult: number
+  readonly scaleMult: number
+}
+
+export const WAVE_NEUTRAL_VARIETY_POOL: readonly WaveNeutralVarietyDef[] = [
+  {
+    unit: 'td_neutral_lantern',
+    label: 'Chinatown Lantern',
+    model: 'models/npc_units/neutral_ct_lanterns/neutral_ct_lantern.vmdl',
+    hpMult: 1.0,
+    scaleMult: 1.0,
+  },
+  {
+    unit: 'td_neutral_puppeteer',
+    label: 'Theatre Puppeteer',
+    model: 'models/npc_units/neutral_theatre_puppeteer_02/neutral_theatre_puppeteer_02.vmdl',
+    hpMult: 1.1,
+    scaleMult: 1.0,
+  },
+  {
+    unit: 'td_neutral_pigeon',
+    label: 'Cerberus Pigeon',
+    model: 'models/npc_units/neutral_pigeon_cerberus/neutral_pigeon_cerberus.vmdl',
+    hpMult: 0.95,
+    scaleMult: 1.05,
+  },
+  {
+    unit: 'td_neutral_mushroom',
+    label: 'Giant Spore Mushroom',
+    model: 'models/npc_units/neutral_mushroom_large_01/neutral_mushroom_large_01.vmdl',
+    hpMult: 1.35,
+    scaleMult: 1.05,
+  },
+] as const
+
+export const WAVE_NEUTRAL_SPAWN_OFFSETS = [
+  { x: -110, y: 1250, z: 392 },
+  { x: 110, y: 1250, z: 392 },
+  { x: 0, y: 1320, z: 392 },
+] as const
+
+export const TD_PRECACHE_RESOURCES: readonly string[] = [
+  'models/heroes_wip/necro/necro_shambler.vmdl',
+  'models/npc_units/neutral_library_watcher_01/neutral_library_watcher_01.vmdl',
+  'models/npc_units/neutral_ct_lanterns/neutral_ct_lantern.vmdl',
+  'models/npc_units/neutral_theatre_puppeteer_02/neutral_theatre_puppeteer_02.vmdl',
+  'models/npc_units/neutral_pigeon_cerberus/neutral_pigeon_cerberus.vmdl',
+  'models/npc_units/neutral_mushroom_large_01/neutral_mushroom_large_01.vmdl',
+  'particles/abilities/necro/necro_corpse_explosion.vpcf',
+  'particles/abilities/necro/necro_ghoul_warning.vpcf',
+  'particles/npc/neutrals/generic_neutral/neutral_small_projectile.vpcf',
+  'particles/npc/neutrals/generic_neutral/neutral_muzzle_flash_small.vpcf',
+  'particles/npc/neutrals/lantern/lantern_neutral_tracer.vpcf',
+  'particles/npc/neutral_trooper_death.vpcf',
 ] as const
 
 export const GUARDIAN_BASE_MAX_HP = 5500
@@ -357,6 +419,109 @@ export function shouldFreeHudCursor(opts: {
   return opts.needsHeroPick || opts.matchState === 'defeat'
 }
 
+/**
+ * Parses a slash command from a chat line (e.g. "/boon 2" -> { name: "boon", args: "2" }),
+ * allowing slash commands to execute identically in Team Chat (`!line.all`) and All-Chat.
+ */
+export function parseSlashCommandLine(
+  text: string,
+): { readonly name: string; readonly args: string } | undefined {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('/') || trimmed.length < 2) {
+    return undefined
+  }
+  const body = trimmed.slice(1).trim()
+  if (!body) {
+    return undefined
+  }
+  const spaceIdx = body.search(/\s/)
+  if (spaceIdx < 0) {
+    return { name: body.toLowerCase(), args: '' }
+  }
+  return {
+    name: body.slice(0, spaceIdx).toLowerCase(),
+    args: body.slice(spaceIdx + 1).trim(),
+  }
+}
+
+/**
+ * Identifies whether an unscaled `npc_trooper` base maxHealth corresponds to
+ * `trooper_melee` (Graves Zombie: base `m_nMaxHealth = 413`, vs `150` for
+ * `trooper_normal`, `trooper_medic`, and `td_neutral_*`).
+ */
+export function isExplodingZombieBaseMaxHp(unscaledMaxHp: number): boolean {
+  return unscaledMaxHp >= 380 && unscaledMaxHp <= 440
+}
+
+export type ZombieDetonationTargetKind = 'hero' | 'guardian' | 'walker' | 'shrine'
+
+const ZOMBIE_DETONATION_RADII: Readonly<
+  Record<ZombieDetonationTargetKind, { readonly max2D: number; readonly maxDz: number }>
+> = {
+  hero: { max2D: 185, maxDz: 160 },
+  guardian: { max2D: 500, maxDz: 220 },
+  walker: { max2D: 710, maxDz: 260 },
+  shrine: { max2D: 380, maxDz: 200 },
+}
+
+/**
+ * Pure spatial check deciding whether a Graves Zombie at `zombiePos` has reached
+ * kamikaze detonation range of a defender hero, Guardian (`472.441u` ring),
+ * Walker (`700u` ring), or Shrine (`350u` ring).
+ */
+export function isWithinZombieDetonationRange(
+  zombiePos: { readonly x: number; readonly y: number; readonly z: number },
+  targetPos: { readonly x: number; readonly y: number; readonly z: number },
+  kind: ZombieDetonationTargetKind,
+): boolean {
+  const bounds = ZOMBIE_DETONATION_RADII[kind]
+  if (Math.abs(zombiePos.z - targetPos.z) > bounds.maxDz) {
+    return false
+  }
+  const dx = zombiePos.x - targetPos.x
+  const dy = zombiePos.y - targetPos.y
+  return dx * dx + dy * dy <= bounds.max2D * bounds.max2D
+}
+
+export interface WaveNeutralSpawnSpec {
+  readonly unit: WaveNeutralVarietyDef['unit']
+  readonly label: string
+  readonly targetHp: number
+  readonly targetScale: number
+  readonly origin: { readonly x: number; readonly y: number; readonly z: number }
+}
+
+/**
+ * Deterministic neutral creep variety generator for Center Lane waves (with the
+ * static side camp disabled). Waves 1-5 spawn 2 distinct neutral variants per
+ * wave; Waves 6+ spawn 3 distinct neutral variants per wave, rotating across
+ * Lantern, Puppeteer, Pigeon, and Giant Mushroom.
+ */
+export function getWaveNeutralSpawns(wave: number): WaveNeutralSpawnSpec[] {
+  const clampedWave = Math.max(1, Math.floor(wave))
+  const baseHp = computeWaveCreepHp(clampedWave)
+  const baseScale = computeWaveCreepScale(clampedWave)
+  const count = clampedWave >= 6 ? 3 : 2
+  const startIdx = ((clampedWave - 1) * 2) % WAVE_NEUTRAL_VARIETY_POOL.length
+  const out: WaveNeutralSpawnSpec[] = []
+  for (let i = 0; i < count; i++) {
+    const def = WAVE_NEUTRAL_VARIETY_POOL[(startIdx + i) % WAVE_NEUTRAL_VARIETY_POOL.length]
+    const origin = WAVE_NEUTRAL_SPAWN_OFFSETS[i % WAVE_NEUTRAL_SPAWN_OFFSETS.length]
+    const scaledHp = Math.min(MAX_CREEP_HP, Math.max(1, Math.round(baseHp * def.hpMult)))
+    const scaledSize = Number(
+      Math.min(MAX_CREEP_SCALE, baseScale * def.scaleMult).toFixed(3),
+    )
+    out.push({
+      unit: def.unit,
+      label: def.label,
+      targetHp: scaledHp,
+      targetScale: scaledSize,
+      origin,
+    })
+  }
+  return out
+}
+
 /** Reports whether the given 1-indexed wave number is a Boss Hero wave. */
 export function isBossWave(wave: number): boolean {
   return wave >= BOSS_WAVE_INTERVAL && wave % BOSS_WAVE_INTERVAL === 0
@@ -599,6 +764,7 @@ export interface TdHandoffState {
   readonly guardianUpgradeLevel: number
   readonly guardianBonusMaxHp: number
   readonly scaledCreeps: readonly number[]
+  readonly explodingZombies?: readonly number[]
   readonly rewardedCreeps: readonly number[]
   readonly playerTomes: Record<string, Record<string, number>>
   readonly playerKills: Record<string, number>
@@ -630,6 +796,9 @@ export function deserializeTdHandoff(raw: string | undefined): TdHandoffState | 
       guardianUpgradeLevel: Number(parsed.guardianUpgradeLevel ?? 0),
       guardianBonusMaxHp: Number(parsed.guardianBonusMaxHp ?? 0),
       scaledCreeps: Array.isArray(parsed.scaledCreeps) ? parsed.scaledCreeps : [],
+      explodingZombies: Array.isArray(parsed.explodingZombies)
+        ? parsed.explodingZombies
+        : [],
       rewardedCreeps: Array.isArray(parsed.rewardedCreeps) ? parsed.rewardedCreeps : [],
       playerTomes:
         parsed.playerTomes && typeof parsed.playerTomes === 'object'

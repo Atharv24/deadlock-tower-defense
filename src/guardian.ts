@@ -2,8 +2,10 @@
 // repairs & upgrades, and Defeat / Restart state management.
 
 import {
+  entityPosition,
   findEntities,
   findEntitiesByName,
+  fireInput,
   log,
   Npc,
   type Player,
@@ -67,6 +69,10 @@ export class GuardianManager {
       if (npc && npc.health > 0) {
         return this.entity
       }
+      const rawHp = readField(this.entity, 'CBaseEntity', 'm_iHealth', 'int32')
+      if (typeof rawHp === 'number' && rawHp > 0) {
+        return this.entity
+      }
     }
 
     for (const name of GUARDIAN_TARGETNAMES) {
@@ -81,9 +87,13 @@ export class GuardianManager {
     const bosses = findEntities('npc_trooper_boss')
     for (const handle of bosses) {
       const npc = new Npc(handle).read()
-      if (npc && npc.team === 2) {
-        const dx = npc.position.x - GUARDIAN_ORIGIN.x
-        const dy = npc.position.y - GUARDIAN_ORIGIN.y
+      const team =
+        npc?.team ??
+        (readField(handle, 'CBaseEntity', 'm_iTeamNum', 'int32') as number | undefined)
+      const pos = npc?.position ?? entityPosition(handle)?.position
+      if (team === 2 && pos) {
+        const dx = pos.x - GUARDIAN_ORIGIN.x
+        const dy = pos.y - GUARDIAN_ORIGIN.y
         if (dx * dx + dy * dy < 600 * 600) {
           this.entity = handle
           return this.entity
@@ -91,6 +101,34 @@ export class GuardianManager {
       }
     }
     return 0
+  }
+
+  /** Returns the Friendly Blue T1 Guardian's live position in Center Lane. */
+  position(): { readonly x: number; readonly y: number; readonly z: number } {
+    const ent = this.locateEntity()
+    if (ent > 0) {
+      const pos = new Npc(ent).read()?.position ?? entityPosition(ent)?.position
+      if (pos) {
+        return pos
+      }
+    }
+    return GUARDIAN_ORIGIN
+  }
+
+  /** Applies kamikaze explosion damage from a Graves Zombie directly to the Guardian. */
+  applyKamikazeDamage(amount: number, currentWave: number): void {
+    if (this.matchState !== 'active' || amount <= 0) {
+      return
+    }
+    this.poll(currentWave)
+    if (this.entity <= 0 || this.health <= 0) {
+      return
+    }
+    const nextHp = Math.max(0, Math.round(this.health - amount))
+    this.applyHealth(nextHp, this.maxHealth)
+    if (nextHp <= 0) {
+      this.onGuardianFallen(currentWave)
+    }
   }
 
   /** Polls Guardian HP each second and detects Defeat if the Guardian falls. */
@@ -216,6 +254,8 @@ export class GuardianManager {
     this.health = hp
     this.maxHealth = maxHp
     if (this.entity > 0) {
+      fireInput(this.entity, 'OverrideHealth', { integer: maxHp })
+      fireInput(this.entity, 'SetHealth', { integer: hp })
       if (!new Npc(this.entity).setHealth(hp, maxHp)) {
         writeField(this.entity, 'CBaseEntity', 'm_iMaxHealth', 'int32', maxHp)
         writeField(this.entity, 'CBaseEntity', 'm_iHealth', 'int32', hp)

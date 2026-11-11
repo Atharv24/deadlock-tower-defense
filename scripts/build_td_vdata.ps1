@@ -898,28 +898,89 @@ function Update-UnitBlock([string]$fullText, [string]$unitName, [scriptblock]$tr
     throw "Unclosed unit block: $unitName"
 }
 
-# 2A. Convert trooper_melee into Graves's Zombie (necro_shambler.vmdl) with proximity + melee + death Corpse Explosion
+function Get-UnitBlock([string]$fullText, [string]$unitName) {
+    $marker = "`n`t$unitName = `n`t{"
+    $idx = $fullText.IndexOf($marker)
+    if ($idx -lt 0) {
+        $marker = "`r`n`t$unitName = `r`n`t{"
+        $idx = $fullText.IndexOf($marker)
+    }
+    if ($idx -lt 0) { throw "Could not find unit block: $unitName" }
+    $braceStart = $fullText.IndexOf("{", $idx)
+    $depth = 0
+    $pos = $braceStart
+    while ($pos -lt $fullText.Length) {
+        $c = $fullText[$pos]
+        if ($c -eq '{') { $depth++ }
+        elseif ($c -eq '}') {
+            $depth--
+            if ($depth -eq 0) {
+                return $fullText.Substring($braceStart, $pos + 1 - $braceStart)
+            }
+        }
+        $pos++
+    }
+    throw "Unclosed unit block: $unitName"
+}
+
+# 2A. Convert trooper_melee into Graves's Zombie (necro_shambler.vmdl) with navigable Guardian/Walker ranges + Corpse Explosion
 $npcPatchedTxt = Update-UnitBlock $npcPatchedTxt "trooper_melee" {
     param($b)
+    $b = $b -replace 'm_nMaxHealth = \d+', 'm_nMaxHealth = 413'
     $b = $b -replace 'models/npc_units/troopers/amber_trooper_01_melee/amber_trooper_01_melee\.vmdl', 'models/heroes_wip/necro/necro_shambler.vmdl'
     $b = $b -replace 'models/npc_units/troopers/sapphire_trooper_01_melee/sapphire_trooper_01_melee\.vmdl', 'models/heroes_wip/necro/necro_shambler.vmdl'
     $b = $b -replace 'm_sDefaultMaterialGroupName = "Friendly"', 'm_sDefaultMaterialGroupName = ""'
     $b = $b -replace 'm_sEnemyMaterialGroupName = "Enemy"', 'm_sEnemyMaterialGroupName = ""'
     $b = $b -replace 'm_sTeam1MaterialGroupName = "Amber"', 'm_sTeam1MaterialGroupName = ""'
     $b = $b -replace 'm_sTeam2MaterialGroupName = "Sapphire"', 'm_sTeam2MaterialGroupName = ""'
+    $b = $b -replace 'm_HeadHealthChangeAmberParticle = resource_name:"[^"]*"', 'm_HeadHealthChangeAmberParticle = resource_name:""'
+    $b = $b -replace 'm_HeadHealthChangeSapphireParticle = resource_name:"[^"]*"', 'm_HeadHealthChangeSapphireParticle = resource_name:""'
     $b = $b -replace 'm_DeathParticle = resource_name:"particles/trooper/trooper_death_sn\.vpcf"', 'm_DeathParticle = resource_name:"particles/abilities/necro/necro_corpse_explosion.vpcf"'
     $b = $b -replace 'm_DeathSound = soundevent:"Damage\.Receive\.Lethal\.NPC"', 'm_DeathSound = soundevent:"Necro.Shambler.Explode"'
     $b = $b -replace 'm_MeleeHitSound = soundevent:"Trooper\.Melee\.Damage\.Hit"', 'm_MeleeHitSound = soundevent:"Necro.Shambler.Explode"'
     $b = $b -replace 'm_strMeleeAttackSound = soundevent:"Trooper\.Super\.Melee\.Swing"', 'm_strMeleeAttackSound = soundevent:"Necro.Shambler.Warning"'
     $b = $b -replace 'm_MeleeSwingParticle = resource_name:"particles/npc/npc_melee_swing\.vpcf"', 'm_MeleeSwingParticle = resource_name:"particles/abilities/necro/necro_corpse_explosion.vpcf"'
     $b = $b -replace 'm_MeleeActivateParticle = resource_name:""', 'm_MeleeActivateParticle = resource_name:"particles/abilities/necro/necro_ghoul_warning.vpcf"'
+    $b = $b -replace 'm_szBulletTravelTracerParticle = resource_name:"particles/weapon_fx/trooper/trooper_bullet_travel\.vpcf"', 'm_szBulletTravelTracerParticle = resource_name:""'
+    $b = $b -replace 'm_szMuzzleFlashEffectName = resource_name:"particles/weapon_fx/trooper/trooper_muzzle_flash\.vpcf"', 'm_szMuzzleFlashEffectName = resource_name:""'
+    $b = $b -replace 'm_strShootSound = soundevent:"TrooperRifle\.Fire"', 'm_strShootSound = soundevent:"Necro.Shambler.Explode"'
+    $b = $b -replace 'particles/trooper/trooper_lob_impact\.vpcf', 'particles/abilities/necro/necro_corpse_explosion.vpcf'
     $b = $b -replace 'm_flMeleeChargeRange = 1000\.0', 'm_flMeleeChargeRange = 1600.0'
     $b = $b -replace 'm_flMeleeAttemptRange = 120', 'm_flMeleeAttemptRange = 140'
     $b = $b -replace 'm_flMeleeHitRange = 120', 'm_flMeleeHitRange = 150'
-    $b = $b -replace 'm_flMaxRange = 700\.0', 'm_flMaxRange = 135.0'
-    $b = $b -replace 'm_flMaxRange = 472\.441', 'm_flMaxRange = 135.0'
+    $b = [regex]::Replace($b, '(m_VSPlayer\s*=\s*\{\s*m_flBaseDPS\s*=\s*20\.0\s*)m_flMaxRange\s*=\s*700\.0', '${1}m_flMaxRange = 140.0')
+    $b = [regex]::Replace($b, '(m_VSTrooper\s*=\s*\{\s*m_flBaseDPS\s*=\s*35\.0\s*)m_flMaxRange\s*=\s*700\.0', '${1}m_flMaxRange = 140.0')
+    # Keep stock navigable approach radii (472.441u Guardian, 700.0u Walker) so CNPC_Trooper NEVER skips
+    # the Guardian pedestal or Walker hull to run straight to Shrines!
+    $b = [regex]::Replace($b, 'm_VSWalker\s*=\s*\{[\s\S]*?\}', @"
+m_VSWalker = 
+		{
+			m_flBaseDPS = 100.0
+			m_flEndDPS = 140.0
+			m_flEndDPSTimeInSeconds = 1200.0
+			m_flMaxRange = 700.0
+			m_flDamageResist = 80.0
+		}
+"@)
+    $b = [regex]::Replace($b, 'm_VSGuardian\s*=\s*\{[\s\S]*?\}', @"
+m_VSGuardian = 
+		{
+			m_flBaseDPS = 85.0
+			m_flEndDPS = 125.0
+			m_flEndDPSTimeInSeconds = 600.0
+			m_flMaxRange = 472.441
+		}
+"@)
+    $b = [regex]::Replace($b, 'm_VSShrine\s*=\s*\{[\s\S]*?\}', @"
+m_VSShrine = 
+		{
+			m_flBaseDPS = 100.0
+			m_flMaxRange = 350.0
+		}
+"@)
     $b = $b -replace 'm_bSpawnBreakablesOnDeath = true', 'm_bSpawnBreakablesOnDeath = false'
     $zombieModifiers = @"
+		m_BossWeaponName = "boss"
 		m_vecIntrinsicModifiers = 
 		[
 			subclass:
@@ -930,8 +991,8 @@ $npcPatchedTxt = Update-UnitBlock $npcPatchedTxt "trooper_melee" {
 				m_ExplodeParticle = resource_name:"particles/abilities/necro/necro_corpse_explosion.vpcf"
 				m_ExplodeSound = soundevent:"Necro.Shambler.Explode"
 				m_flModifierProvidedByAuraDuration = 3.0
-				m_flAuraRadius = 150.0
-				m_flExplodeDamage = 90.0
+				m_flAuraRadius = 180.0
+				m_flExplodeDamage = 65.0
 				m_iAuraSearchType = "CITADEL_UNIT_TARGET_ALL_ENEMY"
 				m_bRemoveProvidedModifierOnAuraRemoval = false
 				m_flArmTime = 0.25
@@ -945,7 +1006,7 @@ $npcPatchedTxt = Update-UnitBlock $npcPatchedTxt "trooper_melee" {
 					m_strParticleStatusEffect = resource_name:"particles/status_fx/status_fx_neutral_spore_aura_debuff.vpcf"
 					m_strParticleEffect = resource_name:"particles/npc/neutrals/neutral_mushroom/neutral_spore_aura_tag_enemy.vpcf"
 					m_flTickRate = 0.5
-					m_flDPS = 12
+					m_flDPS = 0
 					m_vecScriptValues = 
 					[
 						{
@@ -959,8 +1020,8 @@ $npcPatchedTxt = Update-UnitBlock $npcPatchedTxt "trooper_melee" {
 			{
 				_class = "modifier_neutral_attack_explode_on_death"
 				_my_subclass_name = "necro_zombie_explode_on_death"
-				m_flExplodeDamage = 90.0
-				m_flExplodeRadius = 220.0
+				m_flExplodeDamage = 75.0
+				m_flExplodeRadius = 540.0
 				m_ExplodeParticle = resource_name:"particles/abilities/necro/necro_corpse_explosion.vpcf"
 				m_ExplodeSound = soundevent:"Necro.Shambler.Explode"
 				m_ExplodeDebuffModifier = subclass:
@@ -987,15 +1048,17 @@ $npcPatchedTxt = Update-UnitBlock $npcPatchedTxt "trooper_melee" {
     return $b
 }
 
-# 2B. Convert trooper_medic into a marching Neutral Creep (neutral_underhand_01.vmdl) so every wave squad includes a Neutral Creep alongside Troopers & Graves's Zombies
+# 2B. Convert trooper_medic into Library Watcher neutral creep (valid npc_neutral.vnmgraph_c, zero missing pve_underhand warnings)
 $npcPatchedTxt = Update-UnitBlock $npcPatchedTxt "trooper_medic" {
     param($b)
-    $b = $b -replace 'models/npc_units/troopers/amber_medic_01/amber_medic_01\.vmdl', 'models/npc_units/neutral_underhand_01/neutral_underhand_01.vmdl'
-    $b = $b -replace 'models/npc_units/troopers/sapphire_medic_01/sapphire_medic_01\.vmdl', 'models/npc_units/neutral_underhand_01/neutral_underhand_01.vmdl'
+    $b = $b -replace 'models/npc_units/troopers/amber_medic_01/amber_medic_01\.vmdl', 'models/npc_units/neutral_library_watcher_01/neutral_library_watcher_01.vmdl'
+    $b = $b -replace 'models/npc_units/troopers/sapphire_medic_01/sapphire_medic_01\.vmdl', 'models/npc_units/neutral_library_watcher_01/neutral_library_watcher_01.vmdl'
     $b = $b -replace 'm_sDefaultMaterialGroupName = "FriendlyMedic"', 'm_sDefaultMaterialGroupName = "Neutral_Normal"'
     $b = $b -replace 'm_sEnemyMaterialGroupName = "EnemyMedic"', 'm_sEnemyMaterialGroupName = "Neutral_Normal"'
     $b = $b -replace 'm_sTeam1MaterialGroupName = "Amber"', 'm_sTeam1MaterialGroupName = "Neutral_Normal"'
     $b = $b -replace 'm_sTeam2MaterialGroupName = "Sapphire"', 'm_sTeam2MaterialGroupName = "Neutral_Normal"'
+    $b = $b -replace 'm_HeadHealthChangeAmberParticle = resource_name:"[^"]*"', 'm_HeadHealthChangeAmberParticle = resource_name:""'
+    $b = $b -replace 'm_HeadHealthChangeSapphireParticle = resource_name:"[^"]*"', 'm_HeadHealthChangeSapphireParticle = resource_name:""'
     $b = $b -replace 'm_szBulletTravelTracerParticle = resource_name:"particles/weapon_fx/trooper/trooper_bullet_travel\.vpcf"', 'm_szBulletTravelTracerParticle = resource_name:"particles/npc/neutrals/generic_neutral/neutral_small_projectile.vpcf"'
     $b = $b -replace 'm_szMuzzleFlashEffectName = resource_name:"particles/weapon_fx/trooper/trooper_muzzle_flash\.vpcf"', 'm_szMuzzleFlashEffectName = resource_name:"particles/npc/neutrals/generic_neutral/neutral_muzzle_flash_small.vpcf"'
     $b = $b -replace 'm_strShootSound = soundevent:"TrooperRifle\.Fire"', 'm_strShootSound = soundevent:"Neutral.Camp.Bullet.Fire"'
@@ -1004,7 +1067,33 @@ $npcPatchedTxt = Update-UnitBlock $npcPatchedTxt "trooper_medic" {
     return $b
 }
 
-# 2C. Make neutral camp creeps (npc_trooper_neutral) active in Center Lane (larger tether radius, not ignored by NPC targeting, unlocked facing)
+# 2C. Add 4 custom lane-marching neutral creep variants (_class = "npc_trooper") so waves include varied neutral creeps!
+$baseMarchingNeutralBlk = Get-UnitBlock $npcPatchedTxt "trooper_medic"
+function New-MarchingNeutralVariant([string]$name, [string]$modelPath, [string]$matGroup, [string]$tracerVpcf, [int]$walkSpeed) {
+    $blk = $baseMarchingNeutralBlk
+    $blk = $blk -replace 'models/npc_units/neutral_library_watcher_01/neutral_library_watcher_01\.vmdl', $modelPath
+    $blk = $blk -replace '"Neutral_Normal"', "`"$matGroup`""
+    $blk = $blk -replace 'm_TrooperType = "TROOPER_MEDIC"', 'm_TrooperType = "TROOPER_NORMAL"'
+    $blk = $blk -replace 'm_MedicHealActiveParticle = resource_name:"[^"]*"', 'm_MedicHealActiveParticle = resource_name:""'
+    if ($tracerVpcf -ne "") {
+        $blk = $blk -replace 'particles/npc/neutrals/generic_neutral/neutral_small_projectile\.vpcf', $tracerVpcf
+    }
+    $blk = $blk -replace 'm_flWalkSpeed = \d+', "m_flWalkSpeed = $walkSpeed"
+    return "`t$name = `n`t$blk"
+}
+
+$extraWaveNeutralsKv3 = @(
+    (New-MarchingNeutralVariant "td_neutral_lantern" "models/npc_units/neutral_ct_lanterns/neutral_ct_lantern.vmdl" "Neutral_Normal" "particles/npc/neutrals/lantern/lantern_neutral_tracer.vpcf" 275),
+    (New-MarchingNeutralVariant "td_neutral_puppeteer" "models/npc_units/neutral_theatre_puppeteer_02/neutral_theatre_puppeteer_02.vmdl" "Neutral_Normal" "" 255),
+    (New-MarchingNeutralVariant "td_neutral_pigeon" "models/npc_units/neutral_pigeon_cerberus/neutral_pigeon_cerberus.vmdl" "Neutral_Normal" "" 290),
+    (New-MarchingNeutralVariant "td_neutral_mushroom" "models/npc_units/neutral_mushroom_large_01/neutral_mushroom_large_01.vmdl" "Neutral_Strong" "" 235)
+) -join "`n"
+
+$lastNpcBrace = $npcPatchedTxt.LastIndexOf("}")
+if ($lastNpcBrace -lt 0) { throw "Could not find closing brace in npc_units.vdata_c.txt" }
+$npcPatchedTxt = $npcPatchedTxt.Substring(0, $lastNpcBrace) + $extraWaveNeutralsKv3 + "`n}`n"
+
+# 2D. Keep neutral camp defaults clean
 $npcPatchedTxt = $npcPatchedTxt -replace 'm_nEnabledStateMask = "MODIFIER_STATE_IGNORED_BY_NPC_TARGETING"', 'm_nEnabledStateMask = ""'
 $npcPatchedTxt = $npcPatchedTxt -replace 'm_nEnabledStateMask = "MODIFIER_STATE_LOCK_ENTITY_FACING"', 'm_nEnabledStateMask = ""'
 $npcPatchedTxt = $npcPatchedTxt -replace 'm_flSpawnTetherRadius = 300\.0', 'm_flSpawnTetherRadius = 1200.0'
@@ -1118,6 +1207,23 @@ public class VDataCompiler {
         return outBytes;
     }
 
+    public static byte[] RebuildLastBlockContainer(byte[] origBytes, byte[] newData, int dataBlockIndex) {
+        int blkOff = 8 + BitConverter.ToInt32(origBytes, 8);
+        int dataEntOff = blkOff + dataBlockIndex * 12;
+        int origDataOffset = (dataEntOff + 4) + BitConverter.ToInt32(origBytes, dataEntOff + 4);
+        int totalLen = origDataOffset + newData.Length;
+
+        byte[] outBytes = new byte[totalLen];
+        Array.Copy(origBytes, 0, outBytes, 0, origDataOffset);
+        Array.Copy(newData, 0, outBytes, origDataOffset, newData.Length);
+
+        // Update total file size at 0x00 and DATA block length at dataEntOff + 8
+        Array.Copy(BitConverter.GetBytes((uint)totalLen), 0, outBytes, 0, 4);
+        Array.Copy(BitConverter.GetBytes((uint)newData.Length), 0, outBytes, dataEntOff + 8, 4);
+
+        return outBytes;
+    }
+
     private static uint[] CrcTable = MakeCrcTable();
     private static uint[] MakeCrcTable() {
         uint[] t = new uint[256];
@@ -1140,24 +1246,40 @@ public class VDataCompiler {
         bw.Write((byte)0);
     }
 
-    public static void BuildSingleVpk(string vpkPath, string[] names, byte[][] contents) {
+    public static void BuildMultiEntryVpk(string vpkPath, string[] exts, string[] paths, string[] names, byte[][] contents) {
         using (MemoryStream msTree = new MemoryStream())
         using (BinaryWriter bwTree = new BinaryWriter(msTree)) {
-            WriteCString(bwTree, "vdata_c");
-            WriteCString(bwTree, "scripts");
             uint curOffset = 0;
-            for (int i = 0; i < names.Length; i++) {
-                WriteCString(bwTree, names[i]);
-                bwTree.Write(ComputeCrc32(contents[i]));
-                bwTree.Write((ushort)0); // preload
-                bwTree.Write((ushort)0x7FFF); // embedded in _dir.vpk
-                bwTree.Write(curOffset);
-                bwTree.Write((uint)contents[i].Length);
-                bwTree.Write((ushort)0xFFFF);
-                curOffset += (uint)contents[i].Length;
+            var uniqueExts = new System.Collections.Generic.List<string>();
+            for (int i = 0; i < exts.Length; i++) {
+                if (!uniqueExts.Contains(exts[i])) uniqueExts.Add(exts[i]);
             }
-            bwTree.Write((byte)0); // end files in path
-            bwTree.Write((byte)0); // end paths in ext
+            var orderedContents = new System.Collections.Generic.List<byte[]>();
+            foreach (string ext in uniqueExts) {
+                WriteCString(bwTree, ext);
+                var uniquePaths = new System.Collections.Generic.List<string>();
+                for (int i = 0; i < exts.Length; i++) {
+                    if (exts[i] == ext && !uniquePaths.Contains(paths[i])) uniquePaths.Add(paths[i]);
+                }
+                foreach (string p in uniquePaths) {
+                    WriteCString(bwTree, p);
+                    for (int i = 0; i < exts.Length; i++) {
+                        if (exts[i] == ext && paths[i] == p) {
+                            WriteCString(bwTree, names[i]);
+                            bwTree.Write(ComputeCrc32(contents[i]));
+                            bwTree.Write((ushort)0); // preload
+                            bwTree.Write((ushort)0x7FFF); // embedded in _dir.vpk
+                            bwTree.Write(curOffset);
+                            bwTree.Write((uint)contents[i].Length);
+                            bwTree.Write((ushort)0xFFFF);
+                            curOffset += (uint)contents[i].Length;
+                            orderedContents.Add(contents[i]);
+                        }
+                    }
+                    bwTree.Write((byte)0); // end files in path
+                }
+                bwTree.Write((byte)0); // end paths in ext
+            }
             bwTree.Write((byte)0); // end exts
 
             byte[] treeBytes = msTree.ToArray();
@@ -1171,8 +1293,8 @@ public class VDataCompiler {
                 bw.Write((uint)0);
                 bw.Write((uint)0);
                 bw.Write(treeBytes);
-                for (int i = 0; i < contents.Length; i++) {
-                    bw.Write(contents[i]);
+                foreach (byte[] chunk in orderedContents) {
+                    bw.Write(chunk);
                 }
             }
         }
@@ -1199,6 +1321,111 @@ $npcOutPath = Join-Path $buildScriptsDir "npc_units.vdata_c"
 [System.IO.File]::WriteAllBytes($npcOutPath, $npcOutBytes)
 Write-Output "Wrote $npcOutPath ($($npcOutBytes.Length) bytes)."
 
+# Include Midtown minimap material aliases for hl_defense and dl_defense so the minimap canvas renders cleanly
+$minimapBasePath = Join-Path $scratchDir "materials\minimap\dl_midtown.vmat_c"
+$minimapBytes = [System.IO.File]::ReadAllBytes($minimapBasePath)
+$buildMinimapDir = Join-Path $buildDir "td_panorama_overrides\minimap"
+if (-not (Test-Path $buildMinimapDir)) { New-Item -ItemType Directory -Path $buildMinimapDir -Force | Out-Null }
+[System.IO.File]::WriteAllBytes((Join-Path $buildMinimapDir "hl_defense.vmat_c"), $minimapBytes)
+[System.IO.File]::WriteAllBytes((Join-Path $buildMinimapDir "dl_defense.vmat_c"), $minimapBytes)
+
+# Patch hud.vcss_c and hud_minimap.vcss_c in-place so citadel_hero_testing_enabled 1 (needed for T5 Legendary shop items)
+# never collapses #minimap_persp, #ObjectivesMap, .midImage, #canvas, or .map_button on hl_defense / dl_defense (zero JS timer flicker!).
+function Patch-AsciiBytesInPlace([byte[]]$buf, [string]$target, [string]$replacement) {
+    $targetAscii = [System.Text.Encoding]::ASCII.GetBytes($target)
+    $replaceAscii = [System.Text.Encoding]::ASCII.GetBytes($replacement)
+    if ($targetAscii.Length -ne $replaceAscii.Length) {
+        throw "In-place ASCII patch byte-length mismatch: '$target' ($($targetAscii.Length)) vs '$replacement' ($($replaceAscii.Length))"
+    }
+    $count = 0
+    for ($i = 0; $i -le ($buf.Length - $targetAscii.Length); $i++) {
+        $matched = $true
+        for ($j = 0; $j -lt $targetAscii.Length; $j++) {
+            if ($buf[$i + $j] -ne $targetAscii[$j]) {
+                $matched = $false
+                break
+            }
+        }
+        if ($matched) {
+            [Array]::Copy($replaceAscii, 0, $buf, $i, $replaceAscii.Length)
+            $count++
+            $i += $replaceAscii.Length - 1
+        }
+    }
+    return $count
+}
+
+$buildPanoramaStylesDir = Join-Path $buildDir "td_panorama_overrides\styles"
+if (-not (Test-Path $buildPanoramaStylesDir)) { New-Item -ItemType Directory -Path $buildPanoramaStylesDir -Force | Out-Null }
+
+$hudCssBasePath = Join-Path $scratchDir "panorama\styles\hud.vcss_c"
+$hudCssBytes = [System.IO.File]::ReadAllBytes($hudCssBasePath)
+$hudPatchCount = Patch-AsciiBytesInPlace $hudCssBytes ".connectedToHeroTesting:not(.isDefaultMap)" ".connectedToHeroTestXng:not(.isDefaultMap)"
+if ($hudPatchCount -lt 2) { throw "Expected >= 2 .connectedToHeroTesting:not(.isDefaultMap) rules in hud.vcss_c, patched $hudPatchCount" }
+$hudCssOutPath = Join-Path $buildPanoramaStylesDir "hud.vcss_c"
+[System.IO.File]::WriteAllBytes($hudCssOutPath, $hudCssBytes)
+Write-Output "Wrote $hudCssOutPath ($($hudCssBytes.Length) bytes, patched $hudPatchCount rules)."
+
+$hudMinimapCssBasePath = Join-Path $scratchDir "panorama\styles\hud_minimap.vcss_c"
+$hudMinimapCssBytes = [System.IO.File]::ReadAllBytes($hudMinimapCssBasePath)
+$cssPatchCount = Patch-AsciiBytesInPlace $hudMinimapCssBytes ".connectedToHeroTesting:not(.isDefaultMap)" ".connectedToHeroTestXng:not(.isDefaultMap)"
+if ($cssPatchCount -lt 3) { throw "Expected >= 3 .connectedToHeroTesting:not(.isDefaultMap) rules in hud_minimap.vcss_c, patched $cssPatchCount" }
+$midtownClassPatchCount = Patch-AsciiBytesInPlace $hudMinimapCssBytes ".dl_midtown" ".HudMinimap"
+if ($midtownClassPatchCount -ne 6) { throw "Expected 6 .dl_midtown rules in hud_minimap.vcss_c, patched $midtownClassPatchCount" }
+$hudMinimapCssOutPath = Join-Path $buildPanoramaStylesDir "hud_minimap.vcss_c"
+[System.IO.File]::WriteAllBytes($hudMinimapCssOutPath, $hudMinimapCssBytes)
+Write-Output "Wrote $hudMinimapCssOutPath ($($hudMinimapCssBytes.Length) bytes, patched $cssPatchCount heroTesting + $midtownClassPatchCount layer rules)."
+
+# Compile patched necro_shambler.vnmgraph_c so Graves zombies (trooper_melee) start directly in MOVEMENT -> Walk_Loop
+# and read omnidirectional move_speed (node 12) instead of getting trapped in Spawn (forward_speed <= 1.0)!
+function Update-GraphNode([string]$graphTxt, [int]$nodeIdx, [scriptblock]$mutator) {
+    $needle = "m_nNodeIdx = $nodeIdx"
+    $m = [regex]::Match($graphTxt, "(?m)^\s*m_nNodeIdx = $nodeIdx\s*$")
+    if (-not $m.Success) { throw "Could not find $needle in necro_shambler.vnmgraph_c.txt" }
+    $openIdx = $graphTxt.LastIndexOf("{", $m.Index)
+    if ($openIdx -lt 0) { throw "Could not find opening brace for $needle" }
+    $depth = 0
+    $closeIdx = -1
+    for ($k = $openIdx; $k -lt $graphTxt.Length; $k++) {
+        $ch = $graphTxt[$k]
+        if ($ch -eq '{') { $depth++ }
+        elseif ($ch -eq '}') {
+            $depth--
+            if ($depth -eq 0) { $closeIdx = $k; break }
+        }
+    }
+    if ($closeIdx -lt 0) { throw "Could not find closing brace for $needle" }
+    $origBlock = $graphTxt.Substring($openIdx, $closeIdx - $openIdx + 1)
+    $newBlock = & $mutator $origBlock
+    if ($newBlock -eq $origBlock) { throw "Update-GraphNode made no changes on $needle" }
+    return $graphTxt.Substring(0, $openIdx) + $newBlock + $graphTxt.Substring($closeIdx + 1)
+}
+
+Write-Output "Compiling necro_shambler.vnmgraph_c..."
+$shamblerTxtPath = Join-Path $scratchDir "animgraphs\animgraph2\hero\necro\necro_shambler.vnmgraph_c.txt"
+$shamblerPatchedTxt = [System.IO.File]::ReadAllText($shamblerTxtPath)
+$shamblerPatchedTxt = Update-GraphNode $shamblerPatchedTxt 17 { param($b) $b -replace 'm_nDefaultStateIndex = 0', 'm_nDefaultStateIndex = 1' }
+$shamblerPatchedTxt = Update-GraphNode $shamblerPatchedTxt 19 { param($b) $b -replace 'm_bAllowLooping = true', 'm_bAllowLooping = false' }
+$shamblerPatchedTxt = Update-GraphNode $shamblerPatchedTxt 91 { param($b) $b -replace 'm_flComparisonValue = 1\.0', 'm_flComparisonValue = 99999.0' }
+$fwdMatches = ([regex]::Matches($shamblerPatchedTxt, '\bm_nInputValueNodeIdx = 9\b')).Count
+if ($fwdMatches -ne 11) { throw "Expected 11 m_nInputValueNodeIdx = 9 occurrences in necro_shambler.vnmgraph_c.txt, found $fwdMatches" }
+$shamblerPatchedTxt = [regex]::Replace($shamblerPatchedTxt, '\bm_nInputValueNodeIdx = 9\b', 'm_nInputValueNodeIdx = 12')
+
+$shamblerDataBin = [VDataCompiler]::CompileKv3Data($binDir, $shamblerPatchedTxt)
+$shamblerOrigBytes = [System.IO.File]::ReadAllBytes((Join-Path $scratchDir "animgraphs\animgraph2\hero\necro\necro_shambler.vnmgraph_c"))
+$shamblerOutBytes = [VDataCompiler]::RebuildLastBlockContainer($shamblerOrigBytes, $shamblerDataBin, 2)
+$buildShamblerDir = Join-Path $buildDir "td_panorama_overrides\animgraphs\animgraph2\hero\necro"
+if (-not (Test-Path $buildShamblerDir)) { New-Item -ItemType Directory -Path $buildShamblerDir -Force | Out-Null }
+$shamblerOutPath = Join-Path $buildShamblerDir "necro_shambler.vnmgraph_c"
+[System.IO.File]::WriteAllBytes($shamblerOutPath, $shamblerOutBytes)
+Write-Output "Wrote $shamblerOutPath ($($shamblerOutBytes.Length) bytes)."
+
 $pak20Path = Join-Path $buildDir "pak20_dir.vpk"
-[VDataCompiler]::BuildSingleVpk($pak20Path, @("modifiers", "npc_units"), @($modOutBytes, $npcOutBytes))
+[VDataCompiler]::BuildMultiEntryVpk(
+    $pak20Path,
+    @("vdata_c", "vdata_c", "vmat_c", "vmat_c", "vcss_c", "vcss_c", "vnmgraph_c"),
+    @("scripts", "scripts", "materials/minimap", "materials/minimap", "panorama/styles", "panorama/styles", "animgraphs/animgraph2/hero/necro"),
+    @("modifiers", "npc_units", "dl_defense", "hl_defense", "hud", "hud_minimap", "necro_shambler"),
+    @($modOutBytes, $npcOutBytes, $minimapBytes, $minimapBytes, $hudCssBytes, $hudMinimapCssBytes, $shamblerOutBytes)
+)
 Write-Output "Wrote $pak20Path ($((Get-Item $pak20Path).Length) bytes)."
