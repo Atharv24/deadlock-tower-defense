@@ -1,7 +1,9 @@
 {
   "slug": "deadlock-td",
   "name": "Deadlock Tower Defense",
-  "version": "0.4.0",
+  "version": "0.5.0",
+  "description": "Endless single-lane wave survival from Blue Guardian down to the Amber Patron, featuring Enemy Hero Bosses, Graves Kamikaze Zombies, last-hit Tomes, 1-of-3 Major Boons, and All-Structure Fortification. Download the tiny client VData addon (pak20_dir.vpk) from https://github.com/Atharv24/deadlock-tower-defense/releases for full custom modifiers, zombies, and minimap!",
+  "repository": "https://github.com/Atharv24/deadlock-tower-defense",
   "language": "LANGUAGE_TYPESCRIPT",
   "map": "hl_defense",
   "settings": [
@@ -10,7 +12,7 @@
       "label": "Tower Defense HUD layout",
       "kind": "KIND_CHOICE",
       "choices": [
-        { "value": "full", "label": "Full HUD (Top strip, Guardian HP, Tome tally)" },
+        { "value": "full", "label": "Full HUD (Top strip, Base Defense HP, Tome tally)" },
         { "value": "compact", "label": "Compact HUD (Top strip only)" }
       ],
       "default": "full"
