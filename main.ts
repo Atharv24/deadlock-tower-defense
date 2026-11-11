@@ -113,6 +113,7 @@ function restartMatch(): void {
   placedHeroEntityBySlot.clear()
   shopStateHeldEntities.clear()
   guardian.respawnAllStructures()
+  waves.configureWorldForSingleLaneDefense(guardian)
   tomes.reset()
   waves.cleanupForRestart(nowSeconds)
   const spawnOrigin = guardian.getDefenderSpawnOrigin()
@@ -173,6 +174,7 @@ onStart((args) => {
 
 onWorld((mapName) => {
   log(`World loaded: ${mapName}`)
+  waves.configureWorldForSingleLaneDefense(guardian)
   if (skipInitialWorldReset) {
     skipInitialWorldReset = false
     return
@@ -182,6 +184,7 @@ onWorld((mapName) => {
   guardian.reset()
   tomes.reset()
   waves.reset(nowSeconds)
+  waves.configureWorldForSingleLaneDefense(guardian)
   persistHandoff()
 })
 

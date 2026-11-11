@@ -1396,6 +1396,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     };
     export const findEntities = (cls) => {
       if (cls === 'info_super_trooper_spawn') return [14020, 14325];
+      if (cls === 'info_trooper_spawn') return [14053, 14315, 14318, 14319, 14291, 14051];
       if (cls === 'info_neutral_trooper_camp') return [];
       if (cls === 'npc_trooper') return [...globalThis.__mockModlock.npcStore.keys()].filter((id) => (id >= 800 && id < 900) || globalThis.__mockModlock.trooperIds.has(id));
       if (cls === 'npc_trooper_neutral') return [...globalThis.__mockModlock.npcStore.keys()].filter((id) => id >= 1600 && id < 1700);
@@ -1442,11 +1443,13 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       globalThis.__mockModlock.lifeStateStore.set(opts.victim, 2);
       return true;
     };
+    export const removeEntities = () => 0;
     export const holdModifierState = (entity, state, active) => {
       globalThis.__mockModlock.heldModifierStates.push({ entity, state, active: active !== false });
       return true;
     };
     export const entityClass = (entity) => {
+      if (entity === 704 || entity === 705) return { className: 'CDestroyableBuilding', designerName: 'destroyable_building' };
       if (entity >= 1600 && entity < 1700) return { className: 'CNPC_TrooperNeutral', designerName: 'npc_trooper_neutral' };
       return { className: 'CNPC_Trooper', designerName: 'npc_trooper' };
     };
@@ -1461,6 +1464,18 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       return s ? { position: s.position, facing: { pitch: 0, yaw: 270, roll: 0 }, velocity: { x: 0, y: 0, z: 0 } } : undefined;
     };
     export const readField = (entity, cls, field) => {
+      if ([14053, 14315, 14318, 14319].includes(entity)) {
+        if (cls === 'CBaseEntity' && field === 'm_iTeamNum') return 3;
+        if (cls === 'CInfoTrooperSpawn' && field === 'm_iLane') return 4;
+      }
+      if (entity === 14291) {
+        if (cls === 'CBaseEntity' && field === 'm_iTeamNum') return 2;
+        if (cls === 'CInfoTrooperSpawn' && field === 'm_iLane') return 4;
+      }
+      if (entity === 14051) {
+        if (cls === 'CBaseEntity' && field === 'm_iTeamNum') return 3;
+        if (cls === 'CInfoTrooperSpawn' && field === 'm_iLane') return 1;
+      }
       if (cls === 'CNPC_Boss_Tier3' && field === 'm_ePhase') {
         return globalThis.__mockModlock.patronPhaseStore.get(entity) ?? 0;
       }

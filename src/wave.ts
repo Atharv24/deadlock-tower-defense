@@ -22,6 +22,7 @@ import {
   type Player,
   players,
   readField,
+  removeEntities,
   serverCommand,
   spawnNpc,
   toast,
@@ -139,6 +140,51 @@ export class WaveManager {
   applyServerConfig(): void {
     for (const [cvar, val] of TD_SERVER_CVARS) {
       serverCommand(`${cvar} ${val}`)
+    }
+  }
+
+  /**
+   * Configures stock `dl_midtown` (or `hl_defense`) at runtime for Center Lane (Lane 4)
+   * Tower Defense: removes all static neutral camps, disables spawning on all Team 2 and
+   * side-lane (Lane 1 & Lane 6) `info_trooper_spawn` entities (keeping spawner handles
+   * alive so C++ `CTrooperSpawnManager` wave controllers never dereference null), and
+   * ensures the Friendly Blue T1 Guardian stands at `[0, -1792, 384]`.
+   */
+  configureWorldForSingleLaneDefense(guardian: GuardianManager): void {
+    for (const camp of findEntities('info_neutral_trooper_camp')) {
+      fireInput(camp, 'SetDisabled', { boolean: true })
+      fireInput(camp, 'RemoveNeutrals')
+      fireInput(camp, 'Kill')
+    }
+    removeEntities('info_neutral_trooper_camp')
+    removeEntities('info_neutral_trooper_spawn')
+    removeEntities('npc_trooper_neutral')
+
+    let disabledTrooperSpawns = 0
+    for (const sp of findEntities('info_trooper_spawn')) {
+      const team = readField(sp, 'CBaseEntity', 'm_iTeamNum', 'int32')
+      const lane = readField(sp, 'CInfoTrooperSpawn', 'm_iLane', 'int32')
+      if (team === 3 && lane === 4) {
+        fireInput(sp, 'SetSpawningEnabled', { boolean: true })
+      } else {
+        fireInput(sp, 'SetSpawningEnabled', { boolean: false })
+        disabledTrooperSpawns += 1
+      }
+    }
+
+    // Clear any stray friendly or side-lane troopers that spawned during initial map load
+    for (const tr of findEntities('npc_trooper')) {
+      const npc = new Npc(tr).read()
+      if (npc && (npc.team !== 3 || Math.abs(npc.position.x) > 2800)) {
+        killEntity({ victim: tr })
+      }
+    }
+
+    const guardianEnt = guardian.ensureCenterLaneGuardianSpawned()
+    if (disabledTrooperSpawns > 0) {
+      log(
+        `Configured single-lane defense world (disabled ${disabledTrooperSpawns} non-Center-Enemy trooper spawners, Guardian=${guardianEnt})`,
+      )
     }
   }
 
@@ -850,7 +896,11 @@ export class WaveManager {
     for (const ent of [...troopers, ...neutrals]) {
       const npc = new Npc(ent).read()
       if (npc) {
-        if (npc.health <= 0 || npc.maxHealth <= 1 || npc.team === DEFENDER_TEAM) {
+        if (npc.health <= 0 || npc.maxHealth <= 1) {
+          continue
+        }
+        if (npc.team === DEFENDER_TEAM || Math.abs(npc.position.x) > 2800) {
+          killEntity({ victim: ent })
           continue
         }
         if (npc.position.y > 3500 || npc.position.z > 650) {

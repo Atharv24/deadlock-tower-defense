@@ -8,6 +8,7 @@
 
 import {
   damage,
+  entityClass,
   entityPosition,
   findEntities,
   findEntitiesByName,
@@ -190,30 +191,54 @@ export class GuardianManager {
     serverCommand('citadel_boss_tier_3_testing_reset')
 
     this.reset()
+    this.ensureCenterLaneGuardianSpawned()
+    this.poll(0)
+  }
 
-    // In `hl_defense`, `boss_rebel_t1_blue` (compile_source_id 14019) is placed directly as
-    // `npc_trooper_boss` rather than spawned by `info_super_trooper_spawn`. If it died before
-    // `/restarttd`, respawn a fresh Team 2 Center Lane Guardian at `GUARDIAN_ORIGIN`.
-    if (this.locateEntity() <= 0) {
-      const spawned = spawnNpc({
-        className: 'npc_trooper_boss',
-        unit: 'npc_boss_tier1',
-        team: DEFENDER_TEAM,
-        lane: 4,
-        position: GUARDIAN_ORIGIN,
-        facing: { pitch: 0, yaw: 90, roll: 0 },
-        health: GUARDIAN_BASE_MAX_HP,
-        maxHealth: GUARDIAN_BASE_MAX_HP,
-      })
-      if (spawned && spawned.entity > 0) {
-        this.entity = spawned.entity
-        this.initializedEntities.add(spawned.entity)
-        this.friendlyStructureSet.add(spawned.entity)
-        this.health = GUARDIAN_BASE_MAX_HP
-        this.maxHealth = GUARDIAN_BASE_MAX_HP
+  /** Returns true if stock `dl_midtown`'s Team 2 Center Lane T1 spawner (`14019`) is present. */
+  hasNativeCenterGuardianSpawner(): boolean {
+    for (const sp of findEntities('info_super_trooper_spawn')) {
+      const team = readField(sp, 'CBaseEntity', 'm_iTeamNum', 'int32')
+      const lane = readField(sp, 'CInfoTrooperBossSpawn', 'm_iLane', 'int32')
+      const reinf = readField(sp, 'CInfoTrooperBossSpawn', 'm_bReinforcementsOnly', 'bool')
+      if (team === DEFENDER_TEAM && lane === 4 && reinf !== true) {
+        return true
       }
     }
-    this.poll(0)
+    return false
+  }
+
+  /** Ensures a live Team 2 Center Lane T1 Guardian (`npc_boss_tier1`) stands at `GUARDIAN_ORIGIN`. */
+  ensureCenterLaneGuardianSpawned(): number {
+    const existing = this.locateEntity()
+    if (existing > 0) {
+      return existing
+    }
+    // On stock `dl_midtown`, `info_super_trooper_spawn` (14019) natively spawns the C++-linked
+    // `boss_rebel_t1_blue` on PreGameWait (and `citadel_respawn_boss_t1` respawns it on restart).
+    // Do not spawn a second unlinked Guardian on top of it!
+    if (this.hasNativeCenterGuardianSpawner()) {
+      return 0
+    }
+    const spawned = spawnNpc({
+      className: 'npc_trooper_boss',
+      unit: 'npc_boss_tier1',
+      team: DEFENDER_TEAM,
+      lane: 4,
+      position: GUARDIAN_ORIGIN,
+      facing: { pitch: 0, yaw: 90, roll: 0 },
+      health: GUARDIAN_BASE_MAX_HP,
+      maxHealth: GUARDIAN_BASE_MAX_HP,
+    })
+    if (spawned && spawned.entity > 0) {
+      this.entity = spawned.entity
+      this.initializedEntities.add(spawned.entity)
+      this.friendlyStructureSet.add(spawned.entity)
+      this.health = GUARDIAN_BASE_MAX_HP
+      this.maxHealth = GUARDIAN_BASE_MAX_HP
+      return spawned.entity
+    }
+    return 0
   }
 
   /** Restores state from Modlock hot-reload handoff. */
@@ -515,9 +540,16 @@ export class GuardianManager {
     )
     if (gState.entity > 0) {
       this.entity = gState.entity
+      this.health = gState.alive ? gState.health : 0
+      this.maxHealth = Math.max(gTargetMax, gState.maxHealth)
+    } else if (this.entity === 0 && currentWave === 0 && this.hasNativeCenterGuardianSpawner()) {
+      // PreGameWait has not yet fired `info_super_trooper_spawn` (14019); keep Stage 1 primed.
+      this.health = gTargetMax
+      this.maxHealth = gTargetMax
+    } else {
+      this.health = 0
+      this.maxHealth = gTargetMax
     }
-    this.health = gState.alive ? gState.health : 0
-    this.maxHealth = Math.max(gTargetMax, gState.maxHealth)
 
     // 2. Stage 2: Friendly Blue T2 Walker (`npc_boss_tier2`, `[PR#]rebels_t2_boss_blue`)
     const wTargetMax = WALKER_BASE_MAX_HP + this.upgradeLevel * WALKER_UPGRADE_HP_BONUS
@@ -1191,9 +1223,12 @@ export class GuardianManager {
 
   private applyEntityHealth(ent: number, hp: number, maxHp: number): void {
     if (ent <= 0) return
+    const isShrineBuilding = entityClass(ent)?.designerName === 'destroyable_building'
     if (new Npc(ent).setHealth(hp, maxHp)) {
-      fireInput(ent, 'OverrideHealth', { integer: maxHp })
-      fireInput(ent, 'SetHealth', { integer: hp })
+      if (!isShrineBuilding) {
+        fireInput(ent, 'OverrideHealth', { integer: maxHp })
+        fireInput(ent, 'SetHealth', { integer: hp })
+      }
     } else {
       writeField(ent, 'CBaseEntity', 'm_iMaxHealth', 'int32', maxHp)
       writeField(ent, 'CBaseEntity', 'm_iHealth', 'int32', hp)

@@ -110,13 +110,28 @@ export class TdProbe {
   }
 
   private checkWorld(guardian: GuardianManager): boolean | string {
+    if (!this.defender) {
+      const existingConn = players().find((c) => c.player.pawn()?.team === 2)
+      this.defender =
+        existingConn?.player ??
+        addBot({
+          name: 'TD Defender Probe',
+          team: 2,
+          hero: 'hero_inferno',
+          position: PLAYER_SPAWN_ORIGIN,
+        })
+      if (!this.defender) {
+        return 'could not seat Team 2 defender bot'
+      }
+    }
+
     guardian.poll(0)
     const guardianEnt = guardian.locateEntity()
     if (guardianEnt <= 0) {
       return false
     }
     if (guardian.walkerEntity <= 0) {
-      return 'missing Blue T2 Walker (rebels_t2_boss_blue) in hl_defense'
+      return 'missing Blue T2 Walker (rebels_t2_boss_blue) in world'
     }
     if (guardian.baseGuardianEntities.length < 2) {
       return `expected 2 Twin Blue Base Guardians (rebels_watcher_blue), found ${guardian.baseGuardianEntities.length}`
@@ -125,32 +140,23 @@ export class TdProbe {
       return `missing Amber Shrines (east=${guardian.eastShrineEntity}, west=${guardian.westShrineEntity})`
     }
     if (guardian.patronEntity <= 0) {
-      return 'missing Amber Patron (npc_boss_tier3) in hl_defense'
+      return 'missing Amber Patron (npc_boss_tier3) in world'
     }
     const neutralCamps = findEntities('info_neutral_trooper_camp')
     if (neutralCamps.length > 0) {
       return `expected 0 static info_neutral_trooper_camp entities, found ${neutralCamps.length}`
     }
-    const superSpawners = findEntities('info_super_trooper_spawn')
-    if (superSpawners.length > 2) {
-      return `expected at most 2 active Center Lane super spawners, found ${superSpawners.length}`
+    const centerEnemyTrooperSpawns = findEntities('info_trooper_spawn').filter((sp) => {
+      const team = readField(sp, 'CBaseEntity', 'm_iTeamNum', 'int32')
+      const lane = readField(sp, 'CInfoTrooperSpawn', 'm_iLane', 'int32')
+      return team === 3 && lane === 4
+    })
+    if (centerEnemyTrooperSpawns.length < 4) {
+      return `expected >= 4 Enemy Center Lane info_trooper_spawn entities, found ${centerEnemyTrooperSpawns.length}`
     }
     log(
       `Probe: verified all 5 Base Defense tiers (Guardian=${guardianEnt}, Walker=${guardian.walkerEntity}, BaseGuardians=${guardian.baseGuardianEntities.length}, Shrines=2, Patron=${guardian.patronEntity} phase=${guardian.patronPhase})`,
     )
-
-    const existingConn = players().find((c) => c.player.pawn()?.team === 2)
-    this.defender =
-      existingConn?.player ??
-      addBot({
-        name: 'TD Defender Probe',
-        team: 2,
-        hero: 'hero_inferno',
-        position: PLAYER_SPAWN_ORIGIN,
-      })
-    if (!this.defender) {
-      return 'could not seat Team 2 defender bot'
-    }
     this.step = 'defender'
     return false
   }
