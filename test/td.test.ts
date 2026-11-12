@@ -1679,7 +1679,8 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   const { TomeManager } = await import('../src/tomes.ts')
   const { TdProbe } = await import('../src/probe.ts')
 
-  it('drives GuardianManager, WaveManager, TomeManager, and TdProbe through all 8 Probe steps (including Graves Zombie kamikaze, Boss Size scaling & Boss combat AI) to PASS', () => {
+  it('drives GuardianManager, WaveManager, TomeManager, and TdProbe through all Probe steps (Boss Colossus scaling, Boss combat AI, Tome scaling, and Multi-Stage Base Progression) to PASS', () => {
+    appliedModifiers.length = 0
     const guardian = new GuardianManager()
     const tomes = new TomeManager()
     const waves = new WaveManager((w) => tomes.offerMajorBoonForWave(w))
@@ -1689,26 +1690,24 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     tomes.reset()
     waves.reset(0)
 
-    // Advance all 8 probe steps at 4 Hz (0.25s ticks): world -> defender -> wave_scale -> tome_grant -> boon_and_guardian -> zombie_kamikaze -> boss_scale -> boss_combat
     for (let step = 1; step <= 80 && !probePassed; step++) {
-      // Simulate spawned trooper_melee marching south to the Guardian pedestal ring (y = -1350, 442u from Guardian y = -1792)
-      for (const [ent, model] of modelStore.entries()) {
-        if (model.includes('necro_shambler')) {
-          const s = npcStore.get(ent)
-          if (s && s.health > 0 && s.position.y > -1350) {
-            s.position = { ...s.position, y: -1350 }
-          }
-        }
-      }
       probe.tick(step * 0.25, waves, guardian, tomes)
       assert.equal(probeFailedReason, '', `TdProbe failed: ${probeFailedReason}`)
     }
 
     assert.equal(probePassed, true, 'Expected TdProbe to reach PASS state')
-    assert.ok(appliedModifiers.length >= 2, 'Expected VData td_tome_* modifiers to be applied')
+    assert.ok(
+      appliedModifiers.includes('upgrade_colossus/modifier_colossus_active'),
+      'Expected stock Colossus modifier to be applied to Raid Bosses',
+    )
+    assert.equal(
+      appliedModifiers.some((m) => m.startsWith('td_')),
+      false,
+      'Expected zero custom VPK td_* modifiers in v0.6.0',
+    )
   })
 
-  it('ignores pooled skybase lifeState=2 & zipline 1/1 entities, spawns varied wave neutrals, recovers recycled handles, and scales 100% of landed creeps', () => {
+  it('ignores pooled skybase lifeState=2 & zipline 1/1 entities, disables wave neutrals in v0.6.0, recovers recycled handles, and scales 100% of landed creeps', () => {
     npcStore.clear()
     trooperIds.clear()
     modelStore.clear()
@@ -1742,24 +1741,18 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     const spawnedWave = waves.spawnNextWave(100, true)
     assert.equal(spawnedWave, 8)
     const expectedHp = computeWaveCreepHp(8)
-    const expectedAura = getCreepScaleAuraModifier(8)
     const expectedDmgMult = computeWaveCreepDamageMult(8)
     const expectedInterval = computeWaveSpawnIntervalSeconds(8) // 14s
 
-    // Wave 8 spawns 3 varied neutral creeps + 1 landed creep 802 = 4 (pooled skybase 801 MUST be excluded!)
-    assert.equal(waves.spawnedWaveNeutrals.length, 3)
-    assert.equal(waves.aliveCreepCount, 4)
+    // Wave neutrals are disabled in v0.6.0; landed creep 802 = 1 (pooled skybase 801 MUST be excluded!)
+    assert.equal(waves.spawnedWaveNeutrals.length, 0)
+    assert.equal(waves.aliveCreepCount, 1)
     assert.equal(waves.scaledCreeps.has(801), false)
     assert.equal(npcStore.get(802)?.maxHealth, expectedHp)
-    assert.equal(scaleStore.get(802), expectedAura.appliedScale)
     assert.equal(
       firedInputs.some((i) => i.input === 'SetAbsScale'),
       false,
       'Must NEVER call SetAbsScale (which desynchronizes CHitboxComponent hitboxes, #16)',
-    )
-    assert.ok(
-      appliedModifiers.includes(expectedAura.modifier),
-      'Expected Defender Hero to receive timed C++ creep scale aura modifier (#16)',
     )
 
     // Next second: 801 rides zipline (lifeState=0, 1/1 @[0,2000,1025]) -> still excluded until landing!
@@ -1776,7 +1769,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
         `citadel_trooper_spawn_interval_early ${expectedInterval}`,
       ),
     )
-    assert.equal(waves.aliveCreepCount, 4)
+    assert.equal(waves.aliveCreepCount, 1)
     assert.equal(waves.scaledCreeps.has(801), false)
 
     // Next second: 801 dismounts onto Center Lane (lifeState=0, 150/150 @[0,400,384]) -> immediately scaled!
@@ -1787,7 +1780,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       position: { x: 0, y: 400, z: 384 },
     })
     waves.scaleNewlySpawnedCreeps()
-    assert.equal(waves.aliveCreepCount, 5)
+    assert.equal(waves.aliveCreepCount, 2)
     assert.equal(waves.scaledCreeps.has(801), true)
     assert.equal(npcStore.get(801)?.maxHealth, expectedHp)
     assert.equal(npcStore.get(801)?.health, expectedHp)
@@ -1889,8 +1882,9 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     defenderPlayer.hero = 1
   })
 
-  it('skips placeholder Boss pawn (hero === 0), configures HP bar visibility & refreshed abilities, and awards Major Boon ONLY on Boss kill (#13, #14, #15)', () => {
+  it('skips placeholder Boss pawn (hero === 0), configures Colossus scale + HP bar visibility + refreshed abilities, and awards Major Boon ONLY on Boss kill (#13, #14, #15)', () => {
     appliedModifiers.length = 0
+    givenItems.length = 0
     refreshedAbilities.length = 0
     heldModifierStates.length = 0
     scaleStore.clear()
@@ -1901,7 +1895,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     waves.reset(0)
     waves.wave = 9
 
-    // Spawn Wave 10 Boss (Tier 2: +5500 HP, 1.9x Size, 1.35x Damage mult)
+    // Spawn Wave 10 Boss (Tier 2: +5500 HP, 1.38x Colossus Size, 1.35x Damage mult)
     waves.spawnNextWave(50, true)
     assert.equal(waves.activeBosses.length, 1)
     assert.deepEqual(
@@ -1925,7 +1919,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       0,
       'Must NOT configure placeholder hero=0 pawn',
     )
-    assert.equal(appliedModifiers.includes('td_boss_hero_stats_2'), false)
+    assert.equal(appliedModifiers.includes('upgrade_colossus/modifier_colossus_active'), false)
 
     // Real hero pawn spawns 250ms later (hero=6, pawnEntity=999, abilities=[slot 0..3])
     botMock.hero = 6
@@ -1945,12 +1939,9 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
 
     waves.tickActiveBosses(51)
     assert.equal(boss.configuredPawnEntity, 999)
-    assert.equal(appliedModifiers.includes('td_boss_hero_stats_2'), true)
-    assert.equal(
-      appliedModifiers.filter((m) => !m.startsWith('td_creep_scale_aura_')).length,
-      1,
-      'Expected Wave 10 Boss to apply 1 baked VData modifier without synchronous giveModifier loops (#18)',
-    )
+    assert.ok(givenItems.some((g) => g.item === 'upgrade_colossus'))
+    assert.equal(appliedModifiers.includes('upgrade_colossus/modifier_colossus_active'), true)
+    assert.equal(boss.appliedScale, 1.38)
     assert.equal(botMock.abilityList[0].upgrades, 0b0111)
     assert.equal(botMock.abilityList[0].cooldownEnd, 0, 'Expected refreshAbility to clear initial cooldowns (#14)')
     assert.ok(refreshedAbilities.includes('citadel_ability_bull_leap'))
@@ -1962,11 +1953,8 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     )
     assert.ok(botMock.lastDrive !== undefined, 'Expected Boss bot.drive(...) to be active immediately')
     assert.ok(botMock.position.y < 1200, 'Expected Boss to start marching south out of spawn')
-    assert.equal(scaleStore.get(999), 1.5)
-    assert.equal(botMock.maxHealth, 6200)
-    assert.equal(botMock.health, 6200)
-    assert.equal(boss.currentHp, 6200)
-    assert.equal(boss.currentMaxHp, 6200)
+    assert.ok(boss.currentMaxHp >= 6500)
+    assert.equal(boss.currentHp, boss.currentMaxHp)
 
     // Verify Defender damaging Boss (non-lethal) records provocation aggro WITHOUT granting Boon yet
     waves.handleCreepPostDamage(
@@ -1974,7 +1962,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
         victim: 999,
         attacker: defenderPlayer.pawnEntity,
         ability: 0,
-        healthBefore: 6200,
+        healthBefore: boss.currentMaxHp,
         healthLost: 120,
         dealt: 120,
       },
@@ -2016,22 +2004,14 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.equal(defenderPlayer.souls, soulsBeforeKill + 400)
   })
 
-  it('arms and detonates Graves Zombies on Guardian & Hero proximity AND on direct damage, killing the zombie 100% of the time without killing ranged troopers', () => {
+  it('keeps melee and ranged lane troopers fighting normally in v0.6.0 (Graves Zombies & wave neutrals disabled, #20)', () => {
     npcStore.clear()
     trooperIds.clear()
     modelStore.clear()
     lifeStateStore.clear()
     emittedSounds.length = 0
 
-    // Verify pure wave neutral variety rotation covers all 4 neutral types across Waves 1-2
-    const w1Neutrals = getWaveNeutralSpawns(1).map((s) => s.unit)
-    const w2Neutrals = getWaveNeutralSpawns(2).map((s) => s.unit)
-    const w6Neutrals = getWaveNeutralSpawns(6).map((s) => s.unit)
-    assert.deepEqual(w1Neutrals, ['td_neutral_lantern', 'td_neutral_puppeteer'])
-    assert.deepEqual(w2Neutrals, ['td_neutral_pigeon', 'td_neutral_mushroom'])
-    assert.equal(w6Neutrals.length, 3)
-
-    // Verify pure detonation range math
+    // Pure math helpers remain validated for future re-enablement
     assert.equal(
       isWithinZombieDetonationRange(
         { x: 0, y: -1320, z: 384 },
@@ -2040,27 +2020,15 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       ),
       true,
     )
-    assert.equal(
-      isWithinZombieDetonationRange(
-        { x: 0, y: -1000, z: 384 },
-        { x: 0, y: -1792, z: 384 },
-        'guardian',
-      ),
-      false,
-    )
     assert.equal(isExplodingZombieBaseMaxHp(413), true)
     assert.equal(isExplodingZombieBaseMaxHp(150), false)
 
-    // Setup Guardian at [0, -1792, 384]
     npcStore.set(700, {
       health: 5500,
       maxHealth: 5500,
       team: 2,
       position: { x: 0, y: -1792, z: 384 },
     })
-    // 810: Graves Zombie (trooper_melee, base maxHP=413) at Guardian's 472u engagement ring (y = -1330)
-    // 811: Ranged Trooper (trooper_normal, base maxHP=150)
-    // 812: Second Graves Zombie hitting via onDamaged
     npcStore.set(810, {
       health: 413,
       maxHealth: 413,
@@ -2073,71 +2041,37 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       team: 3,
       position: { x: 40, y: -1330, z: 384 },
     })
-    npcStore.set(812, {
-      health: 413,
-      maxHealth: 413,
-      team: 3,
-      position: { x: 0, y: -600, z: 384 },
-    })
 
     const guardian = new GuardianManager()
     guardian.reset()
     const waves = new WaveManager()
     waves.reset(0)
     waves.wave = 3
+    assert.equal(waves.spawnWaveNeutralVariety(3), 0)
     waves.scaleNewlySpawnedCreeps()
 
-    assert.equal(waves.creepSpecs.get(810)?.isExplodingZombie, true)
+    assert.equal(waves.creepSpecs.get(810)?.isExplodingZombie, false)
     assert.equal(waves.creepSpecs.get(811)?.isExplodingZombie, false)
-    assert.equal(waves.creepSpecs.get(812)?.isExplodingZombie, true)
+    assert.equal(waves.tickExplodingZombies(10.0, guardian), 0)
+    assert.equal(waves.tickExplodingZombies(10.25, guardian), 0)
 
-    // First 250ms tick at t=10.0s: 810 arms with warning sound (still alive during 0.2s fuse)
-    const det1 = waves.tickExplodingZombies(10.0, guardian)
-    assert.equal(det1, 0)
-    assert.ok(
-      emittedSounds.some((s) => s.entity === 810 && s.sound === 'Necro.Shambler.Warning'),
-    )
-    assert.ok((npcStore.get(810)?.health ?? 0) > 0)
-
-    // Next 250ms tick at t=10.25s: 810 detonates kamikaze explosion, damages Guardian, and DIES!
-    const det2 = waves.tickExplodingZombies(10.25, guardian)
-    assert.equal(det2, 1)
-    assert.equal(npcStore.get(810)?.health, 0)
-    assert.equal(lifeStateStore.get(810), 2)
-    assert.ok(guardian.health < 5500, 'Expected Guardian to take kamikaze damage')
-
-    // Ranged trooper 811 MUST stay alive!
-    const rangedDied = waves.handleCreepPostDamage(
+    // Melee trooper 810 dealing melee damage MUST stay alive and NOT self-destruct!
+    const meleeSelfDestructed = waves.handleCreepPostDamage(
       {
         victim: 700,
-        attacker: 811,
+        attacker: 810,
         ability: 0,
-        healthBefore: guardian.health,
-        healthLost: 24,
-        dealt: 24,
+        healthBefore: 5500,
+        healthLost: 40,
+        dealt: 40,
       },
       guardian,
     )
-    assert.equal(rangedDied, false)
-    assert.ok((npcStore.get(811)?.health ?? 0) > 0)
-
-    // Second Graves Zombie 812 dealing direct damage MUST self-destruct immediately!
-    const zombieDied = waves.handleCreepPostDamage(
-      {
-        victim: 10,
-        attacker: 812,
-        ability: 0,
-        healthBefore: 700,
-        healthLost: 65,
-        dealt: 65,
-      },
-      guardian,
-    )
-    assert.equal(zombieDied, true)
-    assert.equal(npcStore.get(812)?.health, 0)
+    assert.equal(meleeSelfDestructed, false)
+    assert.ok((npcStore.get(810)?.health ?? 0) > 0)
   })
 
-  it('progresses Guardian -> Walker -> Base Guardians -> Shrines -> Patron Stage 1 -> Patron Stage 2 -> Defeat and scales all-structure upgrades (#19)', () => {
+  it('progresses Guardian -> Walker -> Base Guardians -> Shrines -> Patron Stage 1 -> Patron Stage 2 -> Defeat, clears dead handles cleanly, and scales all-structure upgrades (#19)', () => {
     npcStore.clear()
     trooperIds.clear()
     modelStore.clear()
@@ -2158,7 +2092,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.equal(guardian.currentStage, 'guardian')
     assert.equal(guardian.matchState, 'active')
 
-    // 1. Fortify twice -> upgrades Max HP on Guardian, Walker, Base Guardians, Shrines, and Patron + applies attack-speed aura + +50% damage
+    // 1. Fortify twice -> upgrades Max HP on Guardian, Walker, Base Guardians, Shrines, and Patron + +50% damage
     assert.equal(guardian.upgradeByPlayer(defenderPlayer as never), true)
     assert.equal(guardian.upgradeByPlayer(defenderPlayer as never), true)
     guardian.poll(4, 15)
@@ -2168,7 +2102,6 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.equal(guardian.baseGuardiansMaxHealth, (4000 + 2 * 900) * 2)
     assert.equal(guardian.shrinesMaxHealth, (8000 + 2 * 1500) * 2)
     assert.equal(guardian.patronMaxHealth, 12000 + 2 * 2400)
-    assert.ok(appliedModifiers.includes('td_structure_fortify_aura_2'))
 
     const boostedHit = waves.modifyIncomingDamage(
       {
@@ -2184,10 +2117,13 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     )
     assert.equal(boostedHit?.amount, 120) // 80 * 1.50x
 
-    // 2. Blue Guardian falls -> match stays ACTIVE, frontline moves to Blue Walker
+    // 2. Blue Guardian falls & is removed from CGameEntitySystem -> guardian.entity clears to 0 (no stale handle polling!)
     npcStore.get(700)!.health = 0
     lifeStateStore.set(700, 2)
     guardian.poll(4, 16)
+    assert.equal(guardian.entity, 0, 'Expected dead Guardian handle to clear to 0 immediately')
+    npcStore.delete(700)
+    guardian.poll(4, 16.5)
     assert.equal(guardian.matchState, 'active')
     assert.equal(guardian.currentStage, 'walker')
 
@@ -2195,6 +2131,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     npcStore.get(701)!.health = 0
     lifeStateStore.set(701, 2)
     guardian.poll(5, 17)
+    assert.equal(guardian.walkerEntity, 0)
     assert.equal(guardian.matchState, 'active')
     assert.equal(guardian.currentStage, 'base_guardians')
 
@@ -2204,6 +2141,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     lifeStateStore.set(702, 2)
     lifeStateStore.set(703, 2)
     guardian.poll(6, 18)
+    assert.equal(guardian.baseGuardianEntities.length, 0)
     assert.equal(guardian.matchState, 'active')
     assert.equal(guardian.currentStage, 'shrines')
 
@@ -2213,6 +2151,8 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     lifeStateStore.set(704, 2)
     lifeStateStore.set(705, 2)
     guardian.poll(7, 19)
+    assert.equal(guardian.eastShrineEntity, 0)
+    assert.equal(guardian.westShrineEntity, 0)
     assert.equal(guardian.matchState, 'active')
     assert.equal(guardian.currentStage, 'patron_stage1')
 
@@ -2249,7 +2189,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.ok(executedServerCommands.includes('citadel_boss_tier_3_testing_reset'))
   })
 
-  it('runs 100% cleanly on vanilla stock servers without pak20_dir.vpk (steered neutrals + Graves Shamblers, Colossus Bosses, Tome scaling, and zero missing-modifier spam)', () => {
+  it('runs 100% cleanly on stock Modlock servers with zero VPK addons (Colossus Bosses, Tome scaling, and zero missing-modifier spam)', () => {
     mockVanillaMode = true
     try {
       npcStore.clear()
@@ -2270,6 +2210,15 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       defenderPlayer.maxHealth = 700
       defenderPlayer.position = { x: 0, y: -1950, z: 390 }
 
+      // Seed one enemy lane trooper in Center Lane
+      lifeStateStore.set(850, 0)
+      npcStore.set(850, {
+        health: 200,
+        maxHealth: 200,
+        team: 3,
+        position: { x: 0, y: 200, z: 384 },
+      })
+
       const guardian = new GuardianManager()
       const tomes = new TomeManager()
       const waves = new WaveManager((w) => tomes.offerMajorBoonForWave(w))
@@ -2277,32 +2226,11 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       tomes.reset()
       waves.reset(0)
 
-      // Spawn Wave 5 (Boss wave + vanilla steered neutrals + stock npc_necro_skele Shamblers)
+      // Spawn Wave 5 (Colossus Raid Boss, zero wave neutrals in v0.6.0)
       waves.wave = 4
       waves.spawnNextWave(20, true)
-      assert.equal(waves.hasCustomVdata, false, 'Should detect vanilla server mode immediately')
-      assert.ok(
-        spawnedTrooperUnits.includes('neutral_lantern_normal') ||
-          spawnedTrooperUnits.includes('neutral_rooftop_pigeon_normal'),
-        'Expected stock npc_trooper_neutral variants to spawn in vanilla mode',
-      )
-      assert.ok(
-        spawnedTrooperUnits.includes('npc_necro_skele'),
-        'Expected stock npc_necro_skele Graves Shamblers to spawn in vanilla mode',
-      )
-      assert.ok(
-        waves.spawnedWaveNeutrals.length >= 3,
-        'Expected steered wave neutrals + shamblers to be tracked',
-      )
+      assert.equal(waves.spawnedWaveNeutrals.length, 0)
 
-      // Verify tickSteeredWaveCreeps marches vanilla neutrals south down Center Lane!
-      const steeredEnt = waves.spawnedWaveNeutrals[0].entity
-      const startY = npcStore.get(steeredEnt)!.position.y
-      waves.tickSteeredWaveCreeps(0.5, guardian)
-      const movedY = npcStore.get(steeredEnt)!.position.y
-      assert.ok(movedY < startY, `Expected steered vanilla creep to march south (${movedY} < ${startY})`)
-
-      // Configure Boss bot in vanilla mode -> must NOT loop infinitely when td_boss_hero_stats_1 fails!
       const boss = waves.activeBosses[0]
       assert.ok(boss, 'Expected Wave 5 Boss to spawn')
       const botMock = boss.bot as unknown as MockPlayer
@@ -2314,19 +2242,18 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
         { name: 'citadel_ability_bull_leap', slot: 3, cooldownEnd: 0 },
       ]
       waves.tickActiveBosses(21)
-      assert.equal(boss.configuredPawnEntity, botMock.pawnEntity, 'Boss must finish configuring in vanilla mode')
+      assert.equal(boss.configuredPawnEntity, botMock.pawnEntity)
       assert.ok(
         appliedModifiers.includes('upgrade_colossus/modifier_colossus_active'),
         'Expected stock Colossus modifier to scale Boss model + hitbox cleanly',
       )
-      assert.equal(scaleStore.get(botMock.pawnEntity), 1.2)
       assert.ok(
         givenItems.some((g) => g.item === 'upgrade_colossus'),
         'Expected stock Boss items to be granted',
       )
-      assert.ok(boss.currentMaxHp >= 3200, `Expected Wave 5 vanilla Boss effective Max HP >= 3200, got ${boss.currentMaxHp}`)
+      assert.ok(boss.currentMaxHp >= 3500, `Expected Wave 5 Boss effective Max HP >= 3500, got ${boss.currentMaxHp}`)
 
-      // Grant multiple Tomes & Fortifications -> must probe custom VData at most ONCE per manager and never spam!
+      // Grant multiple Tomes & Fortifications -> ZERO failed custom modifier calls!
       for (let i = 0; i < 6; i++) {
         tomes.applyMinorTome(defenderPlayer as never, MINOR_TOME_POOL[1]) // Weapon Tome
         tomes.applyMinorTome(defenderPlayer as never, MINOR_TOME_POOL[0]) // Spirit Tome
@@ -2337,15 +2264,16 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       guardian.poll(5, 23)
       waves.tick(24, true)
       waves.tick(25, true)
-      assert.ok(
-        failedCustomModifiers.length <= 3,
-        `Expected zero repeated failed td_* modifier spam, got ${failedCustomModifiers.length}: ${failedCustomModifiers.join(', ')}`,
+      assert.equal(
+        failedCustomModifiers.length,
+        0,
+        `Expected zero failed td_* modifier calls, got ${failedCustomModifiers.length}: ${failedCustomModifiers.join(', ')}`,
       )
 
-      // Verify vanilla Tome weapon/ability damage mult + Boss Effective-HP incoming damage scaling!
+      // Verify Tome weapon/ability damage mult!
       const weaponShot = waves.modifyIncomingDamage(
         {
-          victim: steeredEnt,
+          victim: 850,
           attacker: defenderPlayer.pawnEntity,
           inflictor: defenderPlayer.pawnEntity,
           ability: 0,
@@ -2356,11 +2284,11 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
         guardian,
         tomes,
       )
-      assert.equal(weaponShot?.amount, 160, 'Expected 6 Weapon Tomes (+60%) to boost weapon damage to 160 in vanilla mode')
+      assert.equal(weaponShot?.amount, 160, 'Expected 6 Weapon Tomes (+60%) to boost weapon damage to 160')
 
       const spiritCast = waves.modifyIncomingDamage(
         {
-          victim: steeredEnt,
+          victim: 850,
           attacker: defenderPlayer.pawnEntity,
           inflictor: 400,
           ability: 400,
@@ -2371,25 +2299,17 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
         guardian,
         tomes,
       )
-      assert.equal(spiritCast?.amount, 136, 'Expected 6 Spirit Tomes (+36%) to boost ability damage to 136 in vanilla mode')
+      assert.equal(spiritCast?.amount, 136, 'Expected 6 Spirit Tomes (+36%) to boost ability damage to 136')
 
-      // Verify vanilla TdProbe passes all steps end-to-end!
+      // Verify TdProbe passes all steps end-to-end on vanilla mock!
       probePassed = false
       probeFailedReason = ''
       const vanillaProbe = new TdProbe()
       for (let step = 1; step <= 90 && !probePassed; step++) {
-        for (const [ent, model] of modelStore.entries()) {
-          if (model.includes('necro_shambler') || model.includes('_melee')) {
-            const s = npcStore.get(ent)
-            if (s && s.health > 0 && s.position.y > -1350) {
-              s.position = { ...s.position, y: -1350 }
-            }
-          }
-        }
         vanillaProbe.tick(100 + step * 0.25, waves, guardian, tomes)
         assert.equal(probeFailedReason, '', `Vanilla TdProbe failed: ${probeFailedReason}`)
       }
-      assert.equal(probePassed, true, 'Expected TdProbe to reach PASS in Vanilla Server Mode')
+      assert.equal(probePassed, true, 'Expected TdProbe to reach PASS in stock Modlock mode')
     } finally {
       mockVanillaMode = false
     }

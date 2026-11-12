@@ -1,7 +1,6 @@
-// Deadlock Tower Defense — Modlock TypeScript Entry Point
-// Combines Modlock's Wasm runtime, `onDamaged` combat hooks, Panorama JSX HUD,
-// and `ProbeRun` self-test with our Binary KV3 VData (`pak20_dir.vpk`) and
-// patched Center Lane Map VPK (`maps/hl_defense.vpk` / `build/dl_defense.vpk`).
+// Deadlock Tower Defense — Pure Modlock TypeScript Entry Point (Zero VPK Addons)
+// Combines Modlock's Wasm runtime, VData definition overrides, combat hooks,
+// bot driving, and Panorama JSX HUD.
 
 import {
   type ChatEvent,
@@ -265,16 +264,16 @@ every(0.1, () => {
 })
 
 // Fast 250ms pass for Graves Zombie kamikaze proximity checks (0 host calls when
-// no zombies are alive), Buy Anywhere shop state, and vanilla Tome CDR.
+// no zombies are alive), Buy Anywhere shop state, and Tome CDR.
 every(0.25, () => {
   ensureDefenderShopAccess()
   if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
     waves.tickExplodingZombies(nowSeconds, guardian)
-    tomes.tickVanillaCooldowns(nowSeconds, waves.hasCustomVdata)
+    tomes.tickVanillaCooldowns(nowSeconds)
   }
 })
 
-// 500ms pass to sync hidden C++ creep-scale aura and newly dismounted creep HP.
+// 500ms pass to sync newly dismounted creep HP & elite entity modifiers.
 every(0.5, () => {
   if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
     waves.scaleNewlySpawnedCreeps(nowSeconds)
@@ -310,7 +309,7 @@ every(1, () => {
     }
   }
   if (guardian.matchState === 'active') {
-    tomes.tickVanillaRegen(waves.hasCustomVdata)
+    tomes.tickVanillaRegen()
   }
 
   const prevEmptySince = emptyServerWatch.emptySinceSeconds

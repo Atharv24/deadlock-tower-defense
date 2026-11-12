@@ -132,12 +132,11 @@ export class GuardianManager {
   private readonly friendlyStructureSet = new Set<number>()
   private readonly announcedMilestones = new Set<DefenseStage>()
   private patronStage2HpInitialized = false
-  private activeFortifyAura?: {
-    readonly pawnEntity: number
-    readonly modifier: string
-    expiresAt: number
-  }
-  private customFortifyAuraAvailable: boolean | undefined = undefined
+  private guardianSeen = false
+  private walkerSeen = false
+  private baseGuardiansSeen = false
+  private shrinesSeen = false
+  private patronSeen = false
 
   /** Resets all structure tracking for a new world or `/restarttd`. */
   reset(): void {
@@ -148,6 +147,12 @@ export class GuardianManager {
     this.westShrineEntity = 0
     this.patronEntity = 0
     this.patronCoreEntity = 0
+
+    this.guardianSeen = false
+    this.walkerSeen = false
+    this.baseGuardiansSeen = false
+    this.shrinesSeen = false
+    this.patronSeen = false
 
     this.upgradeLevel = 0
     this.bonusMaxHp = 0
@@ -178,7 +183,6 @@ export class GuardianManager {
     this.announcedMilestones.clear()
     this.announcedMilestones.add('guardian')
     this.patronStage2HpInitialized = false
-    this.activeFortifyAura = undefined
 
     this.poll(0)
   }
@@ -233,6 +237,7 @@ export class GuardianManager {
     })
     if (spawned && spawned.entity > 0) {
       this.entity = spawned.entity
+      this.guardianSeen = true
       this.initializedEntities.add(spawned.entity)
       this.friendlyStructureSet.add(spawned.entity)
       this.health = GUARDIAN_BASE_MAX_HP
@@ -254,19 +259,24 @@ export class GuardianManager {
     this.maxHealth = GUARDIAN_BASE_MAX_HP + this.bonusMaxHp
     this.matchState = matchState
     this.patronReachedStage2 = patronReachedStage2
-    this.activeFortifyAura = undefined
     this.poll(0)
   }
 
   /** Finds the Friendly Blue T1 Guardian entity handle in Center Lane (`0` once dead). */
   locateEntity(): number {
-    if (this.entity > 0 && this.isEntityAlive(this.entity)) {
-      return this.entity
+    if (this.entity > 0) {
+      if (this.isEntityAlive(this.entity)) {
+        this.guardianSeen = true
+        return this.entity
+      }
+      this.guardianSeen = true
+      this.entity = 0
     }
     for (const name of GUARDIAN_TARGETNAMES) {
       for (const candidate of findEntitiesByName(name)) {
         if (candidate > 0 && this.isEntityAlive(candidate)) {
           this.entity = candidate
+          this.guardianSeen = true
           return candidate
         }
       }
@@ -279,6 +289,7 @@ export class GuardianManager {
         const dy = pos.y - GUARDIAN_ORIGIN.y
         if (dx * dx + dy * dy < 600 * 600) {
           this.entity = handle
+          this.guardianSeen = true
           return handle
         }
       }
@@ -342,65 +353,6 @@ export class GuardianManager {
   /** Ability cooldown speed bonus percentage (`+12%` per level, up to `+72%`) for HUD display. */
   cdrBonusPct(): number {
     return getStructureFortifyAuraSpec(this.upgradeLevel).cdrBonusPct
-  }
-
-  /**
-   * Refreshes the hidden C++ `td_structure_fortify_aura_<1..12>` (`MODIFIER_VALUE_FIRE_RATE`
-   * + `MODIFIER_VALUE_COOLDOWN_REDUCTION_PERCENTAGE`, `25,000u` radius) on a live Team 2
-   * Defender Hero so ALL friendly structures fire & cycle abilities faster as fortified!
-   */
-  syncStructureFortifyAura(now = 0): void {
-    if (this.customFortifyAuraAvailable === false) {
-      return
-    }
-    const spec = getStructureFortifyAuraSpec(this.upgradeLevel)
-    if (!spec.active) {
-      this.activeFortifyAura = undefined
-      return
-    }
-
-    let carrierPlayer: Player | undefined
-    let carrierPawnEntity = 0
-    for (const conn of players()) {
-      if (!conn.ready && !conn.bot) continue
-      const pawn = conn.player.pawn()
-      if (pawn && pawn.team === DEFENDER_TEAM && pawn.hero > 0 && pawn.health > 0) {
-        carrierPlayer = conn.player
-        carrierPawnEntity = pawn.entity
-        if (!conn.bot) {
-          break
-        }
-      }
-    }
-    if (!carrierPlayer || carrierPawnEntity <= 0) {
-      return
-    }
-
-    const leaseSeconds = 1.6
-    if (
-      !this.activeFortifyAura ||
-      this.activeFortifyAura.pawnEntity !== carrierPawnEntity ||
-      now <= 0 ||
-      now >= this.activeFortifyAura.expiresAt + 0.05
-    ) {
-      if (carrierPlayer.giveModifier(spec.modifier, leaseSeconds)) {
-        this.customFortifyAuraAvailable = true
-        this.activeFortifyAura = {
-          pawnEntity: carrierPawnEntity,
-          modifier: spec.modifier,
-          expiresAt: now > 0 ? now + leaseSeconds : 0,
-        }
-      } else if (carrierPlayer.abilities().length > 0) {
-        this.customFortifyAuraAvailable = false
-      }
-      return
-    }
-
-    if (this.activeFortifyAura.modifier === spec.modifier) {
-      if (carrierPlayer.giveModifier(spec.modifier, leaseSeconds)) {
-        this.activeFortifyAura.expiresAt = now + leaseSeconds
-      }
-    }
   }
 
   /**
@@ -534,7 +486,7 @@ export class GuardianManager {
    * discovered structures (including Patron Stage 2 transition), updates the active frontline
    * stage, refreshes the C++ attack-speed aura, and triggers Defeat ONLY when Patron Stage 2 falls!
    */
-  poll(currentWave: number, now = 0): void {
+  poll(currentWave: number, _now = 0): void {
     this.friendlyStructureSet.clear()
 
     // 1. Stage 1: Friendly Blue T1 Guardian (`npc_trooper_boss`, Lane 4)
@@ -547,13 +499,15 @@ export class GuardianManager {
     )
     if (gState.entity > 0) {
       this.entity = gState.entity
+      this.guardianSeen = true
       this.health = gState.alive ? gState.health : 0
       this.maxHealth = Math.max(gTargetMax, gState.maxHealth)
-    } else if (this.entity === 0 && currentWave === 0 && this.hasNativeCenterGuardianSpawner()) {
+    } else if (!this.guardianSeen && currentWave === 0 && this.hasNativeCenterGuardianSpawner()) {
       // PreGameWait has not yet fired `info_super_trooper_spawn` (14019); keep Stage 1 primed.
       this.health = gTargetMax
       this.maxHealth = gTargetMax
     } else {
+      this.entity = 0
       this.health = 0
       this.maxHealth = gTargetMax
     }
@@ -563,10 +517,13 @@ export class GuardianManager {
     const walkerCandidate = this.locateWalkerCandidate()
     if (walkerCandidate > 0) {
       this.walkerEntity = walkerCandidate
+      this.walkerSeen = true
       const wState = this.syncSingleStructure(this.walkerEntity, wTargetMax, WALKER_ORIGIN)
       this.walkerHealth = wState.alive ? wState.health : 0
       this.walkerMaxHealth = Math.max(wTargetMax, wState.maxHealth)
-    } else if (this.walkerEntity > 0) {
+    } else if (this.walkerSeen || this.walkerEntity > 0) {
+      this.walkerSeen = true
+      this.walkerEntity = 0
       this.walkerHealth = 0
       this.walkerMaxHealth = wTargetMax
     } else {
@@ -585,9 +542,20 @@ export class GuardianManager {
     // 3. Stage 3: Twin Friendly Blue Base Guardians (`npc_barrack_boss`, `[PR#]rebels_watcher_blue`)
     const bgUnitMax =
       BASE_GUARDIAN_BASE_MAX_HP + this.upgradeLevel * BASE_GUARDIAN_UPGRADE_HP_BONUS
+    if (this.baseGuardianEntities.length > 0) {
+      this.baseGuardiansSeen = true
+      this.baseGuardianEntities = this.baseGuardianEntities.filter(
+        (e) => e > 0 && this.isEntityAlive(e),
+      )
+    }
     const bgCandidates = this.locateBlueBaseGuardianCandidates()
     if (bgCandidates.length > 0) {
-      this.baseGuardianEntities = bgCandidates
+      this.baseGuardiansSeen = true
+      for (const cand of bgCandidates) {
+        if (!this.baseGuardianEntities.includes(cand)) {
+          this.baseGuardianEntities.push(cand)
+        }
+      }
     }
     if (this.baseGuardianEntities.length > 0) {
       let bgHpSum = 0
@@ -602,8 +570,12 @@ export class GuardianManager {
         bgMaxSum += Math.max(bgUnitMax, st.maxHealth)
       }
       this.baseGuardiansHealth = bgHpSum
-      this.baseGuardiansMaxHealth = Math.max(bgUnitMax * this.baseGuardianEntities.length, bgMaxSum)
+      this.baseGuardiansMaxHealth = Math.max(bgUnitMax * 2, bgMaxSum)
       this.baseGuardiansAliveCount = bgAlive
+    } else if (this.baseGuardiansSeen) {
+      this.baseGuardiansHealth = 0
+      this.baseGuardiansMaxHealth = bgUnitMax * 2
+      this.baseGuardiansAliveCount = 0
     } else {
       this.baseGuardiansHealth = this.walkerHealth > 0 ? bgUnitMax * 2 : 0
       this.baseGuardiansMaxHealth = bgUnitMax * 2
@@ -622,18 +594,40 @@ export class GuardianManager {
 
     // 4. Stage 4: Twin Amber Shrines (`destroyable_building`, East Purple & West Yellow)
     const shrineUnitMax = SHRINE_BASE_MAX_HP + this.upgradeLevel * SHRINE_UPGRADE_HP_BONUS
+    if (this.eastShrineEntity > 0) {
+      this.shrinesSeen = true
+      if (!this.isEntityAlive(this.eastShrineEntity)) {
+        this.eastShrineEntity = 0
+      }
+    }
+    if (this.westShrineEntity > 0) {
+      this.shrinesSeen = true
+      if (!this.isEntityAlive(this.westShrineEntity)) {
+        this.westShrineEntity = 0
+      }
+    }
     const eastCand = this.locateNamedTeam2Entity(EAST_SHRINE_TARGETNAMES)
     const westCand = this.locateNamedTeam2Entity(WEST_SHRINE_TARGETNAMES)
-    if (eastCand > 0) this.eastShrineEntity = eastCand
-    if (westCand > 0) this.westShrineEntity = westCand
-    if (this.eastShrineEntity <= 0 && this.westShrineEntity <= 0) {
+    if (eastCand > 0) {
+      this.eastShrineEntity = eastCand
+      this.shrinesSeen = true
+    }
+    if (westCand > 0) {
+      this.westShrineEntity = westCand
+      this.shrinesSeen = true
+    }
+    if (this.eastShrineEntity <= 0 && this.westShrineEntity <= 0 && !this.shrinesSeen) {
       for (const bEnt of findEntities('destroyable_building')) {
-        if (this.readEntityTeam(bEnt) !== DEFENDER_TEAM) continue
+        if (this.readEntityTeam(bEnt) !== DEFENDER_TEAM || !this.isEntityAlive(bEnt)) continue
         const p = this.readEntityPos(bEnt)
         if (p && p.x >= -1000) {
-          if (this.eastShrineEntity <= 0) this.eastShrineEntity = bEnt
+          if (this.eastShrineEntity <= 0) {
+            this.eastShrineEntity = bEnt
+            this.shrinesSeen = true
+          }
         } else if (this.westShrineEntity <= 0) {
           this.westShrineEntity = bEnt
+          this.shrinesSeen = true
         }
       }
     }
@@ -652,8 +646,12 @@ export class GuardianManager {
         sMaxSum += Math.max(shrineUnitMax, st.maxHealth)
       }
       this.shrinesHealth = sHpSum
-      this.shrinesMaxHealth = Math.max(shrineUnitMax * shrineKnownHandles.length, sMaxSum)
+      this.shrinesMaxHealth = Math.max(shrineUnitMax * 2, sMaxSum)
       this.shrinesAliveCount = sAlive
+    } else if (this.shrinesSeen) {
+      this.shrinesHealth = 0
+      this.shrinesMaxHealth = shrineUnitMax * 2
+      this.shrinesAliveCount = 0
     } else {
       this.shrinesHealth = this.baseGuardiansHealth > 0 ? shrineUnitMax * 2 : 0
       this.shrinesMaxHealth = shrineUnitMax * 2
@@ -664,17 +662,21 @@ export class GuardianManager {
     const pCand = this.locatePatronCandidate()
     if (pCand > 0) {
       this.patronEntity = pCand
+      this.patronSeen = true
     }
     this.patronCoreEntity = this.locatePatronCoreCandidate()
     if (this.patronCoreEntity > 0) {
+      this.patronSeen = true
       this.friendlyStructureSet.add(this.patronCoreEntity)
     }
 
-    if (this.patronEntity > 0) {
-      this.friendlyStructureSet.add(this.patronEntity)
-      const rawPhase = readField(this.patronEntity, 'CNPC_Boss_Tier3', 'm_ePhase', 'int32')
-      if (typeof rawPhase === 'number') {
-        this.patronPhase = rawPhase
+    if (this.patronEntity > 0 || this.patronCoreEntity > 0) {
+      if (this.patronEntity > 0) {
+        this.friendlyStructureSet.add(this.patronEntity)
+        const rawPhase = readField(this.patronEntity, 'CNPC_Boss_Tier3', 'm_ePhase', 'int32')
+        if (typeof rawPhase === 'number') {
+          this.patronPhase = rawPhase
+        }
       }
       if (this.patronPhase === 1 || this.patronCoreEntity > 0) {
         this.patronReachedStage2 = true
@@ -685,9 +687,7 @@ export class GuardianManager {
         : PATRON_STAGE1_BASE_MAX_HP
       const pTargetMax = pBaseMax + this.upgradeLevel * PATRON_UPGRADE_HP_BONUS
       const activePatronEnt =
-        this.patronCoreEntity > 0 && this.isEntityAlive(this.patronCoreEntity)
-          ? this.patronCoreEntity
-          : this.patronEntity
+        this.patronCoreEntity > 0 ? this.patronCoreEntity : this.patronEntity
 
       // When Patron first enters Weakened Stage 2 (`m_ePhase === 1`), apply accumulated
       // Fortification Max HP bonus immediately so Stage 2 inherits full base upgrades!
@@ -706,6 +706,12 @@ export class GuardianManager {
       const pState = this.syncSingleStructure(activePatronEnt, pTargetMax, PATRON_ORIGIN)
       this.patronHealth = pState.alive ? pState.health : 0
       this.patronMaxHealth = Math.max(pTargetMax, pState.maxHealth)
+    } else if (this.patronSeen) {
+      const pBaseMax = this.patronReachedStage2
+        ? PATRON_STAGE2_BASE_MAX_HP
+        : PATRON_STAGE1_BASE_MAX_HP
+      this.patronHealth = 0
+      this.patronMaxHealth = pBaseMax + this.upgradeLevel * PATRON_UPGRADE_HP_BONUS
     } else {
       const pTargetMax = PATRON_STAGE1_BASE_MAX_HP + this.upgradeLevel * PATRON_UPGRADE_HP_BONUS
       this.patronHealth = pTargetMax
@@ -729,12 +735,10 @@ export class GuardianManager {
 
     if (this.matchState === 'active') {
       this.announceStageTransitionIfNeeded(evalResult.stage, currentWave)
-      if (evalResult.defeated && this.patronEntity > 0) {
+      if (evalResult.defeated && (this.patronEntity > 0 || this.patronCoreEntity > 0 || this.patronSeen)) {
         this.onPatronFallen(currentWave)
       }
     }
-
-    this.syncStructureFortifyAura(now)
   }
 
   /**
@@ -910,8 +914,6 @@ export class GuardianManager {
       this.initializedEntities.add(item.ent)
     }
 
-    // Expire current aura lease immediately so the upgraded fire-rate/CDR step applies right away!
-    this.activeFortifyAura = undefined
     this.poll(0)
   }
 
@@ -1101,21 +1103,28 @@ export class GuardianManager {
   }
 
   private locateGuardianCandidate(): number {
-    const aliveEnt = this.locateEntity()
-    if (aliveEnt > 0) return aliveEnt
-    return this.entity
+    return this.locateEntity()
   }
 
   private locateWalkerCandidate(): number {
-    if (this.walkerEntity > 0 && this.isEntityAlive(this.walkerEntity)) {
-      return this.walkerEntity
+    if (this.walkerEntity > 0) {
+      if (this.isEntityAlive(this.walkerEntity)) {
+        this.walkerSeen = true
+        return this.walkerEntity
+      }
+      this.walkerSeen = true
+      this.walkerEntity = 0
     }
     const byName = this.locateNamedTeam2Entity(WALKER_TARGETNAMES)
-    if (byName > 0) return byName
+    if (byName > 0) {
+      this.walkerSeen = true
+      return byName
+    }
     for (const w of findEntities('npc_boss_tier2')) {
-      if (this.readEntityTeam(w) !== DEFENDER_TEAM) continue
+      if (this.readEntityTeam(w) !== DEFENDER_TEAM || !this.isEntityAlive(w)) continue
       const pos = this.readEntityPos(w)
       if (pos && Math.hypot(pos.x - WALKER_ORIGIN.x, pos.y - WALKER_ORIGIN.y) < 1200) {
+        this.walkerSeen = true
         return w
       }
     }
@@ -1126,7 +1135,7 @@ export class GuardianManager {
     const out: number[] = []
     for (const name of BASE_GUARDIAN_TARGETNAMES) {
       for (const h of findEntitiesByName(name)) {
-        if (h > 0 && !out.includes(h)) {
+        if (h > 0 && !out.includes(h) && this.isEntityAlive(h)) {
           out.push(h)
         }
       }
@@ -1135,7 +1144,7 @@ export class GuardianManager {
       return out
     }
     for (const h of findEntities('npc_barrack_boss')) {
-      if (this.readEntityTeam(h) !== DEFENDER_TEAM) continue
+      if (this.readEntityTeam(h) !== DEFENDER_TEAM || !this.isEntityAlive(h)) continue
       const pos = this.readEntityPos(h)
       if (
         pos &&
@@ -1149,15 +1158,21 @@ export class GuardianManager {
   }
 
   private locatePatronCandidate(): number {
-    if (this.patronEntity > 0 && this.isEntityAlive(this.patronEntity)) {
-      return this.patronEntity
+    if (this.patronEntity > 0) {
+      if (this.isEntityAlive(this.patronEntity)) {
+        this.patronSeen = true
+        return this.patronEntity
+      }
+      this.patronSeen = true
+      this.patronEntity = 0
     }
     for (const h of findEntities('npc_boss_tier3')) {
-      if (this.readEntityTeam(h) === DEFENDER_TEAM) {
+      if (this.readEntityTeam(h) === DEFENDER_TEAM && this.isEntityAlive(h)) {
+        this.patronSeen = true
         return h
       }
     }
-    return this.patronEntity
+    return 0
   }
 
   private locatePatronCoreCandidate(): number {
@@ -1172,7 +1187,7 @@ export class GuardianManager {
   private locateNamedTeam2Entity(names: readonly string[]): number {
     for (const name of names) {
       for (const h of findEntitiesByName(name)) {
-        if (h > 0) {
+        if (h > 0 && this.isEntityAlive(h)) {
           return h
         }
       }

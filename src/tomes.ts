@@ -31,7 +31,6 @@ export class TomeManager {
     readonly [MajorBoonDef, MajorBoonDef, MajorBoonDef]
   >()
   lastGrantedNotice = ''
-  private customModifiersAvailable: boolean | undefined = undefined
   private readonly trimmedCooldownStarts = new Map<string, number>()
 
   /** Resets Tome & Boon state for a new match or /restarttd. */
@@ -145,18 +144,7 @@ export class TomeManager {
   applyMinorTome(player: Player, tome: MinorTomeDef): void {
     switch (tome.kind) {
       case 'modifier':
-        if (tome.modifier && this.customModifiersAvailable !== false) {
-          const applied = player.giveModifier(tome.modifier, -1)
-          if (applied) {
-            this.customModifiersAvailable = true
-          } else if ((player.pawn()?.hero ?? 0) > 0 && player.abilities().length > 0) {
-            this.customModifiersAvailable = false
-          }
-        }
-        if (
-          this.customModifiersAvailable === false &&
-          (tome.id === 'health' || tome.id === 'omni')
-        ) {
+        if (tome.id === 'health' || tome.id === 'omni') {
           player.heal(120)
         }
         break
@@ -214,24 +202,10 @@ export class TomeManager {
     this.pendingBoonChoices.delete(player.slot)
 
     for (const mod of boon.modifiers) {
-      if (this.customModifiersAvailable !== false) {
-        for (let s = 0; s < mod.stacks; s++) {
-          const applied = player.giveModifier(mod.name, -1)
-          if (applied) {
-            this.customModifiersAvailable = true
-          } else if ((player.pawn()?.hero ?? 0) > 0 && player.abilities().length > 0) {
-            this.customModifiersAvailable = false
-            break
-          }
-        }
-      }
       const tomeKey = mod.name.replace('td_tome_', '')
       this.incrementTally(player.slot, tomeKey, mod.stacks)
       player.addMetric('td.tomes_earned', mod.stacks)
-      if (
-        this.customModifiersAvailable === false &&
-        (tomeKey === 'health' || tomeKey === 'omni')
-      ) {
+      if (tomeKey === 'health' || tomeKey === 'omni') {
         player.heal(280)
       }
     }
@@ -276,17 +250,16 @@ export class TomeManager {
     return this.playerKills.get(playerSlot) ?? 0
   }
 
-  /** Returns computed vanilla-server stat bonuses for a player slot. */
+  /** Returns computed runtime stat bonuses for a player slot. */
   getVanillaBonuses(playerSlot: number): VanillaTomeBonuses {
     return computeVanillaTomeBonuses(this.getTally(playerSlot))
   }
 
-  /** Applies Tome of Focus / Omni cooldown reduction on vanilla servers (`!hasCustomVdata`). */
-  tickVanillaCooldowns(nowSeconds: number, hasCustomVdata: boolean): void {
-    if (hasCustomVdata || this.playerTomes.size === 0) {
+  /** Applies Tome of Focus / Omni cooldown reduction across active defender abilities. */
+  tickVanillaCooldowns(nowSeconds: number): void {
+    if (this.playerTomes.size === 0) {
       return
     }
-    this.customModifiersAvailable = false
     for (const conn of players()) {
       const slot = conn.player.slot
       if (!this.playerTomes.has(slot)) continue
@@ -317,12 +290,11 @@ export class TomeManager {
     }
   }
 
-  /** Applies Tome of Vitality / Omni HP regeneration every second on vanilla servers (`!hasCustomVdata`). */
-  tickVanillaRegen(hasCustomVdata: boolean): void {
-    if (hasCustomVdata || this.playerTomes.size === 0) {
+  /** Applies Tome of Vitality / Omni HP regeneration every second. */
+  tickVanillaRegen(): void {
+    if (this.playerTomes.size === 0) {
       return
     }
-    this.customModifiersAvailable = false
     for (const conn of players()) {
       const slot = conn.player.slot
       if (!this.playerTomes.has(slot)) continue
