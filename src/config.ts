@@ -349,6 +349,12 @@ export const MAJOR_BOON_POOL: readonly MajorBoonDef[] = [
 export const TD_SERVER_CVARS: readonly (readonly [string, string | number])[] = [
   ['sv_cheats', 1],
   ['sv_hibernate_when_empty', 0],
+  ['citadel_solo_bot_match', 0],
+  ['citadel_koth_enabled', 0],
+  ['citadel_neutral_spawn_enabled', 0],
+  ['citadel_spawn_practice_bots', 0],
+  ['citadel_start_players_on_zipline', 0],
+  ['citadel_pregame_wait_duration', 1],
   ['citadel_active_lane', 4],
   ['citadel_trooper_spawn_enabled', 1],
   ['citadel_trooper_spawn_initial', INITIAL_WAVE_DELAY_SECONDS],
@@ -369,7 +375,6 @@ export const TD_SERVER_CVARS: readonly (readonly [string, string | number])[] = 
   ['citadel_tutorial_close_shop', 0],
   ['citadel_allow_purchasing_anywhere', 1],
   ['citadel_disable_purchasing_in_combat', 0],
-  ['citadel_hero_testing_legendary_items', 1],
 ] as const
 
 /** Computes target creep Max HP for a 1-indexed wave number (~5x steeper growth for testing). */
@@ -500,9 +505,14 @@ export function getWaveCreepModifiers(wave: number): {
 export function shouldFreeHudCursor(opts: {
   readonly needsHeroPick: boolean
   readonly hasPendingBoons: boolean
+  readonly legendaryShopOpen?: boolean
   readonly matchState: string
 }): boolean {
-  return opts.needsHeroPick || opts.matchState === 'defeat'
+  return (
+    opts.needsHeroPick ||
+    Boolean(opts.legendaryShopOpen) ||
+    opts.matchState === 'defeat'
+  )
 }
 
 /**
@@ -1226,4 +1236,44 @@ export function evaluateEmptyServerShutdown(
     },
     shouldQuit: false,
   }
+}
+
+/** Soul cost for Tier-5 Legendary items in the TD Legendary Armory. */
+export const LEGENDARY_ITEM_COST_SOULS = 9600
+
+/** Formats an internal item class name (e.g. `upgrade_eldritch_shot`) for display. */
+export function formatItemDisplayTitle(itemName: string): string {
+  return itemName
+    .replace(/^upgrade_/, '')
+    .split('_')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+}
+
+/** Pure validation for purchasing a Tier-5 Legendary item in the TD Armory. */
+export function evaluateLegendaryPurchase(opts: {
+  readonly hasLivingHero: boolean
+  readonly souls: number
+  readonly itemName: string
+  readonly ownedItemNames: readonly string[]
+  readonly cost?: number
+}): { readonly ok: true; readonly cost: number } | { readonly ok: false; readonly reason: string } {
+  const cost = opts.cost ?? LEGENDARY_ITEM_COST_SOULS
+  if (!opts.hasLivingHero) {
+    return { ok: false, reason: 'Deploy a living hero before buying Legendary items.' }
+  }
+  if (opts.ownedItemNames.includes(opts.itemName)) {
+    return {
+      ok: false,
+      reason: `You already own ${formatItemDisplayTitle(opts.itemName)}.`,
+    }
+  }
+  if (opts.souls < cost) {
+    return {
+      ok: false,
+      reason: `Need ${cost.toLocaleString()} Souls for ${formatItemDisplayTitle(opts.itemName)} (have ${opts.souls.toLocaleString()}).`,
+    }
+  }
+  return { ok: true, cost }
 }

@@ -1,7 +1,7 @@
 {
   "slug": "deadlock-td",
   "name": "Deadlock Tower Defense",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Endless single-lane wave survival from Blue Guardian down to the Amber Patron — 100% pure Modlock (zero VPK addons) with Colossus Raid Bosses, scaling trooper waves, last-hit Tomes, 1-of-3 Major Boons, and All-Structure Fortification!",
   "repository": "https://github.com/Atharv24/deadlock-tower-defense",
   "language": "LANGUAGE_TYPESCRIPT",

@@ -40,6 +40,8 @@ import {
   evaluateCreepHealthSync,
   evaluateCreepLastHit,
   evaluateEmptyServerShutdown,
+  evaluateLegendaryPurchase,
+  formatItemDisplayTitle,
   getBossWaveSpec,
   getCreepScaleAuraModifier,
   getStructureFortifyAuraSpec,
@@ -54,6 +56,7 @@ import {
   isExplodingZombieBaseMaxHp,
   isExplodingZombieIdentity,
   isWithinZombieDetonationRange,
+  LEGENDARY_ITEM_COST_SOULS,
   MAX_CREEP_HP,
   MAX_CREEP_SCALE,
   MIN_SPAWN_INTERVAL_SECONDS,
@@ -163,7 +166,8 @@ describe('Tier 1 — Wave Scaling & Boss Wave Math', () => {
     assert.equal(cvarMap.get('citadel_trooper_max_per_lane'), 36)
     assert.equal(cvarMap.get('citadel_trooper_squad_size'), ZIPLINE_SQUAD_SIZE)
     assert.equal(cvarMap.get('citadel_trooper_health_mult_gametime'), 9999)
-    assert.equal(cvarMap.get('citadel_hero_testing_legendary_items'), 1)
+    assert.equal(cvarMap.get('citadel_pregame_wait_duration'), 1)
+    assert.equal(cvarMap.has('citadel_hero_testing_legendary_items'), false)
     assert.equal(cvarMap.has('citadel_hero_testing_enabled'), false)
     assert.equal(cvarMap.has('citadel_coop_sandbox'), false)
     assert.equal(cvarMap.has('citadel_SoloLane'), false)
@@ -1840,8 +1844,8 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       'Expected citadel_player_starting_team 2 to auto-seat on The Hidden King',
     )
     assert.ok(
-      executedServerCommands.includes('citadel_hero_testing_legendary_items 1'),
-      'Expected T5 Legendary items CVar to remain enabled',
+      executedServerCommands.includes('citadel_pregame_wait_duration 1'),
+      'Expected pregame wait duration to be shortened to 1s so HUD never fades out',
     )
     assert.ok(
       executedServerCommands.includes('citadel_allow_purchasing_anywhere 1'),
@@ -2313,6 +2317,81 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     } finally {
       mockVanillaMode = false
     }
+  })
+})
+
+describe('Tier 5 — HUD Stability CVars & Legendary Armory', () => {
+  it('configures fast pregame exit and arena isolation without hero-testing HUD collapse', () => {
+    const cvarMap = new Map<string, string | number>(TD_SERVER_CVARS)
+    assert.equal(cvarMap.get('citadel_pregame_wait_duration'), 1)
+    assert.equal(cvarMap.get('citadel_solo_bot_match'), 0)
+    assert.equal(cvarMap.get('citadel_koth_enabled'), 0)
+    assert.equal(cvarMap.get('citadel_neutral_spawn_enabled'), 0)
+    assert.equal(cvarMap.get('citadel_spawn_practice_bots'), 0)
+    assert.equal(cvarMap.get('citadel_start_players_on_zipline'), 0)
+    assert.equal(cvarMap.has('citadel_hero_testing_enabled'), false)
+    assert.equal(cvarMap.has('citadel_hero_testing_legendary_items'), false)
+  })
+
+  it('frees HUD cursor when Legendary Armory is open without stealing cursor for Boons', () => {
+    assert.equal(
+      shouldFreeHudCursor({
+        needsHeroPick: false,
+        hasPendingBoons: true,
+        legendaryShopOpen: false,
+        matchState: 'active',
+      }),
+      false,
+    )
+    assert.equal(
+      shouldFreeHudCursor({
+        needsHeroPick: false,
+        hasPendingBoons: false,
+        legendaryShopOpen: true,
+        matchState: 'active',
+      }),
+      true,
+    )
+  })
+
+  it('formats Tier-5 Legendary item titles and validates Soul/ownership rules', () => {
+    assert.equal(formatItemDisplayTitle('upgrade_eldritch_shot'), 'Eldritch Shot')
+    assert.equal(
+      formatItemDisplayTitle('upgrade_omnicharge_pendant'),
+      'Omnicharge Pendant',
+    )
+
+    const dead = evaluateLegendaryPurchase({
+      hasLivingHero: false,
+      souls: 20_000,
+      itemName: 'upgrade_eldritch_shot',
+      ownedItemNames: [],
+    })
+    assert.equal(dead.ok, false)
+
+    const duplicate = evaluateLegendaryPurchase({
+      hasLivingHero: true,
+      souls: 20_000,
+      itemName: 'upgrade_eldritch_shot',
+      ownedItemNames: ['upgrade_eldritch_shot'],
+    })
+    assert.equal(duplicate.ok, false)
+
+    const broke = evaluateLegendaryPurchase({
+      hasLivingHero: true,
+      souls: LEGENDARY_ITEM_COST_SOULS - 1,
+      itemName: 'upgrade_eldritch_shot',
+      ownedItemNames: [],
+    })
+    assert.equal(broke.ok, false)
+
+    const valid = evaluateLegendaryPurchase({
+      hasLivingHero: true,
+      souls: LEGENDARY_ITEM_COST_SOULS,
+      itemName: 'upgrade_eldritch_shot',
+      ownedItemNames: [],
+    })
+    assert.deepEqual(valid, { ok: true, cost: LEGENDARY_ITEM_COST_SOULS })
   })
 })
 

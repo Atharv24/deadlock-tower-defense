@@ -45,7 +45,9 @@ import { GuardianManager } from './src/guardian'
 import {
   openHeroPickerForPlayer,
   renderTdHud,
+  resetHudTransientState,
   selectDefenderHero,
+  toggleLegendaryShopForPlayer,
 } from './src/hud'
 import { TdProbe } from './src/probe'
 import { TomeManager } from './src/tomes'
@@ -111,6 +113,7 @@ function persistHandoff(): void {
 function restartMatch(): void {
   placedHeroEntityBySlot.clear()
   shopStateHeldEntities.clear()
+  resetHudTransientState()
   guardian.respawnAllStructures()
   waves.configureWorldForSingleLaneDefense(guardian)
   tomes.reset()
@@ -180,6 +183,7 @@ onWorld((mapName) => {
   }
   placedHeroEntityBySlot.clear()
   shopStateHeldEntities.clear()
+  resetHudTransientState()
   guardian.reset()
   tomes.reset()
   waves.reset(nowSeconds)
@@ -449,6 +453,22 @@ registerTdCommand('hero', (player: Player, args: string) => {
     return
   }
   selectDefenderHero(player, found, nowSeconds)
+})
+
+registerTdCommand('legendary', (player: Player) => {
+  const opened = toggleLegendaryShopForPlayer(player)
+  toast(
+    player,
+    opened ? 'Opened Legendary Armory (Tier 5).' : 'Closed Legendary Armory.',
+  )
+})
+
+registerTdCommand('t5', (player: Player) => {
+  const opened = toggleLegendaryShopForPlayer(player)
+  toast(
+    player,
+    opened ? 'Opened Legendary Armory (Tier 5).' : 'Closed Legendary Armory.',
+  )
 })
 
 registerTdCommand('restarttd', () => {
