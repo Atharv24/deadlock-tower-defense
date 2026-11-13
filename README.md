@@ -1,6 +1,6 @@
 # Deadlock Tower Defense (`deadlock-td`)
 
-Endless single-lane wave survival on stock `dl_midtown` — 100% pure [Modlock](https://modlock.dev) TypeScript & Panorama JSX with **zero VPK addons** and zero modifications to Deadlock game files.
+Endless single-lane wave survival on `dl_midtown` built with [Modlock](https://modlock.dev) TypeScript & Panorama JSX.
 
 Defend the Center Lane progression chain from **Blue T1 Guardian -> Blue Walker -> Twin Base Guardians -> Twin Amber Shrines -> Patron Stage 1 -> Weakened Patron Stage 2** against exponentially scaling trooper waves and Colossus Raid Bosses every 5 waves.
 

@@ -1,4 +1,4 @@
-// Deadlock Tower Defense — Pure Modlock TypeScript Entry Point (Zero VPK Addons)
+// Deadlock Tower Defense — Modlock TypeScript Entry Point
 // Combines Modlock's Wasm runtime, VData definition overrides, combat hooks,
 // bot driving, and Panorama JSX HUD.
 

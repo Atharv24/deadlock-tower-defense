@@ -371,7 +371,7 @@ export class WaveManager {
 
   /**
    * Wave neutral creeps (`npc_trooper_neutral`) and Graves Shamblers (`npc_necro_skele`)
-   * are disabled in `v0.6.0` (zero-VPK release) until native lane pathing and death-explosion
+   * are disabled until native lane pathing and death-explosion
    * behavior are restored via upstream Modlock entity/modifier hooks.
    */
   spawnWaveNeutralVariety(_wave: number): number {
@@ -1239,7 +1239,7 @@ export class WaveManager {
         boss.initialHealDone = false
         justConfigured = true
         log(
-          `Configured Wave ${boss.wave} Boss (${boss.hero}, ent=${pawn.entity}, mode=colossus_no_vpk, scale=${boss.appliedScale}x, maxHp=${boss.vanillaMaxHpTarget}, dmgMult=${boss.damageMult}x)`,
+          `Configured Wave ${boss.wave} Boss (${boss.hero}, ent=${pawn.entity}, mode=colossus, scale=${boss.appliedScale}x, maxHp=${boss.vanillaMaxHpTarget}, dmgMult=${boss.damageMult}x)`,
         )
       }
 

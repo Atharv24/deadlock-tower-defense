@@ -1,5 +1,5 @@
 // Central tuning configuration and pure, deterministic domain logic for
-// Deadlock Tower Defense (Modlock TypeScript + Binary KV3 VData + Map VPK).
+// Deadlock Tower Defense.
 
 export const WAVE_INTERVAL_SECONDS = 20
 export const INITIAL_WAVE_DELAY_SECONDS = 5
@@ -550,8 +550,7 @@ export function isExplodingZombieBaseMaxHp(unscaledMaxHp: number): boolean {
 
 /**
  * Pure model/designer check identifying exploding melee troopers & Graves Shamblers
- * across both `pak20_dir.vpk` (`necro_shambler.vmdl`) and stock vanilla Deadlock
- * (`npc_necro_skele` and `amber_trooper_01_melee` / `sapphire_trooper_01_melee`).
+ * (`npc_necro_skele`, `necro_shambler`, and `amber_trooper_01_melee` / `sapphire_trooper_01_melee`).
  */
 export function isExplodingZombieIdentity(
   designerName: string | undefined,
@@ -658,8 +657,8 @@ export interface VanillaTomeBonuses {
 }
 
 /**
- * Computes runtime stat multipliers for Minor Tomes & Major Boons on vanilla
- * servers where `pak20_dir.vpk` (`td_tome_*`) is not mounted on `server.dll`.
+ * Computes runtime stat multipliers for Minor Tomes & Major Boons from the
+ * accumulated Tome tally.
  */
 export function computeVanillaTomeBonuses(
   tally: Readonly<Record<string, number>>,

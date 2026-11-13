@@ -4,7 +4,7 @@ Brief, human-readable reference documentation built as we reverse-engineer and d
 
 ## Structure
 
-- [`architecture/overview.md`](file:///d:/Projects/deadlock-custom-game/docs/architecture/overview.md) — Deadlock (`citadel`) file layout, VPK structure, and how assets/addons are mounted.
+- [`architecture/overview.md`](file:///d:/Projects/deadlock-custom-game/docs/architecture/overview.md) — Deadlock (`citadel`) file layout, asset packaging, and search paths.
 - [`architecture/vconsole-protocol.md`](file:///d:/Projects/deadlock-custom-game/docs/architecture/vconsole-protocol.md) — How to automate Deadlock in real time over TCP (`127.0.0.1:29000`) via the VConsole2 (`CMND` / `PRNT`) protocol.
 - [`data/vdata-files.md`](file:///d:/Projects/deadlock-custom-game/docs/data/vdata-files.md) — Guide to `scripts/*.vdata` files (`generic_data`, `misc`, `npc_units`, `modifiers`, `heroes`, `abilities`).
 - [`gameplay/lanes-and-modes.md`](file:///d:/Projects/deadlock-custom-game/docs/gameplay/lanes-and-modes.md) — How lanes (`1`, `4`, `6`), 1v1, bot matches, and Street Brawl work.

@@ -1711,7 +1711,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.equal(
       appliedModifiers.some((m) => m.startsWith('td_')),
       false,
-      'Expected zero custom VPK td_* modifiers in v0.6.0',
+      'Expected zero custom td_* modifiers to be applied',
     )
   })
 
@@ -2197,7 +2197,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.ok(executedServerCommands.includes('citadel_boss_tier_3_testing_reset'))
   })
 
-  it('runs 100% cleanly on stock Modlock servers with zero VPK addons (Colossus Bosses, Tome scaling, and zero missing-modifier spam)', () => {
+  it('runs cleanly on Modlock servers (Colossus Bosses, Tome scaling, and zero missing-modifier spam)', () => {
     mockVanillaMode = true
     try {
       npcStore.clear()
