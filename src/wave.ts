@@ -119,6 +119,7 @@ const BOSS_SPAWN_X_OFFSETS = [-165, -55, 55, 165] as const
 
 export class WaveManager {
   wave = 0
+  devCheatsEnabled = false
   nextWaveTime = INITIAL_WAVE_DELAY_SECONDS
   waveInterval = WAVE_INTERVAL_SECONDS
   aliveCreepCount = 0
@@ -148,6 +149,9 @@ export class WaveManager {
   applyServerConfig(): void {
     for (const [cvar, val] of TD_SERVER_CVARS) {
       serverCommand(`${cvar} ${val}`)
+    }
+    if (this.devCheatsEnabled) {
+      serverCommand('sv_cheats 1')
     }
   }
 
@@ -250,8 +254,14 @@ export class WaveManager {
 
   /** Keeps all 4 Flex Slots unlocked for Team 2 defenders so all 12 item slots stay open (#29). */
   unlockAllPlayerFlexSlots(): void {
+    if (!this.devCheatsEnabled) {
+      serverCommand('sv_cheats 1')
+    }
     serverCommand('citadel_unlock_flex_slots')
     serverCommand(`citadel_unlock_flex_slots ${DEFENDER_TEAM}`)
+    if (!this.devCheatsEnabled) {
+      serverCommand('sv_cheats 0')
+    }
     for (const tm of findEntities('citadel_team_manager')) {
       const team = readField(tm, 'CBaseEntity', 'm_iTeamNum', 'uint8')
       if (team === DEFENDER_TEAM) {

@@ -33,6 +33,8 @@ import {
 import {
   BOSS_HERO_POOL,
   BOSS_WAVE_INTERVAL,
+  canExecuteDevCommand,
+  canPlayerRestartActiveMatch,
   DEFENDER_TEAM,
   deserializeTdHandoff,
   EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
@@ -41,6 +43,7 @@ import {
   evaluateEmptyServerShutdown,
   HERO_RESPAWN_TIME_SECONDS,
   isDefenderOutOfBoundsOrBelowMap,
+  isLocalDevModeArgs,
   MINOR_TOME_POOL,
   parseSlashCommandLine,
   parseTomeGrowthPerWave,
@@ -71,6 +74,8 @@ const waves = new WaveManager((milestoneWave) => {
 })
 
 let probe: TdProbe | undefined
+let localDevMode = false
+let devCommandsRegistered = false
 let nowSeconds = 0
 let skipInitialWorldReset = false
 let emptyServerWatch: EmptyServerWatchState = {
@@ -277,6 +282,9 @@ function restartMatch(): void {
   tomes.reset()
   tomes.setGrowthRateOverride(undefined)
   leaderboard.startNewRun()
+  if (localDevMode) {
+    leaderboard.markUnranked('--arg dev')
+  }
   waves.cleanupForRestart(nowSeconds)
   for (const conn of players()) {
     const p = conn.player
@@ -293,6 +301,10 @@ function restartMatch(): void {
 }
 
 onStart((args) => {
+  localDevMode = isLocalDevModeArgs(args)
+  waves.devCheatsEnabled = localDevMode
+  guardian.devCheatsEnabled = localDevMode
+
   precache({
     heroes: [...BOSS_HERO_POOL, 'hero_inferno'],
     resources: TD_PRECACHE_RESOURCES,
@@ -332,6 +344,14 @@ onStart((args) => {
     guardian.matchState = 'active'
   }
 
+  if (localDevMode) {
+    enableLocalDevCommands()
+    leaderboard.markUnranked('--arg dev')
+    log(
+      'Enabled local developer commands (/skipwave, /boss, /souls, /granttome, /tomescale) & sv_cheats via --arg dev [Unranked]',
+    )
+  }
+
   if (args.includes('probe')) {
     probe = new TdProbe()
     leaderboard.isProbeMode = true
@@ -356,6 +376,9 @@ onWorld((mapName) => {
   guardian.reset()
   tomes.reset()
   leaderboard.startNewRun()
+  if (localDevMode) {
+    leaderboard.markUnranked('--arg dev')
+  }
   waves.reset(nowSeconds)
   waves.configureWorldForSingleLaneDefense(guardian)
   persistHandoff()
@@ -552,6 +575,28 @@ function registerTdCommand(name: string, handler: TdCommandHandler): void {
   command(key, handler)
 }
 
+function canPlayerUseDevCommands(player: Player): boolean {
+  const conn = players().find((c) => c.player.slot === player.slot)
+  return canExecuteDevCommand({
+    devModeEnabled: localDevMode,
+    isBot: conn?.bot ?? true,
+    roles: conn?.roles ?? [],
+  })
+}
+
+function registerDevCommand(name: string, handler: TdCommandHandler): void {
+  registerTdCommand(name, (player: Player, args: string) => {
+    if (!canPlayerUseDevCommands(player)) {
+      toast(
+        player,
+        'Dev commands are disabled. Run locally with --arg dev to test.',
+      )
+      return
+    }
+    handler(player, args)
+  })
+}
+
 onChat((line: ChatEvent) => {
   if (line.all) {
     return
@@ -587,91 +632,99 @@ registerTdCommand('boon', (player: Player, args: string) => {
   persistHandoff()
 })
 
-registerTdCommand('skipwave', (player: Player) => {
-  if (guardian.matchState !== 'active') {
-    toast(player, 'Match is not active. Type /restarttd first.')
+// Developer/sandbox commands are registered ONLY when started with `--arg dev`.
+function enableLocalDevCommands(): void {
+  if (devCommandsRegistered) {
     return
   }
-  const newlyUnranked = leaderboard.markUnranked('/skipwave')
-  const spawnedWave = waves.spawnNextWave(nowSeconds, true)
-  toast(
-    player,
-    `Forced Wave ${spawnedWave} early!${newlyUnranked ? ' [Unranked sandbox run]' : ''}`,
-  )
-  persistHandoff()
-})
+  devCommandsRegistered = true
 
-registerTdCommand('boss', (player: Player) => {
-  if (guardian.matchState !== 'active') {
-    toast(player, 'Match is not active. Type /restarttd first.')
-    return
-  }
-  const newlyUnranked = leaderboard.markUnranked('/boss')
-  const nextBossWave =
-    (Math.floor(waves.wave / BOSS_WAVE_INTERVAL) + 1) * BOSS_WAVE_INTERVAL
-  waves.wave = nextBossWave - 1
-  const spawnedWave = waves.spawnNextWave(nowSeconds, true)
-  toast(
-    player,
-    `Jumped to Boss Wave ${spawnedWave}!${newlyUnranked ? ' [Unranked sandbox run]' : ''}`,
-  )
-  persistHandoff()
-})
+  registerDevCommand('skipwave', (player: Player) => {
+    if (guardian.matchState !== 'active') {
+      toast(player, 'Match is not active. Type /restarttd first.')
+      return
+    }
+    const newlyUnranked = leaderboard.markUnranked('/skipwave')
+    const spawnedWave = waves.spawnNextWave(nowSeconds, true)
+    toast(
+      player,
+      `Forced Wave ${spawnedWave} early!${newlyUnranked ? ' [Unranked sandbox run]' : ''}`,
+    )
+    persistHandoff()
+  })
 
-registerTdCommand('granttome', (player: Player) => {
-  const newlyUnranked = leaderboard.markUnranked('/granttome')
-  const randomTome =
-    MINOR_TOME_POOL[Math.floor(Math.random() * MINOR_TOME_POOL.length)]
-  tomes.applyMinorTome(player, randomTome, Math.max(1, waves.wave))
-  if (newlyUnranked) {
-    toast(player, 'Run marked unranked sandbox (/granttome).')
-  }
-  persistHandoff()
-})
+  registerDevCommand('boss', (player: Player) => {
+    if (guardian.matchState !== 'active') {
+      toast(player, 'Match is not active. Type /restarttd first.')
+      return
+    }
+    const newlyUnranked = leaderboard.markUnranked('/boss')
+    const nextBossWave =
+      (Math.floor(waves.wave / BOSS_WAVE_INTERVAL) + 1) * BOSS_WAVE_INTERVAL
+    waves.wave = nextBossWave - 1
+    const spawnedWave = waves.spawnNextWave(nowSeconds, true)
+    toast(
+      player,
+      `Jumped to Boss Wave ${spawnedWave}!${newlyUnranked ? ' [Unranked sandbox run]' : ''}`,
+    )
+    persistHandoff()
+  })
 
-registerTdCommand('tomescale', (player: Player, args: string) => {
-  const trimmed = args.trim().toLowerCase()
-  const wave = Math.max(1, waves.wave)
-  if (!trimmed) {
-    const rate = tomes.getGrowthRate(nowSeconds)
+  registerDevCommand('granttome', (player: Player) => {
+    const newlyUnranked = leaderboard.markUnranked('/granttome')
+    const randomTome =
+      MINOR_TOME_POOL[Math.floor(Math.random() * MINOR_TOME_POOL.length)]
+    tomes.applyMinorTome(player, randomTome, Math.max(1, waves.wave))
+    if (newlyUnranked) {
+      toast(player, 'Run marked unranked sandbox (/granttome).')
+    }
+    persistHandoff()
+  })
+
+  registerDevCommand('tomescale', (player: Player, args: string) => {
+    const trimmed = args.trim().toLowerCase()
+    const wave = Math.max(1, waves.wave)
+    if (!trimmed) {
+      const rate = tomes.getGrowthRate(nowSeconds)
+      const mult = tomes.getWaveMultiplier(wave, nowSeconds)
+      toast(
+        player,
+        `Tome scaling: +${(rate * 100).toFixed(1).replace(/\.0$/, '')}%/wave (Wave ${wave} = ${mult.toFixed(2)}x). Usage: /tomescale <0..50> or /tomescale reset`,
+      )
+      return
+    }
+    if (trimmed === 'reset' || trimmed === 'default') {
+      tomes.setGrowthRateOverride(undefined)
+      const rate = tomes.getGrowthRate(nowSeconds)
+      const mult = tomes.getWaveMultiplier(wave, nowSeconds)
+      toast(
+        player,
+        `Reset Tome scaling to lobby setting (+${(rate * 100).toFixed(1).replace(/\.0$/, '')}%/wave · Wave ${wave} = ${mult.toFixed(2)}x).`,
+      )
+      return
+    }
+    const newlyUnranked = leaderboard.markUnranked('/tomescale')
+    const rate = parseTomeGrowthPerWave(trimmed)
+    tomes.setGrowthRateOverride(rate)
     const mult = tomes.getWaveMultiplier(wave, nowSeconds)
     toast(
       player,
-      `Tome scaling: +${(rate * 100).toFixed(1).replace(/\.0$/, '')}%/wave (Wave ${wave} = ${mult.toFixed(2)}x). Usage: /tomescale <0..50> or /tomescale reset`,
+      `Set Tome scaling to +${(rate * 100).toFixed(1).replace(/\.0$/, '')}%/wave (Wave ${wave} = ${mult.toFixed(2)}x)!${newlyUnranked ? ' [Unranked sandbox run]' : ''}`,
     )
-    return
-  }
-  if (trimmed === 'reset' || trimmed === 'default') {
-    tomes.setGrowthRateOverride(undefined)
-    const rate = tomes.getGrowthRate(nowSeconds)
-    const mult = tomes.getWaveMultiplier(wave, nowSeconds)
+    persistHandoff()
+  })
+
+  registerDevCommand('souls', (player: Player, args: string) => {
+    const newlyUnranked = leaderboard.markUnranked('/souls')
+    const amount = Number(args.trim()) || 10_000
+    player.adjustSouls(amount)
     toast(
       player,
-      `Reset Tome scaling to lobby setting (+${(rate * 100).toFixed(1).replace(/\.0$/, '')}%/wave · Wave ${wave} = ${mult.toFixed(2)}x).`,
+      `Granted +${amount} Souls for testing!${newlyUnranked ? ' [Unranked sandbox run]' : ''}`,
     )
-    return
-  }
-  const newlyUnranked = leaderboard.markUnranked('/tomescale')
-  const rate = parseTomeGrowthPerWave(trimmed)
-  tomes.setGrowthRateOverride(rate)
-  const mult = tomes.getWaveMultiplier(wave, nowSeconds)
-  toast(
-    player,
-    `Set Tome scaling to +${(rate * 100).toFixed(1).replace(/\.0$/, '')}%/wave (Wave ${wave} = ${mult.toFixed(2)}x)!${newlyUnranked ? ' [Unranked sandbox run]' : ''}`,
-  )
-  persistHandoff()
-})
-
-registerTdCommand('souls', (player: Player, args: string) => {
-  const newlyUnranked = leaderboard.markUnranked('/souls')
-  const amount = Number(args.trim()) || 10_000
-  player.adjustSouls(amount)
-  toast(
-    player,
-    `Granted +${amount} Souls for testing!${newlyUnranked ? ' [Unranked sandbox run]' : ''}`,
-  )
-  persistHandoff()
-})
+    persistHandoff()
+  })
+}
 
 registerTdCommand('hero', (player: Player, args: string) => {
   const query = args.trim()
@@ -737,6 +790,22 @@ registerTdCommand('unstuck', (player: Player) => {
   toast(player, 'Moved hero to active defense frontline!')
 })
 
-registerTdCommand('restarttd', () => {
+registerTdCommand('restarttd', (player: Player) => {
+  let humanPlayerCount = 0
+  for (const conn of players()) {
+    if (!conn.bot) {
+      humanPlayerCount += 1
+    }
+  }
+  if (
+    !canPlayerRestartActiveMatch({
+      matchState: guardian.matchState === 'defeat' ? 'defeat' : 'active',
+      humanPlayerCount,
+      isLocalDevPlayer: canPlayerUseDevCommands(player),
+    })
+  ) {
+    toast(player, 'Cannot /restarttd while co-op defenders are still fighting!')
+    return
+  }
   restartMatch()
 })

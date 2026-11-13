@@ -359,7 +359,7 @@ export const MAJOR_BOON_POOL: readonly MajorBoonDef[] = [
 
 /** Server console configuration applied on world start. */
 export const TD_SERVER_CVARS: readonly (readonly [string, string | number])[] = [
-  ['sv_cheats', 1],
+  ['sv_cheats', 0],
   ['sv_hibernate_when_empty', 0],
   ['sv_visiblemaxplayers', MAX_COOP_DEFENDER_PLAYERS],
   ['citadel_team_size', MAX_COOP_DEFENDER_PLAYERS],
@@ -1573,4 +1573,50 @@ export function formatScaledMajorBoonSubtitle(
     default:
       return `${boon.subtitle} (${m.toFixed(2)}x)`
   }
+}
+
+/** Developer/sandbox slash commands disabled in all normal & Hyperline matches (enabled only with `--arg dev`). */
+export const DEV_COMMAND_NAMES = [
+  'skipwave',
+  'boss',
+  'granttome',
+  'tomescale',
+  'souls',
+] as const
+
+/** Returns true only when `modlock dev --arg dev` (or `--watch --arg dev`) was passed on server startup. */
+export function isLocalDevModeArgs(args: readonly string[]): boolean {
+  return args.some((arg) => arg.trim().toLowerCase() === 'dev')
+}
+
+/**
+ * Evaluates whether a connection may execute developer commands.
+ * Requires BOTH server startup `--arg dev` AND Modlock's `'developer'` role on a non-bot connection.
+ */
+export function canExecuteDevCommand(params: {
+  readonly devModeEnabled: boolean
+  readonly isBot: boolean
+  readonly roles: readonly string[]
+}): boolean {
+  return Boolean(
+    params.devModeEnabled &&
+      !params.isBot &&
+      params.roles.includes('developer'),
+  )
+}
+
+/**
+ * Prevents co-op griefing via `/restarttd` while a multi-player run is still active,
+ * while allowing restarts after Defeat, in solo runs (`<= 1` human), or in local `--arg dev` mode.
+ */
+export function canPlayerRestartActiveMatch(params: {
+  readonly matchState: 'active' | 'defeat'
+  readonly humanPlayerCount: number
+  readonly isLocalDevPlayer: boolean
+}): boolean {
+  return (
+    params.matchState === 'defeat' ||
+    params.isLocalDevPlayer ||
+    params.humanPlayerCount <= 1
+  )
 }

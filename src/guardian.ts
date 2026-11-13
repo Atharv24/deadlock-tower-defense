@@ -92,6 +92,7 @@ interface StructureUnitState {
 }
 
 export class GuardianManager {
+  devCheatsEnabled = false
   // Primary T1 Blue Guardian fields (preserved for HUD, Tome, and Probe callers)
   entity = 0
   health = GUARDIAN_BASE_MAX_HP
@@ -198,11 +199,17 @@ export class GuardianManager {
 
   /** Respawns fallen Team 2 structures via engine commands and resets base defense for `/restarttd`. */
   respawnAllStructures(): void {
+    if (!this.devCheatsEnabled) {
+      serverCommand('sv_cheats 1')
+    }
     serverCommand('citadel_respawn_boss_t1')
     serverCommand('citadel_respawn_boss_t2')
     serverCommand('citadel_respawn_boss_barracks')
     serverCommand('citadel_respawn_boss_shrines')
     serverCommand('citadel_boss_tier_3_testing_reset')
+    if (!this.devCheatsEnabled) {
+      serverCommand('sv_cheats 0')
+    }
 
     this.reset()
     this.ensureCenterLaneGuardianSpawned()

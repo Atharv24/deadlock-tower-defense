@@ -23,6 +23,8 @@ import {
   BOARD_CREEPS_SLAIN,
   BOARD_HIGHEST_WAVE,
   BOSS_KILL_SOUL_REWARD,
+  canExecuteDevCommand,
+  canPlayerRestartActiveMatch,
   computeBossTier,
   computeCreepScaleAuraStep,
   computeGuardianRepair,
@@ -38,6 +40,7 @@ import {
   computeWaveSpawnIntervalSeconds,
   computeWaveTier,
   deserializeTdHandoff,
+  DEV_COMMAND_NAMES,
   EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
   type EmptyServerWatchState,
   evaluateAllStructuresRepair,
@@ -68,6 +71,7 @@ import {
   isDefenderOutOfBoundsOrBelowMap,
   isExplodingZombieBaseMaxHp,
   isExplodingZombieIdentity,
+  isLocalDevModeArgs,
   isWithinZombieDetonationRange,
   ITEM_DISPLAY_TITLES,
   LEGENDARY_ITEM_COST_SOULS,
@@ -2905,6 +2909,89 @@ describe('Tier 6 — Playtest Fixes: 5s Respawn, Below-Map Recovery, 12 Slots & 
     assert.equal(restored?.runRankedEligible, false)
     assert.equal(restored?.runDisqualifyReason, '/souls')
     assert.deepEqual(restored?.runSubmittedSlots, [0])
+  })
+
+  it('disables sv_cheats and dev commands by default, enables dev commands only with --arg dev + developer role, and protects active co-op matches from mid-run restarts', () => {
+    const cvarMap = new Map<string, string | number>(TD_SERVER_CVARS)
+    assert.equal(cvarMap.get('sv_cheats'), 0)
+    assert.deepEqual(DEV_COMMAND_NAMES, [
+      'skipwave',
+      'boss',
+      'granttome',
+      'tomescale',
+      'souls',
+    ])
+
+    assert.equal(isLocalDevModeArgs([]), false)
+    assert.equal(isLocalDevModeArgs(['probe']), false)
+    assert.equal(isLocalDevModeArgs(['dev']), true)
+    assert.equal(isLocalDevModeArgs(['probe', 'DEV']), true)
+
+    assert.equal(
+      canExecuteDevCommand({
+        devModeEnabled: false,
+        isBot: false,
+        roles: ['developer', 'tester'],
+      }),
+      false,
+    )
+    assert.equal(
+      canExecuteDevCommand({
+        devModeEnabled: true,
+        isBot: true,
+        roles: ['developer'],
+      }),
+      false,
+    )
+    assert.equal(
+      canExecuteDevCommand({
+        devModeEnabled: true,
+        isBot: false,
+        roles: ['tester'],
+      }),
+      false,
+    )
+    assert.equal(
+      canExecuteDevCommand({
+        devModeEnabled: true,
+        isBot: false,
+        roles: ['developer'],
+      }),
+      true,
+    )
+
+    assert.equal(
+      canPlayerRestartActiveMatch({
+        matchState: 'active',
+        humanPlayerCount: 2,
+        isLocalDevPlayer: false,
+      }),
+      false,
+    )
+    assert.equal(
+      canPlayerRestartActiveMatch({
+        matchState: 'active',
+        humanPlayerCount: 1,
+        isLocalDevPlayer: false,
+      }),
+      true,
+    )
+    assert.equal(
+      canPlayerRestartActiveMatch({
+        matchState: 'defeat',
+        humanPlayerCount: 4,
+        isLocalDevPlayer: false,
+      }),
+      true,
+    )
+    assert.equal(
+      canPlayerRestartActiveMatch({
+        matchState: 'active',
+        humanPlayerCount: 4,
+        isLocalDevPlayer: true,
+      }),
+      true,
+    )
   })
 })
 

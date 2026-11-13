@@ -18,6 +18,8 @@ $env:DEADLOCK_DIR = "D:\SteamLibrary\steamapps\common\Deadlock"
 | :--- | :--- |
 | **Run locally + launch Deadlock** | `.\tools\modlock.exe dev` |
 | **Run locally with hot-reload on save** | `.\tools\modlock.exe dev --watch` |
+| **Run locally WITH dev commands enabled** | `.\tools\modlock.exe dev --arg dev` |
+| **Hot-reload locally WITH dev commands** | `.\tools\modlock.exe dev --watch --arg dev` |
 | **Automated server Probe test (headless)** | `.\tools\modlock.exe dev --no-game --arg probe` |
 | **Unit & state-machine integration tests** | `node --experimental-strip-types --test test/td.test.ts` |
 | **Build bundle & check types** | `.\tools\modlock.exe build` |
@@ -52,15 +54,20 @@ Works in both Team Chat and All-Chat:
 - `/repair` — Repair all living Team 2 structures (`300` Souls)
 - `/upgrade` — Fortify all Team 2 structures (+Max HP, +25% Dmg, +18% Atk Spd)
 - `/boon 1|2|3` — Pick one of 3 Major Boons after a Boss Wave (scales with wave Tome multiplier)
-- `/tomescale [%|reset]` — View or override per-wave Tome scaling (`tome_scaling` setting in [`mod.json`](mod.json), default `+6%/wave`; custom overrides mark the run unranked)
-- `/skipwave` — Trigger the next wave immediately *(marks run unranked)*
-- `/boss` — Jump to the next Boss Wave *(marks run unranked)*
-- `/souls [amount]` — Grant Souls for testing *(marks run unranked)*
-- `/granttome` — Grant a random wave-scaled Minor Tome for testing *(marks run unranked)*
-- `/restarttd` — Restart Hidden King's Defense from Wave 1 as a fresh Ranked run
+- `/restarttd` — Restart Hidden King's Defense from Wave 1 as a fresh Ranked run (blocked mid-run in co-op while defenders are still fighting)
 
-### Gameplay Rules (`v0.6.4`)
-- **Ranked Leaderboards (`td.highest_wave`, `td.creeps_slain`):** Normal runs automatically report Highest Wave (tiebroken by Creep Last-Hits) and Creeps Slain to Hyperline on defeat, disconnect (Wave 2+), or `/restarttd` (Wave 2+). Using sandbox commands (`/skipwave`, `/boss`, `/souls`, `/granttome`, custom `/tomescale`) disqualifies the current run until `/restarttd`.
+### Local Developer Commands (`--arg dev` Only)
+
+Disabled in all public, `hyperline.gg`, and default local matches (`sv_cheats 0`). Pass `--arg dev` when starting your local server (`.\tools\modlock.exe dev --arg dev` or `.\tools\modlock.exe dev --watch --arg dev`) to enable them for your local `developer` connection (runs are automatically marked unranked):
+
+- `/skipwave` — Trigger the next wave immediately
+- `/boss` — Jump to the next Boss Wave
+- `/souls [amount]` — Grant Souls for testing
+- `/granttome` — Grant a random wave-scaled Minor Tome for testing
+- `/tomescale [%|reset]` — View or override per-wave Tome scaling at runtime
+
+### Gameplay Rules (`v0.6.5`)
+- **Ranked Leaderboards (`td.highest_wave`, `td.creeps_slain`) & Cheat Protection:** Developer slash commands and `sv_cheats` are completely disabled in all public and default matches. Normal runs automatically report Highest Wave (tiebroken by Creep Last-Hits) and Creeps Slain to Hyperline on defeat, disconnect (Wave 2+), or `/restarttd` (Wave 2+). Local `--arg dev` test sessions mark runs unranked until tested without `--arg dev`.
 - **Co-op Slots & Flex Slots:** All **12** Team 2 co-op player slots and all **12** item slots (4 Flex Slots unlocked immediately) stay open.
 - **Fixed Respawn:** Defenders respawn after a fixed **5 seconds** directly onto ground-checked Center Lane coordinates.
 - **Wave Scaling & Economy:** Enemy creep HP grows `+4%/wave`, creep damage `+3.5%/wave`, and Raid Boss damage scales `1.15x` (+`0.20x` per Boss wave) alongside configurable wave-scaled Tomes. Soul income from troopers, bounties, Boss kills, and Soul Cache Tomes is reduced `3x` while `Patron Warchest` Boss Boons award full Souls.

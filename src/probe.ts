@@ -666,7 +666,9 @@ export class TdProbe {
     // 1. Destroy Blue T1 Guardian and verify match stays ACTIVE and advances frontline to Blue Walker!
     // Also exercise `citadel_spawn_trooper_wave` live to prove CInfoTrooperBossSpawn never divides by zero.
     if (this.progressionKilledGuardianAt === 0) {
+      serverCommand('sv_cheats 1')
       serverCommand('citadel_spawn_trooper_wave')
+      serverCommand('sv_cheats 0')
       killEntity({ victim: guardian.entity })
       this.progressionKilledGuardianAt = now
       guardian.poll(waves.wave, now)
