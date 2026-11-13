@@ -43,6 +43,7 @@ import {
 } from './src/config'
 import { GuardianManager } from './src/guardian'
 import {
+  consumeHeroReselectPlacementReset,
   openHeroPickerForPlayer,
   renderTdHud,
   resetHudTransientState,
@@ -67,23 +68,65 @@ let emptyServerWatch: EmptyServerWatchState = {
   emptySinceSeconds: undefined,
   quitIssued: false,
 }
-const placedHeroEntityBySlot = new Map<number, number>()
+const placedHeroKeyBySlot = new Map<number, string>()
+const ziplineFallbackKeyBySlot = new Map<number, string>()
 const shopStateHeldEntities = new Set<number>()
 
-/** Ensures live Team 2 defender heroes can buy anywhere in Center Lane (`MODIFIER_STATE_IN_SHOP`). */
-function ensureDefenderShopAccess(): void {
+/** Teleports a Team 2 defender onto the active frontline, falling back to `zipline('blue')` if teleport fails. */
+function placeDefenderAtFrontline(
+  player: Player,
+  pawnKey: string,
+  force = false,
+): void {
+  const spawnOrigin = guardian.getDefenderSpawnOrigin()
+  if (player.teleport(spawnOrigin, PLAYER_SPAWN_ANGLES)) {
+    placedHeroKeyBySlot.set(player.slot, pawnKey)
+    ziplineFallbackKeyBySlot.delete(player.slot)
+    return
+  }
+  if (force || ziplineFallbackKeyBySlot.get(player.slot) !== pawnKey) {
+    ziplineFallbackKeyBySlot.set(player.slot, pawnKey)
+    if (player.zipline('blue')) {
+      placedHeroKeyBySlot.set(player.slot, pawnKey)
+    }
+  }
+}
+
+/** Ensures newly spawned/respawned defenders are on Team 2, placed at the frontline, and able to buy anywhere. */
+function syncDefenderPlacementAndShopAccess(): void {
   for (const conn of players()) {
-    if (conn.bot || !conn.ready) continue
-    const pawn = conn.player.pawn()
-    if (
-      pawn &&
-      pawn.team === DEFENDER_TEAM &&
-      pawn.hero > 0 &&
-      pawn.health > 0 &&
-      !shopStateHeldEntities.has(pawn.entity)
-    ) {
-      holdModifierState(pawn.entity, 'MODIFIER_STATE_IN_SHOP', true)
-      shopStateHeldEntities.add(pawn.entity)
+    if (conn.bot) continue
+    const p = conn.player
+    if (consumeHeroReselectPlacementReset(p.slot)) {
+      placedHeroKeyBySlot.delete(p.slot)
+      ziplineFallbackKeyBySlot.delete(p.slot)
+    }
+    const pawn = p.pawn()
+    if (!pawn || pawn.hero <= 0 || pawn.health <= 0) {
+      // Source 2 reuses the same pawn handle across deaths, so clear placement keys while dead/unspawned.
+      placedHeroKeyBySlot.delete(p.slot)
+      ziplineFallbackKeyBySlot.delete(p.slot)
+      if (pawn) {
+        shopStateHeldEntities.delete(pawn.entity)
+      }
+      continue
+    }
+    const pawnKey = `${pawn.entity}:${pawn.hero}`
+    if (conn.ready && pawn.team === 3) {
+      p.changeTeam(DEFENDER_TEAM)
+      placeDefenderAtFrontline(p, pawnKey, true)
+      continue
+    }
+    if (pawn.team === DEFENDER_TEAM) {
+      if (conn.ready && !shopStateHeldEntities.has(pawn.entity)) {
+        holdModifierState(pawn.entity, 'MODIFIER_STATE_IN_SHOP', true)
+        shopStateHeldEntities.add(pawn.entity)
+      }
+      const outOfBounds =
+        pawn.position.z < -900 || Math.abs(pawn.position.y) > 11500
+      if (placedHeroKeyBySlot.get(p.slot) !== pawnKey || outOfBounds) {
+        placeDefenderAtFrontline(p, pawnKey, outOfBounds)
+      }
     }
   }
 }
@@ -111,20 +154,19 @@ function persistHandoff(): void {
 
 /** Restarts the Tower Defense match from Wave 1 and respawns all Team 2 structures. */
 function restartMatch(): void {
-  placedHeroEntityBySlot.clear()
+  placedHeroKeyBySlot.clear()
+  ziplineFallbackKeyBySlot.clear()
   shopStateHeldEntities.clear()
   resetHudTransientState()
   guardian.respawnAllStructures()
   waves.configureWorldForSingleLaneDefense(guardian)
   tomes.reset()
   waves.cleanupForRestart(nowSeconds)
-  const spawnOrigin = guardian.getDefenderSpawnOrigin()
   for (const conn of players()) {
     const p = conn.player
     const pawn = p.pawn()
     if (pawn && pawn.team === DEFENDER_TEAM && pawn.hero > 0) {
-      p.teleport(spawnOrigin, PLAYER_SPAWN_ANGLES)
-      placedHeroEntityBySlot.set(p.slot, pawn.entity)
+      placeDefenderAtFrontline(p, `${pawn.entity}:${pawn.hero}`, true)
     }
     p.announce(
       'TOWER DEFENSE RESTARTED',
@@ -181,7 +223,8 @@ onWorld((mapName) => {
     skipInitialWorldReset = false
     return
   }
-  placedHeroEntityBySlot.clear()
+  placedHeroKeyBySlot.clear()
+  ziplineFallbackKeyBySlot.clear()
   shopStateHeldEntities.clear()
   resetHudTransientState()
   guardian.reset()
@@ -267,10 +310,10 @@ every(0.1, () => {
   renderTdHud(nowSeconds, waves, guardian, tomes, restartMatch)
 })
 
-// Fast 250ms pass for Graves Zombie kamikaze proximity checks (0 host calls when
-// no zombies are alive), Buy Anywhere shop state, and Tome CDR.
+// Fast 250ms pass for defender spawn placement, Buy Anywhere shop state,
+// Graves Zombie proximity checks (0 host calls when empty), and Tome CDR.
 every(0.25, () => {
-  ensureDefenderShopAccess()
+  syncDefenderPlacementAndShopAccess()
   if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
     waves.tickExplodingZombies(nowSeconds, guardian)
     tomes.tickVanillaCooldowns(nowSeconds)
@@ -284,32 +327,14 @@ every(0.5, () => {
   }
 })
 
-// 1-second tick for wave scheduling, defender spawn safety, and Base Defense monitoring.
+// 1-second tick for wave scheduling, Base Defense monitoring, and empty-server watch.
 every(1, () => {
   guardian.poll(waves.wave, nowSeconds)
-  const spawnOrigin = guardian.getDefenderSpawnOrigin()
 
-  // Place newly spawned/respawned Team 2 defender heroes safely behind the active frontline,
-  // and ensure no human player is ever accidentally seated on Team 3!
   let humanCount = 0
   for (const conn of players()) {
-    if (conn.bot) continue
-    humanCount += 1
-    const p = conn.player
-    const pawn = p.pawn()
-    if (pawn && conn.ready && pawn.team === 3 && pawn.hero > 0) {
-      p.changeTeam(DEFENDER_TEAM)
-      p.teleport(spawnOrigin, PLAYER_SPAWN_ANGLES)
-      placedHeroEntityBySlot.set(p.slot, pawn.entity)
-      continue
-    }
-    if (pawn && pawn.team === DEFENDER_TEAM && pawn.hero > 0 && pawn.health > 0) {
-      const outOfBounds =
-        pawn.position.z < -900 || Math.abs(pawn.position.y) > 11500
-      if (placedHeroEntityBySlot.get(p.slot) !== pawn.entity || outOfBounds) {
-        p.teleport(spawnOrigin, PLAYER_SPAWN_ANGLES)
-        placedHeroEntityBySlot.set(p.slot, pawn.entity)
-      }
+    if (!conn.bot) {
+      humanCount += 1
     }
   }
   if (guardian.matchState === 'active') {
@@ -469,6 +494,19 @@ registerTdCommand('t5', (player: Player) => {
     player,
     opened ? 'Opened Legendary Armory (Tier 5).' : 'Closed Legendary Armory.',
   )
+})
+
+registerTdCommand('unstuck', (player: Player) => {
+  const pawn = player.pawn()
+  if (!pawn || pawn.hero <= 0 || pawn.health <= 0) {
+    toast(player, 'Spawn a living hero first.')
+    return
+  }
+  if (pawn.team !== DEFENDER_TEAM) {
+    player.changeTeam(DEFENDER_TEAM)
+  }
+  placeDefenderAtFrontline(player, `${pawn.entity}:${pawn.hero}`, true)
+  toast(player, 'Moved hero to active defense frontline!')
 })
 
 registerTdCommand('restarttd', () => {

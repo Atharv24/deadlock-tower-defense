@@ -353,7 +353,6 @@ export const TD_SERVER_CVARS: readonly (readonly [string, string | number])[] = 
   ['citadel_koth_enabled', 0],
   ['citadel_neutral_spawn_enabled', 0],
   ['citadel_spawn_practice_bots', 0],
-  ['citadel_start_players_on_zipline', 0],
   ['citadel_pregame_wait_duration', 1],
   ['citadel_active_lane', 4],
   ['citadel_trooper_spawn_enabled', 1],
@@ -1276,4 +1275,25 @@ export function evaluateLegendaryPurchase(opts: {
     }
   }
   return { ok: true, cost }
+}
+
+/** Returns a verified walkable Center Lane or Courtyard spawn origin for the active defense stage. */
+export function getDefenderStageSpawnOrigin(stage: DefenseStage): {
+  readonly x: number
+  readonly y: number
+  readonly z: number
+} {
+  switch (stage) {
+    case 'guardian':
+      return { x: 0, y: -1950, z: 390 }
+    case 'walker':
+      return { x: -1288, y: -3850, z: 384 }
+    case 'base_guardians':
+      return { x: -1280, y: -5850, z: 645 }
+    case 'shrines':
+      return { x: -1280, y: -6850, z: 645 }
+    case 'patron_stage1':
+    case 'patron_stage2':
+      return { x: -1280, y: -7200, z: 645 }
+  }
 }

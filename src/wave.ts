@@ -917,8 +917,10 @@ export class WaveManager {
   private collectLiveCreepSnapshots(): LiveCreepSnapshot[] {
     const out: LiveCreepSnapshot[] = []
     const troopers = findEntities('npc_trooper')
-    const neutrals = findEntities('npc_trooper_neutral')
-    const shamblers = findEntities('npc_necro_skele')
+    const neutrals =
+      this.spawnedWaveNeutrals.length > 0 ? findEntities('npc_trooper_neutral') : []
+    const shamblers =
+      this.spawnedWaveNeutrals.length > 0 ? findEntities('npc_necro_skele') : []
 
     for (const ent of [...troopers, ...neutrals, ...shamblers]) {
       const npc = new Npc(ent).read()

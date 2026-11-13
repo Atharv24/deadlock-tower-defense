@@ -44,6 +44,7 @@ import {
   formatItemDisplayTitle,
   getBossWaveSpec,
   getCreepScaleAuraModifier,
+  getDefenderStageSpawnOrigin,
   getStructureFortifyAuraSpec,
   getWaveCreepModifiers,
   getWaveNeutralSpawns,
@@ -1468,6 +1469,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       return p;
     };
     export const findEntitiesByName = (name) => {
+      globalThis.__mockModlock.entityScanStats.findByName += 1;
       if (name.includes('boss_rebel_t1_blue')) return globalThis.__mockModlock.npcStore.has(700) ? [700] : [];
       if (name.includes('rebels_t2_boss_blue')) return globalThis.__mockModlock.npcStore.has(701) ? [701] : [];
       if (name.includes('rebels_watcher_blue')) return [702, 703].filter((id) => globalThis.__mockModlock.npcStore.has(id));
@@ -1476,6 +1478,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       return [];
     };
     export const findEntities = (cls) => {
+      globalThis.__mockModlock.entityScanStats.findByClass += 1;
       if (cls === 'info_super_trooper_spawn') return [14020, 14325];
       if (cls === 'info_trooper_spawn') return [14053, 14315, 14318, 14319, 14291, 14051];
       if (cls === 'info_neutral_trooper_camp') return [];
@@ -1650,6 +1653,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     lifeStateStore,
     patronPhaseStore,
     heldModifierStates,
+    entityScanStats: { findByClass: 0, findByName: 0 },
   }
 
   registerHooks({
@@ -2318,6 +2322,35 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       mockVanillaMode = false
     }
   })
+
+  it('keeps Wave 0 on guardian stage when map structures have not spawned yet, and caches structure handles after discovery', () => {
+    npcStore.clear()
+    trooperIds.clear()
+    lifeStateStore.clear()
+
+    const guardian = new GuardianManager()
+    guardian.reset()
+    guardian.poll(0, 1)
+    assert.equal(guardian.currentStage, 'guardian')
+    assert.equal(guardian.getDefenderSpawnOrigin().y, -1950)
+
+    seedMockTeam2Structures()
+    guardian.poll(1, 2)
+    assert.equal(guardian.currentStage, 'guardian')
+    assert.ok(guardian.entity > 0)
+
+    const scanStats = (globalThis as { __mockModlock: { entityScanStats: { findByClass: number; findByName: number } } })
+      .__mockModlock.entityScanStats
+    scanStats.findByClass = 0
+    scanStats.findByName = 0
+
+    guardian.poll(2, 3)
+    assert.equal(
+      scanStats.findByClass + scanStats.findByName,
+      0,
+      `Expected 0 findEntities scans on cached Stages 1-4 poll, got ${scanStats.findByClass} class + ${scanStats.findByName} name scans`,
+    )
+  })
 })
 
 describe('Tier 5 — HUD Stability CVars & Legendary Armory', () => {
@@ -2328,9 +2361,33 @@ describe('Tier 5 — HUD Stability CVars & Legendary Armory', () => {
     assert.equal(cvarMap.get('citadel_koth_enabled'), 0)
     assert.equal(cvarMap.get('citadel_neutral_spawn_enabled'), 0)
     assert.equal(cvarMap.get('citadel_spawn_practice_bots'), 0)
-    assert.equal(cvarMap.get('citadel_start_players_on_zipline'), 0)
+    assert.equal(cvarMap.has('citadel_start_players_on_zipline'), false)
     assert.equal(cvarMap.has('citadel_hero_testing_enabled'), false)
     assert.equal(cvarMap.has('citadel_hero_testing_legendary_items'), false)
+  })
+
+  it('keeps all stage defender spawn origins in open lane or courtyard ahead of the Patron pit', () => {
+    const stages = [
+      'guardian',
+      'walker',
+      'base_guardians',
+      'shrines',
+      'patron_stage1',
+      'patron_stage2',
+    ] as const
+    for (const stage of stages) {
+      const origin = getDefenderStageSpawnOrigin(stage)
+      assert.ok(
+        origin.y >= -7300,
+        `Expected ${stage} spawn origin y=${origin.y} to remain ahead of Patron pit (>= -7300)`,
+      )
+    }
+    assert.equal(getDefenderStageSpawnOrigin('guardian').y, -1950)
+    assert.equal(getDefenderStageSpawnOrigin('walker').y, -3850)
+    assert.equal(getDefenderStageSpawnOrigin('base_guardians').y, -5850)
+    assert.equal(getDefenderStageSpawnOrigin('shrines').y, -6850)
+    assert.equal(getDefenderStageSpawnOrigin('patron_stage1').y, -7200)
+    assert.equal(getDefenderStageSpawnOrigin('patron_stage2').y, -7200)
   })
 
   it('frees HUD cursor when Legendary Armory is open without stealing cursor for Boons', () => {

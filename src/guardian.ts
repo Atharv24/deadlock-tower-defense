@@ -39,6 +39,7 @@ import {
   EAST_SHRINE_TARGETNAMES,
   evaluateAllStructuresRepair,
   evaluateBaseDefenseProgression,
+  getDefenderStageSpawnOrigin,
   getStructureFortifyAuraSpec,
   GUARDIAN_BASE_MAX_HP,
   GUARDIAN_ORIGIN,
@@ -137,6 +138,10 @@ export class GuardianManager {
   private baseGuardiansSeen = false
   private shrinesSeen = false
   private patronSeen = false
+  private sideWalkerEntities: number[] = []
+  private sideWalkersDiscovered = false
+  private sideBaseGuardianEntities: number[] = []
+  private sideBaseGuardiansDiscovered = false
 
   /** Resets all structure tracking for a new world or `/restarttd`. */
   reset(): void {
@@ -153,6 +158,10 @@ export class GuardianManager {
     this.baseGuardiansSeen = false
     this.shrinesSeen = false
     this.patronSeen = false
+    this.sideWalkerEntities = []
+    this.sideWalkersDiscovered = false
+    this.sideBaseGuardianEntities = []
+    this.sideBaseGuardiansDiscovered = false
 
     this.upgradeLevel = 0
     this.bonusMaxHp = 0
@@ -271,6 +280,10 @@ export class GuardianManager {
       }
       this.guardianSeen = true
       this.entity = 0
+      return 0
+    }
+    if (this.guardianSeen) {
+      return 0
     }
     for (const name of GUARDIAN_TARGETNAMES) {
       for (const candidate of findEntitiesByName(name)) {
@@ -309,20 +322,9 @@ export class GuardianManager {
     return GUARDIAN_ORIGIN
   }
 
-  /** Returns a safe Center Lane / Base spawn point behind the active defense stage. */
+  /** Returns a safe Center Lane / Courtyard spawn point behind the active defense stage. */
   getDefenderSpawnOrigin(): { readonly x: number; readonly y: number; readonly z: number } {
-    switch (this.currentStage) {
-      case 'guardian':
-        return { x: 0, y: -1950, z: 390 }
-      case 'walker':
-        return { x: -1288, y: -3850, z: 384 }
-      case 'base_guardians':
-        return { x: -1280, y: -5850, z: 645 }
-      case 'shrines':
-      case 'patron_stage1':
-      case 'patron_stage2':
-        return { x: -1280, y: -8650, z: 645 }
-    }
+    return getDefenderStageSpawnOrigin(this.currentStage)
   }
 
   /** Returns true if `entityHandle` is our Friendly Blue T1 Guardian. */
@@ -502,8 +504,8 @@ export class GuardianManager {
       this.guardianSeen = true
       this.health = gState.alive ? gState.health : 0
       this.maxHealth = Math.max(gTargetMax, gState.maxHealth)
-    } else if (!this.guardianSeen && currentWave === 0 && this.hasNativeCenterGuardianSpawner()) {
-      // PreGameWait has not yet fired `info_super_trooper_spawn` (14019); keep Stage 1 primed.
+    } else if (!this.guardianSeen && currentWave === 0) {
+      // PreGameWait / initial world load has not yet spawned `boss_rebel_t1_blue`; keep Stage 1 primed.
       this.health = gTargetMax
       this.maxHealth = gTargetMax
     } else {
@@ -532,12 +534,20 @@ export class GuardianManager {
       this.walkerMaxHealth = wTargetMax
     }
 
-    // Also register & fortify any alive side-lane Team 2 Walkers so all Team 2 Walkers stay synced.
-    for (const sideWalker of findEntities('npc_boss_tier2')) {
-      if (sideWalker !== this.walkerEntity && this.readEntityTeam(sideWalker) === DEFENDER_TEAM) {
-        this.syncSingleStructure(sideWalker, wTargetMax, WALKER_ORIGIN)
+    // Discover & cache side-lane Team 2 Walkers once, then read cached handles in O(1).
+    if (this.walkerSeen && !this.sideWalkersDiscovered) {
+      this.sideWalkersDiscovered = true
+      const sideWalkers: number[] = []
+      for (const sideWalker of findEntities('npc_boss_tier2')) {
+        if (sideWalker !== this.walkerEntity && this.readEntityTeam(sideWalker) === DEFENDER_TEAM) {
+          sideWalkers.push(sideWalker)
+        }
       }
+      this.sideWalkerEntities = sideWalkers
     }
+    this.sideWalkerEntities = this.sideWalkerEntities.filter(
+      (w) => this.syncSingleStructure(w, wTargetMax, WALKER_ORIGIN).alive,
+    )
 
     // 3. Stage 3: Twin Friendly Blue Base Guardians (`npc_barrack_boss`, `[PR#]rebels_watcher_blue`)
     const bgUnitMax =
@@ -548,12 +558,14 @@ export class GuardianManager {
         (e) => e > 0 && this.isEntityAlive(e),
       )
     }
-    const bgCandidates = this.locateBlueBaseGuardianCandidates()
-    if (bgCandidates.length > 0) {
-      this.baseGuardiansSeen = true
-      for (const cand of bgCandidates) {
-        if (!this.baseGuardianEntities.includes(cand)) {
-          this.baseGuardianEntities.push(cand)
+    if (!this.baseGuardiansSeen) {
+      const bgCandidates = this.locateBlueBaseGuardianCandidates()
+      if (bgCandidates.length > 0) {
+        this.baseGuardiansSeen = true
+        for (const cand of bgCandidates) {
+          if (!this.baseGuardianEntities.includes(cand)) {
+            this.baseGuardianEntities.push(cand)
+          }
         }
       }
     }
@@ -582,15 +594,23 @@ export class GuardianManager {
       this.baseGuardiansAliveCount = this.walkerHealth > 0 ? 2 : 0
     }
 
-    // Also register & fortify side-lane Team 2 Base Guardians (`rebels_watcher_yellow` / `purple`).
-    for (const sideBg of findEntities('npc_barrack_boss')) {
-      if (
-        !this.baseGuardianEntities.includes(sideBg) &&
-        this.readEntityTeam(sideBg) === DEFENDER_TEAM
-      ) {
-        this.syncSingleStructure(sideBg, bgUnitMax, BASE_GUARDIAN_ORIGIN)
+    // Discover & cache side-lane Team 2 Base Guardians once, then read cached handles in O(1).
+    if (this.baseGuardiansSeen && !this.sideBaseGuardiansDiscovered) {
+      this.sideBaseGuardiansDiscovered = true
+      const sideBgs: number[] = []
+      for (const sideBg of findEntities('npc_barrack_boss')) {
+        if (
+          !this.baseGuardianEntities.includes(sideBg) &&
+          this.readEntityTeam(sideBg) === DEFENDER_TEAM
+        ) {
+          sideBgs.push(sideBg)
+        }
       }
+      this.sideBaseGuardianEntities = sideBgs
     }
+    this.sideBaseGuardianEntities = this.sideBaseGuardianEntities.filter(
+      (bg) => this.syncSingleStructure(bg, bgUnitMax, BASE_GUARDIAN_ORIGIN).alive,
+    )
 
     // 4. Stage 4: Twin Amber Shrines (`destroyable_building`, East Purple & West Yellow)
     const shrineUnitMax = SHRINE_BASE_MAX_HP + this.upgradeLevel * SHRINE_UPGRADE_HP_BONUS
@@ -606,28 +626,30 @@ export class GuardianManager {
         this.westShrineEntity = 0
       }
     }
-    const eastCand = this.locateNamedTeam2Entity(EAST_SHRINE_TARGETNAMES)
-    const westCand = this.locateNamedTeam2Entity(WEST_SHRINE_TARGETNAMES)
-    if (eastCand > 0) {
-      this.eastShrineEntity = eastCand
-      this.shrinesSeen = true
-    }
-    if (westCand > 0) {
-      this.westShrineEntity = westCand
-      this.shrinesSeen = true
-    }
-    if (this.eastShrineEntity <= 0 && this.westShrineEntity <= 0 && !this.shrinesSeen) {
-      for (const bEnt of findEntities('destroyable_building')) {
-        if (this.readEntityTeam(bEnt) !== DEFENDER_TEAM || !this.isEntityAlive(bEnt)) continue
-        const p = this.readEntityPos(bEnt)
-        if (p && p.x >= -1000) {
-          if (this.eastShrineEntity <= 0) {
-            this.eastShrineEntity = bEnt
+    if (!this.shrinesSeen) {
+      const eastCand = this.locateNamedTeam2Entity(EAST_SHRINE_TARGETNAMES)
+      const westCand = this.locateNamedTeam2Entity(WEST_SHRINE_TARGETNAMES)
+      if (eastCand > 0) {
+        this.eastShrineEntity = eastCand
+        this.shrinesSeen = true
+      }
+      if (westCand > 0) {
+        this.westShrineEntity = westCand
+        this.shrinesSeen = true
+      }
+      if (this.eastShrineEntity <= 0 && this.westShrineEntity <= 0) {
+        for (const bEnt of findEntities('destroyable_building')) {
+          if (this.readEntityTeam(bEnt) !== DEFENDER_TEAM || !this.isEntityAlive(bEnt)) continue
+          const p = this.readEntityPos(bEnt)
+          if (p && p.x >= -1000) {
+            if (this.eastShrineEntity <= 0) {
+              this.eastShrineEntity = bEnt
+              this.shrinesSeen = true
+            }
+          } else if (this.westShrineEntity <= 0) {
+            this.westShrineEntity = bEnt
             this.shrinesSeen = true
           }
-        } else if (this.westShrineEntity <= 0) {
-          this.westShrineEntity = bEnt
-          this.shrinesSeen = true
         }
       }
     }
@@ -664,7 +686,15 @@ export class GuardianManager {
       this.patronEntity = pCand
       this.patronSeen = true
     }
-    this.patronCoreEntity = this.locatePatronCoreCandidate()
+    if (this.patronCoreEntity > 0 && !this.isEntityAlive(this.patronCoreEntity)) {
+      this.patronCoreEntity = 0
+    }
+    if (
+      this.patronCoreEntity <= 0 &&
+      (this.shrinesHealth <= 0 || this.patronPhase > 0 || this.patronReachedStage2)
+    ) {
+      this.patronCoreEntity = this.locatePatronCoreCandidate()
+    }
     if (this.patronCoreEntity > 0) {
       this.patronSeen = true
       this.friendlyStructureSet.add(this.patronCoreEntity)
@@ -863,7 +893,10 @@ export class GuardianManager {
         healBonus: Math.max(GUARDIAN_UPGRADE_HP_BONUS, extraHeal),
       })
     }
-    for (const wEnt of findEntities('npc_boss_tier2')) {
+    const walkerCandidates = this.sideWalkersDiscovered
+      ? [...(this.walkerEntity > 0 ? [this.walkerEntity] : []), ...this.sideWalkerEntities]
+      : findEntities('npc_boss_tier2')
+    for (const wEnt of walkerCandidates) {
       if (this.readEntityTeam(wEnt) === DEFENDER_TEAM && this.isEntityAlive(wEnt)) {
         upgradeEntries.push({
           ent: wEnt,
@@ -872,7 +905,10 @@ export class GuardianManager {
         })
       }
     }
-    for (const bgEnt of findEntities('npc_barrack_boss')) {
+    const bgCandidates = this.sideBaseGuardiansDiscovered
+      ? [...this.baseGuardianEntities, ...this.sideBaseGuardianEntities]
+      : findEntities('npc_barrack_boss')
+    for (const bgEnt of bgCandidates) {
       if (this.readEntityTeam(bgEnt) === DEFENDER_TEAM && this.isEntityAlive(bgEnt)) {
         upgradeEntries.push({
           ent: bgEnt,
@@ -971,7 +1007,10 @@ export class GuardianManager {
         this.upgradeLevel * PATRON_UPGRADE_HP_BONUS,
     )
     // Include any alive side-lane Team 2 Walkers / Base Guardians if damaged
-    for (const wEnt of findEntities('npc_boss_tier2')) {
+    const walkerRepairList = this.sideWalkersDiscovered
+      ? this.sideWalkerEntities
+      : findEntities('npc_boss_tier2')
+    for (const wEnt of walkerRepairList) {
       if (this.readEntityTeam(wEnt) === DEFENDER_TEAM) {
         addCandidate(
           wEnt,
@@ -979,7 +1018,10 @@ export class GuardianManager {
         )
       }
     }
-    for (const bgEnt of findEntities('npc_barrack_boss')) {
+    const bgRepairList = this.sideBaseGuardiansDiscovered
+      ? this.sideBaseGuardianEntities
+      : findEntities('npc_barrack_boss')
+    for (const bgEnt of bgRepairList) {
       if (this.readEntityTeam(bgEnt) === DEFENDER_TEAM) {
         addCandidate(
           bgEnt,
@@ -1114,6 +1156,10 @@ export class GuardianManager {
       }
       this.walkerSeen = true
       this.walkerEntity = 0
+      return 0
+    }
+    if (this.walkerSeen) {
+      return 0
     }
     const byName = this.locateNamedTeam2Entity(WALKER_TARGETNAMES)
     if (byName > 0) {
@@ -1165,6 +1211,10 @@ export class GuardianManager {
       }
       this.patronSeen = true
       this.patronEntity = 0
+      return 0
+    }
+    if (this.patronSeen) {
+      return 0
     }
     for (const h of findEntities('npc_boss_tier3')) {
       if (this.readEntityTeam(h) === DEFENDER_TEAM && this.isEntityAlive(h)) {

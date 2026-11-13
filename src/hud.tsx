@@ -69,6 +69,7 @@ const LEGENDARY_ITEMS: readonly Item[] = items
 const connectedGenerations = new Map<number, number>()
 const spawnedHeroSlots = new Set<number>()
 const forceHeroPickerSlots = new Set<number>()
+const heroReselectSlots = new Set<number>()
 const legendaryShopSlots = new Set<number>()
 const pendingHeroPickUntil = new Map<number, number>()
 const heroSearchBySlot = new Map<number, string>()
@@ -82,9 +83,15 @@ export function resetHudTransientState(): void {
   pendingHeroPickUntil.clear()
   legendaryShopSlots.clear()
   forceHeroPickerSlots.clear()
+  heroReselectSlots.clear()
   lastCursorKeyBySlot.clear()
   lastHudSigBySlot.clear()
   lastHudSentAtBySlot.clear()
+}
+
+/** Returns and clears whether the player reselected a hero and needs fresh frontline placement. */
+export function consumeHeroReselectPlacementReset(slot: number): boolean {
+  return heroReselectSlots.delete(slot)
 }
 
 /** Opens the Panorama Hero Selection UI for a player (e.g. via `/hero`). */
@@ -119,6 +126,7 @@ export function selectDefenderHero(
 ): void {
   forceHeroPickerSlots.delete(player.slot)
   heroSearchBySlot.delete(player.slot)
+  heroReselectSlots.add(player.slot)
   pendingHeroPickUntil.set(player.slot, now + 6)
   lastHudSigBySlot.delete(player.slot)
   lastHudSentAtBySlot.delete(player.slot)

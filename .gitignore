@@ -1,18 +1,11 @@
-# Compiled VPKs and binary outputs
+# Modlock & Node build outputs
 build/
-backups/
-*.vpk
-*.vents_c
-*.vrman_c
-*.vmap_c
-*.mdmp
+node_modules/
+.modlock/
 
-# Large decompiled stock reference dump and external CLI binaries
+# Local reference dump, external CLI binaries, and crash dumps
 reference/
 tools/*.exe
 tools/*.dll
-
-# Modlock & Node build artifacts
-node_modules/
-.modlock/
-maps/*.vpk
+*.vpk
+*.mdmp
