@@ -212,7 +212,7 @@ export class GuardianManager {
   /** Returns true if stock `dl_midtown`'s Team 2 Center Lane T1 spawner (`14019`) is present. */
   hasNativeCenterGuardianSpawner(): boolean {
     for (const sp of findEntities('info_super_trooper_spawn')) {
-      const team = readField(sp, 'CBaseEntity', 'm_iTeamNum', 'int32')
+      const team = readField(sp, 'CBaseEntity', 'm_iTeamNum', 'uint8')
       const lane = readField(sp, 'CInfoTrooperBossSpawn', 'm_iLane', 'int32')
       const reinf = readField(sp, 'CInfoTrooperBossSpawn', 'm_bReinforcementsOnly', 'bool')
       if (team === DEFENDER_TEAM && lane === 4 && reinf !== true) {
@@ -703,7 +703,7 @@ export class GuardianManager {
     if (this.patronEntity > 0 || this.patronCoreEntity > 0) {
       if (this.patronEntity > 0) {
         this.friendlyStructureSet.add(this.patronEntity)
-        const rawPhase = readField(this.patronEntity, 'CNPC_Boss_Tier3', 'm_ePhase', 'int32')
+        const rawPhase = readField(this.patronEntity, 'CNPC_Boss_Tier3', 'm_ePhase', 'uint32')
         if (typeof rawPhase === 'number') {
           this.patronPhase = rawPhase
         }
@@ -1262,7 +1262,7 @@ export class GuardianManager {
   private readEntityTeam(ent: number): number | undefined {
     const npc = new Npc(ent).read()
     if (npc) return npc.team
-    const team = readField(ent, 'CBaseEntity', 'm_iTeamNum', 'int32')
+    const team = readField(ent, 'CBaseEntity', 'm_iTeamNum', 'uint8')
     return typeof team === 'number' ? team : undefined
   }
 

@@ -19,6 +19,7 @@ import {
   players,
   ProbeRun,
   readField,
+  serverCommand,
   spawnNpc,
 } from 'modlock'
 
@@ -146,13 +147,36 @@ export class TdProbe {
     if (neutralCamps.length > 0) {
       return `expected 0 static info_neutral_trooper_camp entities, found ${neutralCamps.length}`
     }
-    const centerEnemyTrooperSpawns = findEntities('info_trooper_spawn').filter((sp) => {
-      const team = readField(sp, 'CBaseEntity', 'm_iTeamNum', 'int32')
+    const allTrooperSpawns = findEntities('info_trooper_spawn')
+    const centerEnemyTrooperSpawns = allTrooperSpawns.filter((sp) => {
+      const team = readField(sp, 'CBaseEntity', 'm_iTeamNum', 'uint8')
       const lane = readField(sp, 'CInfoTrooperSpawn', 'm_iLane', 'int32')
       return team === 3 && lane === 4
     })
     if (centerEnemyTrooperSpawns.length < 4) {
       return `expected >= 4 Enemy Center Lane info_trooper_spawn entities, found ${centerEnemyTrooperSpawns.length}`
+    }
+    const friendlyCenterTrooperSpawns = allTrooperSpawns.filter((sp) => {
+      const team = readField(sp, 'CBaseEntity', 'm_iTeamNum', 'uint8')
+      const lane = readField(sp, 'CInfoTrooperSpawn', 'm_iLane', 'int32')
+      return team === 2 && lane === 4
+    })
+    if (friendlyCenterTrooperSpawns.length === 0) {
+      return 'expected Team 2 Lane 4 info_trooper_spawn entities to keep m_iLane=4 so CInfoTrooperBossSpawn never divides by zero, found 0'
+    }
+    for (const sp of friendlyCenterTrooperSpawns) {
+      if (readField(sp, 'CInfoTrooperSpawn', 'm_bDisableZiplining', 'bool') !== true) {
+        return `expected Team 2 Lane 4 spawner ${sp} to have m_bDisableZiplining=true`
+      }
+    }
+    const teamManagers = findEntities('citadel_team_manager')
+    for (const tm of teamManagers) {
+      if (readField(tm, 'CBaseEntity', 'm_iTeamNum', 'uint8') === 2) {
+        const unlocked = readField(tm, 'CCitadelTeam', 'm_nFlexSlotsUnlocked', 'uint16')
+        if (typeof unlocked === 'number' && unlocked <= 0) {
+          return `expected Team 2 Flex Slots unlocked (> 0), got ${unlocked}`
+        }
+      }
     }
     log(
       `Probe: verified all 5 Base Defense tiers (Guardian=${guardianEnt}, Walker=${guardian.walkerEntity}, BaseGuardians=${guardian.baseGuardianEntities.length}, Shrines=2, Patron=${guardian.patronEntity} phase=${guardian.patronPhase})`,
@@ -502,7 +526,7 @@ export class TdProbe {
       'm_flScale',
       'float32',
     )
-    if (b10.currentMaxHp < 5500 || b10.currentMaxHp <= b5.currentMaxHp) {
+    if (b10.currentMaxHp < 3800 || b10.currentMaxHp <= b5.currentMaxHp) {
       return `Boss Max HP did not scale across waves: Wave 5=${b5.currentMaxHp}, Wave 10=${b10.currentMaxHp}`
     }
     if (typeof scale10 === 'number' && scale10 < 1.12) {
@@ -640,7 +664,9 @@ export class TdProbe {
     guardian: GuardianManager,
   ): boolean | string {
     // 1. Destroy Blue T1 Guardian and verify match stays ACTIVE and advances frontline to Blue Walker!
+    // Also exercise `citadel_spawn_trooper_wave` live to prove CInfoTrooperBossSpawn never divides by zero.
     if (this.progressionKilledGuardianAt === 0) {
+      serverCommand('citadel_spawn_trooper_wave')
       killEntity({ victim: guardian.entity })
       this.progressionKilledGuardianAt = now
       guardian.poll(waves.wave, now)
@@ -678,6 +704,16 @@ export class TdProbe {
     guardian.poll(waves.wave, now)
     if (guardian.walkerHealth >= walkerBefore) {
       return `Blue Walker (ent=${guardian.walkerEntity}) remained invulnerable (${walkerBefore} -> ${guardian.walkerHealth}) after Blue T1 Guardian died!`
+    }
+
+    // 3. Verify 0 living Team 2 friendly lane troopers remain after `citadel_spawn_trooper_wave` + purge.
+    waves.purgeFriendlyAndSideLaneTroopers()
+    for (const tr of findEntities('npc_trooper')) {
+      const team = readField(tr, 'CBaseEntity', 'm_iTeamNum', 'uint8')
+      const lifeState = readField(tr, 'CBaseEntity', 'm_lifeState', 'uint8')
+      if (team === 2 && (lifeState === undefined || lifeState === 0)) {
+        return `Found living Team 2 friendly npc_trooper (${tr}) despite citadel_spawn_combine_only 1 & purge`
+      }
     }
 
     log(

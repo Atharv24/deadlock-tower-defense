@@ -1,4 +1,4 @@
-# Deadlock Tower Defense (`deadlock-td`)
+# Hidden King's Defense (`deadlock-td`)
 
 Endless single-lane wave survival on `dl_midtown` built with [Modlock](https://modlock.dev) TypeScript & Panorama JSX.
 
@@ -47,12 +47,21 @@ Works in both Team Chat and All-Chat:
 
 - `/hero [name]` — Open Hero Selection UI (or switch hero directly)
 - `/unstuck` — Teleport hero to the active Center Lane frontline if stuck in spawn
-- `/legendary` or `/t5` — Open the Tier-5 Legendary Armory (`9,600` Souls per item)
+- `/legendary` or `/t5` — Open the Tier-5 Legendary Armory (`9,600` Souls per item, official Deadlock item names, all 12 item slots unlocked)
+- `/leaderboard` or `/lb` — Open the Hidden King's Defense Leaderboard (`All-Time`, `This Week`, `Today`)
 - `/repair` — Repair all living Team 2 structures (`300` Souls)
 - `/upgrade` — Fortify all Team 2 structures (+Max HP, +25% Dmg, +18% Atk Spd)
-- `/boon 1|2|3` — Pick one of 3 Major Boons after a Boss Wave
-- `/skipwave` — Trigger the next wave immediately
-- `/boss` — Jump to the next Boss Wave
-- `/souls [amount]` — Grant Souls for testing
-- `/granttome` — Grant a random Minor Tome for testing
-- `/restarttd` — Restart the Tower Defense match from Wave 1
+- `/boon 1|2|3` — Pick one of 3 Major Boons after a Boss Wave (scales with wave Tome multiplier)
+- `/tomescale [%|reset]` — View or override per-wave Tome scaling (`tome_scaling` setting in [`mod.json`](mod.json), default `+6%/wave`; custom overrides mark the run unranked)
+- `/skipwave` — Trigger the next wave immediately *(marks run unranked)*
+- `/boss` — Jump to the next Boss Wave *(marks run unranked)*
+- `/souls [amount]` — Grant Souls for testing *(marks run unranked)*
+- `/granttome` — Grant a random wave-scaled Minor Tome for testing *(marks run unranked)*
+- `/restarttd` — Restart Hidden King's Defense from Wave 1 as a fresh Ranked run
+
+### Gameplay Rules (`v0.6.4`)
+- **Ranked Leaderboards (`td.highest_wave`, `td.creeps_slain`):** Normal runs automatically report Highest Wave (tiebroken by Creep Last-Hits) and Creeps Slain to Hyperline on defeat, disconnect (Wave 2+), or `/restarttd` (Wave 2+). Using sandbox commands (`/skipwave`, `/boss`, `/souls`, `/granttome`, custom `/tomescale`) disqualifies the current run until `/restarttd`.
+- **Co-op Slots & Flex Slots:** All **12** Team 2 co-op player slots and all **12** item slots (4 Flex Slots unlocked immediately) stay open.
+- **Fixed Respawn:** Defenders respawn after a fixed **5 seconds** directly onto ground-checked Center Lane coordinates.
+- **Wave Scaling & Economy:** Enemy creep HP grows `+4%/wave`, creep damage `+3.5%/wave`, and Raid Boss damage scales `1.15x` (+`0.20x` per Boss wave) alongside configurable wave-scaled Tomes. Soul income from troopers, bounties, Boss kills, and Soul Cache Tomes is reduced `3x` while `Patron Warchest` Boss Boons award full Souls.
+- **Immediate Empty-Match End:** Matches automatically end and close the server instance as soon as the last human defender disconnects (after submitting any eligible Wave 2+ Ranked run).

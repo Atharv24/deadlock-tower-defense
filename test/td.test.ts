@@ -19,11 +19,16 @@ import {
 import {
   BASE_CREEP_HP,
   BASE_CREEP_SCALE,
+  BASE_WAVE_SOUL_REWARD,
+  BOARD_CREEPS_SLAIN,
+  BOARD_HIGHEST_WAVE,
+  BOSS_KILL_SOUL_REWARD,
   computeBossTier,
   computeCreepScaleAuraStep,
   computeGuardianRepair,
   computeGuardianUpgradeCost,
   computeStructureDamageMult,
+  computeTomeWaveMultiplier,
   computeVanillaEffectiveHpDamageScale,
   computeVanillaTomeBonuses,
   computeWaveCreepDamageMult,
@@ -39,9 +44,14 @@ import {
   evaluateBaseDefenseProgression,
   evaluateCreepHealthSync,
   evaluateCreepLastHit,
+  evaluateDefenderRespawnDue,
   evaluateEmptyServerShutdown,
+  evaluateLeaderboardSubmission,
   evaluateLegendaryPurchase,
   formatItemDisplayTitle,
+  formatScaledMajorBoonSubtitle,
+  formatScaledMinorTomeDescription,
+  formatTomeCountDisplay,
   getBossWaveSpec,
   getCreepScaleAuraModifier,
   getDefenderStageSpawnOrigin,
@@ -53,20 +63,28 @@ import {
   GUARDIAN_REPAIR_COST_SOULS,
   GUARDIAN_UPGRADE_BASE_COST_SOULS,
   GUARDIAN_UPGRADE_COST_STEP_SOULS,
+  HERO_RESPAWN_TIME_SECONDS,
   isBossWave,
+  isDefenderOutOfBoundsOrBelowMap,
   isExplodingZombieBaseMaxHp,
   isExplodingZombieIdentity,
   isWithinZombieDetonationRange,
+  ITEM_DISPLAY_TITLES,
   LEGENDARY_ITEM_COST_SOULS,
+  MAJOR_BOON_POOL,
+  MAX_COOP_DEFENDER_PLAYERS,
   MAX_CREEP_HP,
   MAX_CREEP_SCALE,
+  MAX_WAVE_SOUL_REWARD,
   MIN_SPAWN_INTERVAL_SECONDS,
   MINOR_TOME_POOL,
   parseSlashCommandLine,
+  parseTomeGrowthPerWave,
   pickThreeMajorBoons,
   selectUnscaledCreeps,
   serializeTdHandoff,
   shouldFreeHudCursor,
+  SOUL_CACHE_BASE_SOULS,
   TD_SERVER_CVARS,
   type TdHandoffState,
   TOME_DROP_CHANCE,
@@ -74,12 +92,12 @@ import {
 } from '../src/config.ts'
 
 describe('Tier 1 — Wave Scaling & Boss Wave Math', () => {
-  it('starts Wave 1 at BASE_CREEP_HP (200) and scales smoothly (+16%/wave) up to MAX_CREEP_HP cap', () => {
+  it('starts Wave 1 at BASE_CREEP_HP (200) and scales smoothly (+4%/wave) up to MAX_CREEP_HP cap', () => {
     assert.equal(computeWaveCreepHp(1), BASE_CREEP_HP)
     assert.equal(computeWaveCreepHp(1), 200)
 
     let prevHp = computeWaveCreepHp(1)
-    for (let w = 2; w <= 90; w++) {
+    for (let w = 2; w <= 265; w++) {
       const hp = computeWaveCreepHp(w)
       assert.ok(
         hp >= prevHp,
@@ -88,10 +106,10 @@ describe('Tier 1 — Wave Scaling & Boss Wave Math', () => {
       prevHp = hp
     }
 
-    // Halved growth curve: Wave 5 ~362 HP, Wave 10 ~761 HP, Wave 15 ~1,597 HP
-    assert.ok(computeWaveCreepHp(5) >= 350 && computeWaveCreepHp(5) <= 400)
-    assert.ok(computeWaveCreepHp(10) >= 740 && computeWaveCreepHp(10) <= 800)
-    assert.equal(computeWaveCreepHp(90), MAX_CREEP_HP)
+    // +4%/wave creep HP curve: Wave 5 ~234 HP, Wave 10 ~285 HP
+    assert.ok(computeWaveCreepHp(5) >= 230 && computeWaveCreepHp(5) <= 240)
+    assert.ok(computeWaveCreepHp(10) >= 280 && computeWaveCreepHp(10) <= 290)
+    assert.equal(computeWaveCreepHp(265), MAX_CREEP_HP)
   })
 
   it('maps Waves 1..90+ onto VData creep modifier tiers 1..10', () => {
@@ -130,7 +148,8 @@ describe('Tier 1 — Wave Scaling & Boss Wave Math', () => {
     assert.equal(spec15.tier, 3)
     assert.equal(spec15.modifier, 'td_boss_hero_stats_3')
     assert.equal(spec15.targetScale, 1.65)
-    assert.ok(spec15.bonusHp > 7500)
+    assert.equal(spec15.bonusHp, 5500)
+    assert.equal(spec15.damageMult, 1.55)
     assert.equal(spec25.targetScale, 1.95)
     assert.equal(spec30.endlessBoostStacks, 1)
     assert.equal(spec30.extraSizeStacks, 1)
@@ -148,10 +167,12 @@ describe('Tier 1 — Wave Scaling & Boss Wave Math', () => {
     assert.equal(computeWaveCreepDamageMult(1), 1)
     assert.equal(computeWaveCreepScale(1), BASE_CREEP_SCALE)
     assert.equal(computeWaveSpawnIntervalSeconds(1), 20)
-    assert.equal(computeWaveSoulReward(1), 150)
+    assert.equal(computeWaveSoulReward(1), BASE_WAVE_SOUL_REWARD)
+    assert.equal(computeWaveSoulReward(10), 125)
+    assert.equal(computeWaveSoulReward(500), MAX_WAVE_SOUL_REWARD)
 
     assert.ok(computeWaveCreepDamageMult(10) > computeWaveCreepDamageMult(5))
-    assert.ok(computeWaveCreepDamageMult(20) > 1.8)
+    assert.ok(computeWaveCreepDamageMult(20) > 1.9 && computeWaveCreepDamageMult(20) < 1.95)
 
     assert.ok(computeWaveCreepScale(10) > computeWaveCreepScale(1))
     assert.equal(computeWaveCreepScale(60), MAX_CREEP_SCALE)
@@ -168,6 +189,13 @@ describe('Tier 1 — Wave Scaling & Boss Wave Math', () => {
     assert.equal(cvarMap.get('citadel_trooper_squad_size'), ZIPLINE_SQUAD_SIZE)
     assert.equal(cvarMap.get('citadel_trooper_health_mult_gametime'), 9999)
     assert.equal(cvarMap.get('citadel_pregame_wait_duration'), 1)
+    assert.equal(cvarMap.get('citadel_trooper_gold_reward'), 50)
+    assert.equal(cvarMap.get('citadel_trooper_gold_reward_bonus_per_minute'), 33)
+    assert.equal(cvarMap.get('citadel_player_gold_reward_min'), 67)
+    assert.equal(cvarMap.get('citadel_player_gold_reward_max'), 733)
+    assert.equal(cvarMap.get('citadel_player_gold_reward_first_kill_bonus'), 42)
+    assert.equal(MINOR_TOME_POOL.find((t) => t.id === 'soul_jackpot')?.amount, SOUL_CACHE_BASE_SOULS)
+    assert.equal(MAJOR_BOON_POOL.find((b) => b.id === 'warchest')?.bonusSouls, 1200)
     assert.equal(cvarMap.has('citadel_hero_testing_legendary_items'), false)
     assert.equal(cvarMap.has('citadel_hero_testing_enabled'), false)
     assert.equal(cvarMap.has('citadel_coop_sandbox'), false)
@@ -483,8 +511,8 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
     assert.equal(computeVanillaEffectiveHpDamageScale(700, 700), 0.5)
   })
 
-  it('auto-quits server 30s after last human disconnects, ignoring cold startup and cancelling on reconnect', () => {
-    assert.equal(EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS, 30)
+  it('auto-quits server immediately when last human disconnects, ignoring cold startup and supporting optional delay', () => {
+    assert.equal(EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS, 0)
 
     let state: EmptyServerWatchState = {
       hasSeenHuman: false,
@@ -503,37 +531,45 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
     assert.equal(joined.nextState.hasSeenHuman, true)
     assert.equal(joined.nextState.emptySinceSeconds, undefined)
 
-    // Human disconnects at t=100s -> starts 30s countdown
-    const leftStart = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false)
-    assert.equal(leftStart.shouldQuit, false)
-    assert.equal(leftStart.nextState.emptySinceSeconds, 100)
+    // Probe mode bypasses shutdown
+    const probeCheck = evaluateEmptyServerShutdown(joined.nextState, 0, 100, true)
+    assert.equal(probeCheck.shouldQuit, false)
 
-    // At t=120s (20s elapsed), human reconnects -> cancels countdown
-    const reconnected = evaluateEmptyServerShutdown(leftStart.nextState, 1, 120, false)
+    // Default delay (0s): last human disconnect at t=100s triggers quit immediately & idempotently
+    const immediateQuit = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false)
+    assert.equal(immediateQuit.shouldQuit, true)
+    assert.equal(immediateQuit.nextState.quitIssued, true)
+
+    const afterImmediateQuit = evaluateEmptyServerShutdown(
+      immediateQuit.nextState,
+      0,
+      101,
+      false,
+    )
+    assert.equal(afterImmediateQuit.shouldQuit, false)
+
+    // Optional custom delay (30s): starts countdown, cancels on reconnect, fires at 30s
+    const delayedStart = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false, 30)
+    assert.equal(delayedStart.shouldQuit, false)
+    assert.equal(delayedStart.nextState.emptySinceSeconds, 100)
+
+    const reconnected = evaluateEmptyServerShutdown(delayedStart.nextState, 1, 120, false, 30)
     assert.equal(reconnected.shouldQuit, false)
     assert.equal(reconnected.nextState.emptySinceSeconds, undefined)
 
-    // Human disconnects again at t=200s
-    const leftAgain = evaluateEmptyServerShutdown(reconnected.nextState, 0, 200, false)
-    assert.equal(leftAgain.shouldQuit, false)
-    assert.equal(leftAgain.nextState.emptySinceSeconds, 200)
+    const delayedAgain = evaluateEmptyServerShutdown(reconnected.nextState, 0, 200, false, 30)
+    assert.equal(delayedAgain.shouldQuit, false)
+    assert.equal(delayedAgain.nextState.emptySinceSeconds, 200)
 
-    // Probe mode bypasses shutdown
-    const probeCheck = evaluateEmptyServerShutdown(leftAgain.nextState, 0, 250, true)
-    assert.equal(probeCheck.shouldQuit, false)
-
-    // At t=229s (29s elapsed) -> still waiting
-    const at29s = evaluateEmptyServerShutdown(leftAgain.nextState, 0, 229, false)
+    const at29s = evaluateEmptyServerShutdown(delayedAgain.nextState, 0, 229, false, 30)
     assert.equal(at29s.shouldQuit, false)
 
-    // At t=230s (30s elapsed) -> triggers quit exactly once!
-    const at30s = evaluateEmptyServerShutdown(at29s.nextState, 0, 230, false)
+    const at30s = evaluateEmptyServerShutdown(at29s.nextState, 0, 230, false, 30)
     assert.equal(at30s.shouldQuit, true)
     assert.equal(at30s.nextState.quitIssued, true)
 
-    // Subsequent frames do not re-issue quit
-    const afterQuit = evaluateEmptyServerShutdown(at30s.nextState, 0, 231, false)
-    assert.equal(afterQuit.shouldQuit, false)
+    const afterDelayedQuit = evaluateEmptyServerShutdown(at30s.nextState, 0, 231, false, 30)
+    assert.equal(afterDelayedQuit.shouldQuit, false)
   })
 })
 
@@ -1102,11 +1138,25 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   const scaleStore = new Map<number, number>()
   const lifeStateStore = new Map<number, number>()
   const modelStore = new Map<number, string>()
+  const spawnerLaneStore = new Map<number, number>([
+    [14053, 4],
+    [14315, 4],
+    [14318, 4],
+    [14319, 4],
+    [14291, 4],
+    [14051, 1],
+  ])
+  const spawnerDisableZipStore = new Map<number, boolean>()
+  const teamFlexSlotsStore = new Map<number, number>([[710, 0]])
+  const mockSettings = new Map<string, string>()
   const trooperIds = new Set<number>()
   const neutralIds = new Set<number>()
   const necroSkeleIds = new Set<number>()
   const failedCustomModifiers: string[] = []
   const givenItems: Array<{ slot: number; item: string }> = []
+  const reportedScores: Array<{ slot: number; board: string; value: number; options: Record<string, unknown> }> = []
+  const mockBoardPages = new Map<string, unknown>()
+  const mockBotPlayers: Array<{ player: MockPlayer; name: string; bot: boolean; ready: boolean; steamId: bigint; generation: number; roles: string[] }> = []
   let mockVanillaMode = false
   let nextSpawnedEntityId = 2000
   let probePassed = false
@@ -1121,7 +1171,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     pawnEntity = 10
     health = 700
     maxHealth = 700
-    position = { x: 0, y: -1950, z: 390 }
+    position = { x: 0, y: -1950, z: 396 }
     eyeAngles = { pitch: 0, yaw: 90, roll: 0 }
     lastDrive?: {
       facing: { pitch: number; yaw: number; roll: number }
@@ -1184,8 +1234,16 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
         abilityUnlocks: 0,
       }
     }
-    setting(_k: string) {
-      return '20'
+    setting(k: string) {
+      if (k === 'wave_interval') return mockSettings.get('wave_interval') ?? '20'
+      if (k === 'tome_scaling') return mockSettings.get('tome_scaling') ?? '0.06'
+      if (k === 'hud_mode') return mockSettings.get('hud_mode') ?? 'full'
+      return mockSettings.get(k)
+    }
+    respawn() {
+      this.health = this.maxHealth
+      lifeStateStore.set(this.pawnEntity, 0)
+      return true
     }
     announce(_t: string, _m: string) {
       return true
@@ -1218,10 +1276,10 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
         scaleStore.set(this.pawnEntity, 1.2)
       } else if (mod.startsWith('td_boss_hero_stats_')) {
         const tier = Number(mod.replace('td_boss_hero_stats_', '')) || 1
-        this.maxHealth = 700 + [2500, 5500, 10000, 16000, 25000][tier - 1]
+        this.maxHealth = 700 + [1750, 3250, 5500, 8500, 13000][tier - 1]
         scaleStore.set(this.pawnEntity, [1.35, 1.5, 1.65, 1.8, 1.95][tier - 1])
       } else if (mod === 'td_boss_endless_boost') {
-        this.maxHealth += 3200
+        this.maxHealth += 1600
       } else if (mod === 'td_boss_size_step') {
         this.maxHealth = 700 + 25000
         scaleStore.set(this.pawnEntity, 2.05)
@@ -1455,9 +1513,20 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       building: 1n << 23n,
     };
     export const trace = () => undefined;
+    export const ground = (pt) => ({ x: pt.x, y: pt.y, z: pt.z - 12 });
     export const Npc = globalThis.__mockModlock.Npc;
     export const ProbeRun = globalThis.__mockModlock.ProbeRun;
-    export const players = () => [{ player: globalThis.__mockModlock.defenderPlayer, name: 'Defender', bot: false, ready: true, steamId: 1n, generation: 1, roles: [] }];
+    export const players = () => [
+      { player: globalThis.__mockModlock.defenderPlayer, name: 'Defender', bot: false, ready: true, steamId: 1n, generation: 1, roles: [] },
+      ...globalThis.__mockModlock.mockBotPlayers,
+    ];
+    export const reportScore = (player, board, value, options = {}) => {
+      globalThis.__mockModlock.reportedScores.push({ slot: player.slot, board, value, options });
+      return true;
+    };
+    export const readBoard = (board, read = {}) => {
+      return globalThis.__mockModlock.mockBoardPages.get(board + ':' + (read.window ?? 'allTime'));
+    };
     export const addBot = (opts) => {
       const ent = globalThis.__mockModlock.allocSpawnEntity();
       const p = new globalThis.__mockModlock.MockPlayer(2);
@@ -1491,6 +1560,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       if (cls === 'destroyable_building') return [704, 705].filter((id) => globalThis.__mockModlock.npcStore.has(id));
       if (cls === 'npc_boss_tier3') return globalThis.__mockModlock.npcStore.has(706) ? [706] : [];
       if (cls === 'npc_boss_tier3core') return [];
+      if (cls === 'citadel_team_manager') return [710];
       return [];
     };
     export const fireInput = (entity, input, value) => {
@@ -1549,18 +1619,37 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       const s = globalThis.__mockModlock.npcStore.get(entity);
       return s ? { position: s.position, facing: { pitch: 0, yaw: 270, roll: 0 }, velocity: { x: 0, y: 0, z: 0 } } : undefined;
     };
-    export const readField = (entity, cls, field) => {
+    export const readField = (entity, cls, field, type) => {
+      if (cls === 'CBaseEntity' && field === 'm_iTeamNum' && type !== 'uint8') {
+        throw new Error('Schema error: CBaseEntity.m_iTeamNum is smaller than its requested type ' + type);
+      }
+      if (cls === 'CBaseEntity' && field === 'm_lifeState' && type !== 'uint8') {
+        throw new Error('Schema error: CBaseEntity.m_lifeState is smaller than its requested type ' + type);
+      }
+      if (cls === 'CNPC_Boss_Tier3' && field === 'm_ePhase' && type !== 'uint32') {
+        throw new Error('Schema error: CNPC_Boss_Tier3.m_ePhase must be uint32, got ' + type);
+      }
+      if (cls === 'CCitadelTeam' && field === 'm_nFlexSlotsUnlocked' && type !== 'uint16') {
+        throw new Error('Schema error: CCitadelTeam.m_nFlexSlotsUnlocked must be uint16, got ' + type);
+      }
+      if (entity === 710) {
+        if (cls === 'CBaseEntity' && field === 'm_iTeamNum') return 2;
+        if (cls === 'CCitadelTeam' && field === 'm_nFlexSlotsUnlocked') return globalThis.__mockModlock.teamFlexSlotsStore.get(710) ?? 0;
+      }
+      if (cls === 'CInfoTrooperSpawn' && field === 'm_iLane') {
+        return globalThis.__mockModlock.spawnerLaneStore.get(entity);
+      }
+      if (cls === 'CInfoTrooperSpawn' && field === 'm_bDisableZiplining') {
+        return globalThis.__mockModlock.spawnerDisableZipStore.get(entity) ?? false;
+      }
       if ([14053, 14315, 14318, 14319].includes(entity)) {
         if (cls === 'CBaseEntity' && field === 'm_iTeamNum') return 3;
-        if (cls === 'CInfoTrooperSpawn' && field === 'm_iLane') return 4;
       }
       if (entity === 14291) {
         if (cls === 'CBaseEntity' && field === 'm_iTeamNum') return 2;
-        if (cls === 'CInfoTrooperSpawn' && field === 'm_iLane') return 4;
       }
       if (entity === 14051) {
         if (cls === 'CBaseEntity' && field === 'm_iTeamNum') return 3;
-        if (cls === 'CInfoTrooperSpawn' && field === 'm_iLane') return 1;
       }
       if (cls === 'CNPC_Boss_Tier3' && field === 'm_ePhase') {
         return globalThis.__mockModlock.patronPhaseStore.get(entity) ?? 0;
@@ -1582,7 +1671,17 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       }
       return undefined;
     };
-    export const writeField = (entity, cls, field, _type, val) => {
+    export const writeField = (entity, cls, field, type, val) => {
+      if (cls === 'CInfoTrooperSpawn' && field === 'm_iLane' && typeof val === 'number') {
+        globalThis.__mockModlock.spawnerLaneStore.set(entity, val);
+      }
+      if (cls === 'CInfoTrooperSpawn' && field === 'm_bDisableZiplining' && typeof val === 'boolean') {
+        globalThis.__mockModlock.spawnerDisableZipStore.set(entity, val);
+      }
+      if (cls === 'CCitadelTeam' && field === 'm_nFlexSlotsUnlocked' && typeof val === 'number') {
+        if (type !== 'uint16') throw new Error('Schema error: m_nFlexSlotsUnlocked must be uint16');
+        globalThis.__mockModlock.teamFlexSlotsStore.set(entity, val);
+      }
       if (cls === 'CGameSceneNode' && field === 'm_flScale' && typeof val === 'number') {
         globalThis.__mockModlock.scaleStore.set(entity, val);
       }
@@ -1652,7 +1751,14 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     scaleStore,
     lifeStateStore,
     patronPhaseStore,
+    spawnerLaneStore,
+    spawnerDisableZipStore,
+    teamFlexSlotsStore,
+    mockSettings,
     heldModifierStates,
+    reportedScores,
+    mockBoardPages,
+    mockBotPlayers,
     entityScanStats: { findByClass: 0, findByName: 0 },
   }
 
@@ -1683,6 +1789,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   })
 
   const { GuardianManager } = await import('../src/guardian.ts')
+  const { LeaderboardManager } = await import('../src/leaderboard.ts')
   const { WaveManager } = await import('../src/wave.ts')
   const { TomeManager } = await import('../src/tomes.ts')
   const { TdProbe } = await import('../src/probe.ts')
@@ -1697,6 +1804,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     guardian.reset()
     tomes.reset()
     waves.reset(0)
+    waves.configureWorldForSingleLaneDefense(guardian)
 
     for (let step = 1; step <= 80 && !probePassed; step++) {
       probe.tick(step * 0.25, waves, guardian, tomes)
@@ -1961,7 +2069,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     )
     assert.ok(botMock.lastDrive !== undefined, 'Expected Boss bot.drive(...) to be active immediately')
     assert.ok(botMock.position.y < 1200, 'Expected Boss to start marching south out of spawn')
-    assert.ok(boss.currentMaxHp >= 6500)
+    assert.ok(boss.currentMaxHp >= 3950)
     assert.equal(boss.currentHp, boss.currentMaxHp)
 
     // Verify Defender damaging Boss (non-lethal) records provocation aggro WITHOUT granting Boon yet
@@ -1981,7 +2089,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.equal(boss.ai.provokedUntil, 60)
     assert.deepEqual(awardedMilestoneWaves, [])
 
-    // Verify Boss outgoing damage is scaled in modifyIncomingDamage
+    // Verify Boss outgoing damage is scaled in modifyIncomingDamage (Wave 10 doubled = 1.35x)
     const bossHit = waves.modifyIncomingDamage({
       victim: 10,
       attacker: 999,
@@ -1993,7 +2101,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     })
     assert.equal(bossHit?.amount, 135)
 
-    // Verify lethal hit on Boss retires Boss AND awards Wave 10 Major Boon + 400 Souls (#13)!
+    // Verify lethal hit on Boss retires Boss AND awards Wave 10 Major Boon + 133 Souls (#13)!
     const soulsBeforeKill = defenderPlayer.souls
     waves.handleCreepPostDamage(
       {
@@ -2009,7 +2117,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     )
     assert.equal(waves.activeBosses.length, 0)
     assert.deepEqual(awardedMilestoneWaves, [10])
-    assert.equal(defenderPlayer.souls, soulsBeforeKill + 400)
+    assert.equal(defenderPlayer.souls, soulsBeforeKill + BOSS_KILL_SOUL_REWARD)
   })
 
   it('keeps melee and ranged lane troopers fighting normally in v0.6.0 (Graves Zombies & wave neutrals disabled, #20)', () => {
@@ -2259,7 +2367,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
         givenItems.some((g) => g.item === 'upgrade_colossus'),
         'Expected stock Boss items to be granted',
       )
-      assert.ok(boss.currentMaxHp >= 3500, `Expected Wave 5 Boss effective Max HP >= 3500, got ${boss.currentMaxHp}`)
+      assert.ok(boss.currentMaxHp >= 2700, `Expected Wave 5 Boss effective Max HP >= 2700, got ${boss.currentMaxHp}`)
 
       // Grant multiple Tomes & Fortifications -> ZERO failed custom modifier calls!
       for (let i = 0; i < 6; i++) {
@@ -2351,6 +2459,182 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       `Expected 0 findEntities scans on cached Stages 1-4 poll, got ${scanStats.findByClass} class + ${scanStats.findByName} name scans`,
     )
   })
+
+  it('unlocks all Team 2 Flex Slots on world configure (#29)', () => {
+    executedServerCommands.length = 0
+    teamFlexSlotsStore.set(710, 0)
+    const guardian = new GuardianManager()
+    const waves = new WaveManager()
+    guardian.reset()
+    waves.reset(0)
+    waves.configureWorldForSingleLaneDefense(guardian)
+
+    assert.ok(executedServerCommands.includes('citadel_unlock_flex_slots'))
+    assert.ok(executedServerCommands.includes('citadel_unlock_flex_slots 2'))
+    assert.equal(teamFlexSlotsStore.get(710), 15)
+  })
+
+  it('disables Team 2 trooper spawners without mutating m_iLane (avoiding 0xC0000094 divide-by-zero) and removes friendly 1/1 zipline creeps (#27)', () => {
+    npcStore.clear()
+    trooperIds.clear()
+    lifeStateStore.clear()
+    spawnerLaneStore.set(14291, 4) // Team 2 Lane 4 spawner
+    spawnerLaneStore.set(14051, 1) // Team 3 side lane spawner
+    spawnerLaneStore.set(14053, 4) // Team 3 Center lane spawner
+    spawnerDisableZipStore.clear()
+
+    const guardian = new GuardianManager()
+    const waves = new WaveManager()
+    guardian.reset()
+    waves.reset(0)
+    waves.configureWorldForSingleLaneDefense(guardian)
+
+    assert.equal(spawnerLaneStore.get(14291), 4)
+    assert.equal(spawnerDisableZipStore.get(14291), true)
+    assert.equal(spawnerLaneStore.get(14051), 1)
+    assert.equal(spawnerDisableZipStore.get(14051), true)
+    assert.equal(spawnerLaneStore.get(14053), 4)
+
+    // Simulate a Team 2 friendly trooper (880) spawning with 1/1 HP on the Blue zipline
+    // alongside an enemy Team 3 trooper (881) also with 1/1 HP on the Amber zipline
+    trooperIds.add(880)
+    trooperIds.add(881)
+    lifeStateStore.set(880, 0)
+    lifeStateStore.set(881, 0)
+    npcStore.set(880, {
+      health: 1,
+      maxHealth: 1,
+      team: 2,
+      position: { x: -400, y: -5000, z: 980 },
+    })
+    npcStore.set(881, {
+      health: 1,
+      maxHealth: 1,
+      team: 3,
+      position: { x: 0, y: 2200, z: 1020 },
+    })
+
+    const removed = waves.purgeFriendlyAndSideLaneTroopers()
+    assert.equal(removed, 1)
+    assert.equal(npcStore.has(880), false, 'Friendly 1/1 zipline trooper must be removed before riding rope')
+    assert.equal(npcStore.has(881), true, 'Enemy 1/1 zipline trooper must remain intact until landing')
+  })
+
+  it('scales Minor Tome and Major Boon rewards with wave number and respects configurable tome_scaling (#30)', () => {
+    const tomes = new TomeManager()
+    const guardian = new GuardianManager()
+    guardian.reset()
+    tomes.reset()
+    mockSettings.set('tome_scaling', '0.10')
+
+    // Wave 1 (mult = 1.0x): +1 Weapon stack
+    defenderPlayer.souls = 1000
+    defenderPlayer.ap = 0
+    tomes.applyMinorTome(defenderPlayer as never, MINOR_TOME_POOL[1], 1)
+    assert.equal(tomes.getTally(defenderPlayer.slot).weapon, 1)
+
+    // Wave 21 at +10%/wave (mult = 3.0x): +3 Weapon stacks, +750 Souls, +3 AP!
+    tomes.applyMinorTome(defenderPlayer as never, MINOR_TOME_POOL[1], 21)
+    assert.equal(tomes.getTally(defenderPlayer.slot).weapon, 4)
+
+    tomes.applyMinorTome(defenderPlayer as never, MINOR_TOME_POOL[8], 21) // Soul Cache (83 * 3 = 249)
+    assert.equal(defenderPlayer.souls, 1249)
+
+    tomes.applyMinorTome(defenderPlayer as never, MINOR_TOME_POOL[7], 21) // +1 AP Tome (1 * 3 = 3)
+    assert.equal(defenderPlayer.ap, 3)
+
+    // Verify override '/tomescale 0' disables scaling back to 1.0x
+    tomes.setGrowthRateOverride(0)
+    assert.equal(tomes.getWaveMultiplier(40), 1)
+    tomes.applyMinorTome(defenderPlayer as never, MINOR_TOME_POOL[8], 40)
+    assert.equal(defenderPlayer.souls, 1332)
+
+    // Verify Major Boon picks up Wave multiplier and scaled subtitle formatting
+    tomes.setGrowthRateOverride(undefined)
+    tomes.offerMajorBoonForWave(11) // 1 + 10 * 0.10 = 2.0x
+    assert.equal(tomes.pendingBoonWave.get(defenderPlayer.slot), 11)
+    const pendingBoon = tomes.pendingBoonChoices.get(defenderPlayer.slot)![0]
+    const expectedBoonStacks = pendingBoon.modifiers.reduce((sum, m) => sum + m.stacks * 2, 0)
+
+    const totalBeforeBoon = tomes.getTotalTomes(defenderPlayer.slot)
+    tomes.chooseMajorBoon(defenderPlayer as never, 0, guardian, 11)
+    assert.equal(tomes.getTotalTomes(defenderPlayer.slot), totalBeforeBoon + expectedBoonStacks)
+    mockSettings.set('tome_scaling', '0.06')
+  })
+
+  it('tracks ranked runs cleanly, skips bots, blocks sandbox runs, and caches board reads', () => {
+    reportedScores.length = 0
+    mockBoardPages.clear()
+    mockBotPlayers.length = 0
+    mockBotPlayers.push({
+      player: new MockPlayer(5),
+      name: 'BossBot',
+      bot: true,
+      ready: true,
+      steamId: 99n,
+      generation: 1,
+      roles: [],
+    })
+
+    const leaderboard = new LeaderboardManager()
+    const tomes = new TomeManager()
+    tomes.reset()
+    for (let i = 0; i < 340; i++) {
+      tomes.playerKills.set(defenderPlayer.slot, i + 1)
+    }
+    tomes.playerKills.set(5, 50)
+
+    // 1. Ranked defeat on Wave 18 (340 kills) reports both boards once, skips bots, and deduplicates
+    const submittedFirst = leaderboard.submitRunForAllPlayers(18, tomes, 1)
+    assert.equal(submittedFirst, 1)
+    assert.equal(reportedScores.length, 2)
+    assert.deepEqual(reportedScores[0], {
+      slot: defenderPlayer.slot,
+      board: BOARD_HIGHEST_WAVE,
+      value: 18,
+      options: { tiebreak: -340, key: `${leaderboard.runId}:w:${defenderPlayer.slot}` },
+    })
+    assert.deepEqual(reportedScores[1], {
+      slot: defenderPlayer.slot,
+      board: BOARD_CREEPS_SLAIN,
+      value: 340,
+      options: { key: `${leaderboard.runId}:c:${defenderPlayer.slot}` },
+    })
+    assert.equal(leaderboard.sessionBestBySlot.get(defenderPlayer.slot)?.wave, 18)
+
+    // Second submission in the same run must be deduplicated
+    assert.equal(leaderboard.submitRunForAllPlayers(18, tomes, 1), 0)
+    assert.equal(reportedScores.length, 2)
+
+    // 2. Sandbox disqualification prevents submission until startNewRun()
+    leaderboard.startNewRun()
+    assert.equal(leaderboard.markUnranked('/souls'), true)
+    assert.equal(leaderboard.markUnranked('/skipwave'), false)
+    assert.equal(leaderboard.submitRunForAllPlayers(25, tomes, 1), 0)
+    assert.equal(reportedScores.length, 2)
+
+    leaderboard.startNewRun()
+    assert.equal(leaderboard.rankedEligible, true)
+    assert.equal(leaderboard.submitRunForPlayer(defenderPlayer as never, 20, 0, 1), true)
+    // With 0 kills, only td.highest_wave is reported (since td.creeps_slain has lowest=1)
+    assert.equal(reportedScores.length, 3)
+    assert.equal(reportedScores[2].board, BOARD_HIGHEST_WAVE)
+    assert.equal(reportedScores[2].value, 20)
+
+    // 3. Board reads handle BigInt steamId rows and respect cache TTL
+    mockBoardPages.set(`${BOARD_HIGHEST_WAVE}:allTime`, {
+      rows: [{ rank: 1, steamId: 76561198000000001n, name: 'Defender', value: 20, tiebreak: -340, count: 1 }],
+      player: { rank: 1, steamId: 76561198000000001n, name: 'Defender', value: 20, tiebreak: -340, count: 1 },
+      loading: false,
+    })
+    const cached1 = leaderboard.getBoardSnapshot(defenderPlayer as never, 'allTime', 100)
+    assert.equal(cached1?.rows[0].value, 20)
+    mockBoardPages.delete(`${BOARD_HIGHEST_WAVE}:allTime`)
+    const cached2 = leaderboard.getBoardSnapshot(defenderPlayer as never, 'allTime', 100.5)
+    assert.equal(cached2?.rows[0].value, 20)
+
+    mockBotPlayers.length = 0
+  })
 })
 
 describe('Tier 5 — HUD Stability CVars & Legendary Armory', () => {
@@ -2409,14 +2693,29 @@ describe('Tier 5 — HUD Stability CVars & Legendary Armory', () => {
       }),
       true,
     )
+    assert.equal(
+      shouldFreeHudCursor({
+        needsHeroPick: false,
+        hasPendingBoons: false,
+        legendaryShopOpen: false,
+        leaderboardOpen: true,
+        matchState: 'active',
+      }),
+      true,
+    )
   })
 
-  it('formats Tier-5 Legendary item titles and validates Soul/ownership rules', () => {
-    assert.equal(formatItemDisplayTitle('upgrade_eldritch_shot'), 'Eldritch Shot')
-    assert.equal(
-      formatItemDisplayTitle('upgrade_omnicharge_pendant'),
-      'Omnicharge Pendant',
-    )
+  it('formats official Tier-5 Legendary item titles and validates Soul/ownership rules (#26)', () => {
+    assert.equal(formatItemDisplayTitle('upgrade_celestial_guidance'), 'Celestial Blessing')
+    assert.equal(formatItemDisplayTitle('upgrade_eldritch_shot'), 'Haunting Shot')
+    assert.equal(formatItemDisplayTitle('upgrade_icarus_wings'), 'Seraphim Wings')
+    assert.equal(formatItemDisplayTitle('upgrade_infinite_rounds'), 'Infinite Rounds')
+    assert.equal(formatItemDisplayTitle('upgrade_mystical_piano'), 'Mystical Piano')
+    assert.equal(formatItemDisplayTitle('upgrade_nullification_aura'), 'Nullification Burst')
+    assert.equal(formatItemDisplayTitle('upgrade_omnicharge_pendant'), 'Omnicharge Signet')
+    assert.equal(formatItemDisplayTitle('upgrade_prism_blast'), 'Prism Blast')
+    assert.equal(formatItemDisplayTitle('upgrade_shrink_ray'), 'Shrink Ray')
+    assert.equal(Object.keys(ITEM_DISPLAY_TITLES).length, 9)
 
     const dead = evaluateLegendaryPurchase({
       hasLivingHero: false,
@@ -2449,6 +2748,163 @@ describe('Tier 5 — HUD Stability CVars & Legendary Armory', () => {
       ownedItemNames: [],
     })
     assert.deepEqual(valid, { ok: true, cost: LEGENDARY_ITEM_COST_SOULS })
+  })
+})
+
+describe('Tier 6 — Playtest Fixes: 5s Respawn, Below-Map Recovery, 12 Slots & Scaled Tome Math (#25, #29, #30)', () => {
+  it('locks fixed 5s respawn timer & 12 co-op player slots in TD_SERVER_CVARS (#25, #29)', () => {
+    const cvarMap = new Map<string, string | number>(TD_SERVER_CVARS)
+    assert.equal(cvarMap.get('citadel_player_override_spawn_time'), HERO_RESPAWN_TIME_SECONDS)
+    assert.equal(cvarMap.get('citadel_player_spawn_time_max_respawn_time'), HERO_RESPAWN_TIME_SECONDS)
+    assert.equal(HERO_RESPAWN_TIME_SECONDS, 5)
+    assert.equal(cvarMap.get('sv_visiblemaxplayers'), MAX_COOP_DEFENDER_PLAYERS)
+    assert.equal(cvarMap.get('citadel_team_size'), MAX_COOP_DEFENDER_PLAYERS)
+    assert.equal(cvarMap.get('citadel_spawn_combine_only'), 1)
+    assert.equal(MAX_COOP_DEFENDER_PLAYERS, 12)
+  })
+
+  it('triggers respawn at exactly 5s and catches below-lane and below-courtyard underground positions (#25)', () => {
+    // Alive -> cleared state
+    const aliveEval = evaluateDefenderRespawnDue({
+      alive: true,
+      hasHero: true,
+      nowSeconds: 10,
+      diedAtSeconds: 4,
+      lastRespawnAttemptAt: undefined,
+    })
+    assert.equal(aliveEval.shouldCallRespawn, false)
+    assert.equal(aliveEval.nextDiedAtSeconds, undefined)
+
+    // Dies at t = 20 -> at 24.9s still waiting, at 25.0s fires respawn, then throttles 0.5s
+    const d0 = evaluateDefenderRespawnDue({
+      alive: false,
+      hasHero: true,
+      nowSeconds: 20,
+      diedAtSeconds: undefined,
+      lastRespawnAttemptAt: undefined,
+    })
+    assert.equal(d0.nextDiedAtSeconds, 20)
+    assert.equal(d0.shouldCallRespawn, false)
+
+    const dWait = evaluateDefenderRespawnDue({
+      alive: false,
+      hasHero: true,
+      nowSeconds: 24.9,
+      diedAtSeconds: d0.nextDiedAtSeconds,
+      lastRespawnAttemptAt: d0.nextLastRespawnAttemptAt,
+    })
+    assert.equal(dWait.shouldCallRespawn, false)
+
+    const dDue = evaluateDefenderRespawnDue({
+      alive: false,
+      hasHero: true,
+      nowSeconds: 25.0,
+      diedAtSeconds: dWait.nextDiedAtSeconds,
+      lastRespawnAttemptAt: dWait.nextLastRespawnAttemptAt,
+    })
+    assert.equal(dDue.shouldCallRespawn, true)
+    assert.equal(dDue.nextLastRespawnAttemptAt, 25.0)
+
+    const dThrottle = evaluateDefenderRespawnDue({
+      alive: false,
+      hasHero: true,
+      nowSeconds: 25.25,
+      diedAtSeconds: dDue.nextDiedAtSeconds,
+      lastRespawnAttemptAt: dDue.nextLastRespawnAttemptAt,
+    })
+    assert.equal(dThrottle.shouldCallRespawn, false)
+
+    // Playable Center Lane street, central staircase dip, Courtyard, and Patron Pit stay allowed
+    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: 0, y: -1950, z: 396 }), false)
+    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: -112, y: -296, z: 256 }), false)
+    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: -1280, y: -6850, z: 654 }), false)
+    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: -1280, y: -8034, z: 632 }), false)
+
+    // Below street / below Courtyard roof / negative map Z are immediately caught for rescue
+    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: 0, y: -1950, z: 120 }), true)
+    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: -1280, y: -7000, z: 420 }), true)
+    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: -1280, y: -10000, z: 600 }), true)
+  })
+
+  it('computes pure Tome wave multipliers and formats scaled Minor/Major labels (#30)', () => {
+    assert.equal(parseTomeGrowthPerWave(undefined), 0.06)
+    assert.equal(parseTomeGrowthPerWave('0'), 0)
+    assert.equal(parseTomeGrowthPerWave('0.10'), 0.1)
+    assert.equal(parseTomeGrowthPerWave('10'), 0.1)
+    assert.equal(computeTomeWaveMultiplier(1, 0.06), 1)
+    assert.equal(computeTomeWaveMultiplier(21, 0.05), 2)
+    assert.equal(computeTomeWaveMultiplier(43, 0.06), 3.52)
+    assert.equal(formatTomeCountDisplay(3), '3')
+    assert.equal(formatTomeCountDisplay(2.600001), '2.6')
+    assert.ok(formatScaledMajorBoonSubtitle(MAJOR_BOON_POOL[0], 2).length > 0)
+    assert.ok(formatScaledMinorTomeDescription(MINOR_TOME_POOL[0], 2).includes('+16 Spirit Power'))
+  })
+
+  it('evaluates leaderboard run eligibility and round-trips run state through TdHandoffState', () => {
+    assert.deepEqual(
+      evaluateLeaderboardSubmission({
+        wave: 24,
+        kills: 512,
+        rankedEligible: true,
+        isProbeMode: false,
+        alreadySubmitted: false,
+        minWave: 1,
+      }),
+      { shouldSubmit: true, waveScore: 24, tiebreak: -512, creepsScore: 512 },
+    )
+    assert.deepEqual(
+      evaluateLeaderboardSubmission({
+        wave: 24,
+        kills: 512,
+        rankedEligible: false,
+        isProbeMode: false,
+        alreadySubmitted: false,
+      }),
+      { shouldSubmit: false, reason: 'unranked' },
+    )
+    assert.deepEqual(
+      evaluateLeaderboardSubmission({
+        wave: 1,
+        kills: 20,
+        rankedEligible: true,
+        isProbeMode: false,
+        alreadySubmitted: false,
+        minWave: 2,
+      }),
+      { shouldSubmit: false, reason: 'below_min_wave' },
+    )
+    assert.deepEqual(
+      evaluateLeaderboardSubmission({
+        wave: 24,
+        kills: 512,
+        rankedEligible: true,
+        isProbeMode: true,
+        alreadySubmitted: false,
+      }),
+      { shouldSubmit: false, reason: 'probe' },
+    )
+
+    const raw = serializeTdHandoff({
+      version: 1,
+      wave: 14,
+      nextWaveTime: 180,
+      matchState: 'active',
+      guardianUpgradeLevel: 2,
+      guardianBonusMaxHp: 2000,
+      scaledCreeps: [101],
+      rewardedCreeps: [101],
+      playerTomes: {},
+      playerKills: { '0': 120 },
+      runId: 'td-test-99',
+      runRankedEligible: false,
+      runDisqualifyReason: '/souls',
+      runSubmittedSlots: [0],
+    })
+    const restored = deserializeTdHandoff(raw)
+    assert.equal(restored?.runId, 'td-test-99')
+    assert.equal(restored?.runRankedEligible, false)
+    assert.equal(restored?.runDisqualifyReason, '/souls')
+    assert.deepEqual(restored?.runSubmittedSlots, [0])
   })
 })
 

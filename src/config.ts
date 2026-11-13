@@ -6,7 +6,7 @@ export const INITIAL_WAVE_DELAY_SECONDS = 5
 export const ZIPLINE_LAND_DELAY_SECONDS = 12.5
 
 export const BASE_CREEP_HP = 200
-export const HP_GROWTH_RATE = 1.16
+export const HP_GROWTH_RATE = 1.04
 export const MAX_CREEP_HP = 5_000_000
 export const CREEP_DAMAGE_GROWTH_RATE = 1.035
 export const BASE_CREEP_SCALE = 0.9
@@ -17,6 +17,18 @@ export const ZIPLINE_SQUAD_SIZE = 4
 export const MIN_SPAWN_INTERVAL_SECONDS = 7
 export const MAX_CREEP_TIER = 10
 export const MAX_ACTIVE_CREEPS_FOR_WAVE_NEUTRALS = 22
+
+export const HERO_RESPAWN_TIME_SECONDS = 5
+export const MAX_COOP_DEFENDER_PLAYERS = 12
+
+export const DEFAULT_TOME_GROWTH_PER_WAVE = 0.06
+export const MAX_TOME_GROWTH_PER_WAVE = 0.5
+export const MAX_TOME_WAVE_MULTIPLIER = 8.0
+
+export const BASE_WAVE_SOUL_REWARD = 50
+export const MAX_WAVE_SOUL_REWARD = 3_333
+export const SOUL_CACHE_BASE_SOULS = 83
+export const BOSS_KILL_SOUL_REWARD = 133
 
 export const BOSS_WAVE_INTERVAL = 5
 export const MAX_BOSS_TIER = 5
@@ -33,7 +45,7 @@ export const BOSS_HERO_POOL = [
 export const BOSS_SPAWN_ORIGIN = { x: 0, y: 1200, z: 390 } as const
 export const BOSS_SPAWN_ANGLES = { pitch: 0, yaw: 270, roll: 0 } as const
 
-export const PLAYER_SPAWN_ORIGIN = { x: 0, y: -1950, z: 390 } as const
+export const PLAYER_SPAWN_ORIGIN = { x: 0, y: -1950, z: 396 } as const
 export const PLAYER_SPAWN_ANGLES = { pitch: 0, yaw: 90, roll: 0 } as const
 export const GUARDIAN_ORIGIN = { x: 0, y: -1792, z: 384 } as const
 export const DEFENDER_TEAM = 2
@@ -267,9 +279,9 @@ export const MINOR_TOME_POOL: readonly MinorTomeDef[] = [
     id: 'soul_jackpot',
     name: 'Soul Cache',
     shortLabel: 'Souls',
-    description: '+250 Bonus Souls',
+    description: '+83 Bonus Souls',
     kind: 'souls',
-    amount: 250,
+    amount: SOUL_CACHE_BASE_SOULS,
     color: '#ffd34d',
   },
 ] as const
@@ -349,12 +361,17 @@ export const MAJOR_BOON_POOL: readonly MajorBoonDef[] = [
 export const TD_SERVER_CVARS: readonly (readonly [string, string | number])[] = [
   ['sv_cheats', 1],
   ['sv_hibernate_when_empty', 0],
+  ['sv_visiblemaxplayers', MAX_COOP_DEFENDER_PLAYERS],
+  ['citadel_team_size', MAX_COOP_DEFENDER_PLAYERS],
   ['citadel_solo_bot_match', 0],
   ['citadel_koth_enabled', 0],
   ['citadel_neutral_spawn_enabled', 0],
   ['citadel_spawn_practice_bots', 0],
   ['citadel_pregame_wait_duration', 1],
+  ['citadel_player_override_spawn_time', HERO_RESPAWN_TIME_SECONDS],
+  ['citadel_player_spawn_time_max_respawn_time', HERO_RESPAWN_TIME_SECONDS],
   ['citadel_active_lane', 4],
+  ['citadel_spawn_combine_only', 1],
   ['citadel_trooper_spawn_enabled', 1],
   ['citadel_trooper_spawn_initial', INITIAL_WAVE_DELAY_SECONDS],
   ['citadel_trooper_spawn_interval_early', WAVE_INTERVAL_SECONDS],
@@ -365,8 +382,13 @@ export const TD_SERVER_CVARS: readonly (readonly [string, string | number])[] = 
   ['citadel_trooper_squad_size', ZIPLINE_SQUAD_SIZE],
   ['citadel_trooper_health_mult_gametime', 9999],
   ['citadel_trooper_max_per_lane', 36],
-  ['citadel_trooper_gold_reward', 150],
-  ['citadel_trooper_gold_reward_bonus_per_minute', 100],
+  ['citadel_trooper_gold_reward', BASE_WAVE_SOUL_REWARD],
+  ['citadel_trooper_gold_reward_bonus_per_minute', 33],
+  ['citadel_player_gold_reward_min', 67],
+  ['citadel_player_gold_reward_max', 733],
+  ['citadel_player_gold_reward_first_kill_bonus', 42],
+  ['citadel_tick_gold_payout_for_lowest', 0.0083],
+  ['citadel_tick_gold_payout_for_second_lowest', 0.005],
   ['citadel_npc_disable_cockroaches', 1],
   ['citadel_dev_boss_backdoor_protection_disabled', 1],
   ['citadel_boss_tier_3_check_pit_modifier', 0],
@@ -376,7 +398,7 @@ export const TD_SERVER_CVARS: readonly (readonly [string, string | number])[] = 
   ['citadel_disable_purchasing_in_combat', 0],
 ] as const
 
-/** Computes target creep Max HP for a 1-indexed wave number (~5x steeper growth for testing). */
+/** Computes target creep Max HP for a 1-indexed wave number (+4%/wave). */
 export function computeWaveCreepHp(wave: number): number {
   const clampedWave = Math.max(1, Math.floor(wave))
   const raw = Math.round(BASE_CREEP_HP * Math.pow(HP_GROWTH_RATE, clampedWave - 1))
@@ -439,10 +461,10 @@ export function computeWaveSpawnIntervalSeconds(wave: number): number {
   return MIN_SPAWN_INTERVAL_SECONDS
 }
 
-/** Computes creep Soul bounty for a 1-indexed wave number. */
+/** Computes creep Soul bounty for a 1-indexed wave number (reduced 3x). */
 export function computeWaveSoulReward(wave: number): number {
   const clampedWave = Math.max(1, Math.floor(wave))
-  return Math.min(10_000, 150 + (clampedWave - 1) * 25)
+  return Math.min(MAX_WAVE_SOUL_REWARD, Math.round((150 + (clampedWave - 1) * 25) / 3))
 }
 
 /**
@@ -505,11 +527,13 @@ export function shouldFreeHudCursor(opts: {
   readonly needsHeroPick: boolean
   readonly hasPendingBoons: boolean
   readonly legendaryShopOpen?: boolean
+  readonly leaderboardOpen?: boolean
   readonly matchState: string
 }): boolean {
   return (
     opts.needsHeroPick ||
     Boolean(opts.legendaryShopOpen) ||
+    Boolean(opts.leaderboardOpen) ||
     opts.matchState === 'defeat'
   )
 }
@@ -718,12 +742,12 @@ export function computeBossTier(wave: number): number {
   return Math.min(MAX_BOSS_TIER, bossIndex)
 }
 
-const BOSS_TIER_BONUS_HP = [2500, 5500, 10000, 16000, 25000] as const
+const BOSS_TIER_BONUS_HP = [1750, 3250, 5500, 8500, 13000] as const
 const BOSS_TIER_SCALE = [1.35, 1.5, 1.65, 1.8, 1.95] as const
 const BOSS_SCALE_STEP = 0.1
 const MAX_BOSS_EXTRA_SIZE_STACKS = 1
 const MAX_BOSS_ENDLESS_BOOST_STACKS = 12
-const BOSS_ENDLESS_BOOST_HP = 3200
+const BOSS_ENDLESS_BOOST_HP = 1600
 
 /** Returns the Boss hero name, VData modifier, and scaling parameters for a Boss wave. */
 export function getBossWaveSpec(wave: number): {
@@ -1112,6 +1136,59 @@ export function computeGuardianRepair(
   }
 }
 
+export const BOARD_HIGHEST_WAVE = 'td.highest_wave'
+export const BOARD_CREEPS_SLAIN = 'td.creeps_slain'
+
+export interface LeaderboardSubmissionInput {
+  readonly wave: number
+  readonly kills: number
+  readonly rankedEligible: boolean
+  readonly isProbeMode: boolean
+  readonly alreadySubmitted: boolean
+  readonly minWave?: number
+}
+
+export type LeaderboardSubmissionDecision =
+  | {
+      readonly shouldSubmit: true
+      readonly waveScore: number
+      readonly tiebreak: number
+      readonly creepsScore: number
+    }
+  | {
+      readonly shouldSubmit: false
+      readonly reason: 'probe' | 'unranked' | 'already_submitted' | 'below_min_wave'
+    }
+
+/** Pure evaluator determining whether a Tower Defense run should be submitted to Hyperline leaderboards. */
+export function evaluateLeaderboardSubmission(
+  opts: LeaderboardSubmissionInput,
+): LeaderboardSubmissionDecision {
+  if (opts.isProbeMode) {
+    return { shouldSubmit: false, reason: 'probe' }
+  }
+  if (!opts.rankedEligible) {
+    return { shouldSubmit: false, reason: 'unranked' }
+  }
+  if (opts.alreadySubmitted) {
+    return { shouldSubmit: false, reason: 'already_submitted' }
+  }
+  const minWave = Math.max(1, Math.floor(opts.minWave ?? 1))
+  const flooredWave = Math.floor(opts.wave)
+  if (flooredWave < minWave) {
+    return { shouldSubmit: false, reason: 'below_min_wave' }
+  }
+  const waveScore = Math.min(999, Math.max(1, flooredWave))
+  const safeKills = Math.max(0, Math.floor(opts.kills))
+  return {
+    shouldSubmit: true,
+    waveScore,
+    // Lower tiebreak ranks first in Modlock scores.proto; negate kills so more Creep Last-Hits wins ties.
+    tiebreak: -safeKills,
+    creepsScore: Math.min(100_000, safeKills),
+  }
+}
+
 export interface TdHandoffState {
   readonly version: 1
   readonly wave: number
@@ -1125,6 +1202,10 @@ export interface TdHandoffState {
   readonly rewardedCreeps: readonly number[]
   readonly playerTomes: Record<string, Record<string, number>>
   readonly playerKills: Record<string, number>
+  readonly runId?: string
+  readonly runRankedEligible?: boolean
+  readonly runDisqualifyReason?: string
+  readonly runSubmittedSlots?: readonly number[]
 }
 
 /** Serializes Tower Defense state for Modlock hot-reload `handoff()`. */
@@ -1166,6 +1247,16 @@ export function deserializeTdHandoff(raw: string | undefined): TdHandoffState | 
         parsed.playerKills && typeof parsed.playerKills === 'object'
           ? parsed.playerKills
           : {},
+      ...(typeof parsed.runId === 'string' ? { runId: parsed.runId } : {}),
+      ...(typeof parsed.runRankedEligible === 'boolean'
+        ? { runRankedEligible: parsed.runRankedEligible }
+        : {}),
+      ...(typeof parsed.runDisqualifyReason === 'string'
+        ? { runDisqualifyReason: parsed.runDisqualifyReason }
+        : {}),
+      ...(Array.isArray(parsed.runSubmittedSlots)
+        ? { runSubmittedSlots: parsed.runSubmittedSlots }
+        : {}),
     }
   } catch {
     return undefined
@@ -1173,7 +1264,7 @@ export function deserializeTdHandoff(raw: string | undefined): TdHandoffState | 
 }
 
 /** Seconds with 0 connected human players (after at least 1 human joined) before shutting down the server (`quit`). */
-export const EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS = 30
+export const EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS = 0
 
 export interface EmptyServerWatchState {
   readonly hasSeenHuman: boolean
@@ -1183,7 +1274,7 @@ export interface EmptyServerWatchState {
 
 /**
  * Evaluates whether the dedicated server should shut down (`serverCommand('quit')`)
- * after all human players have disconnected for `delaySeconds` (default 30s).
+ * after all human players have disconnected for `delaySeconds` (default 0s — immediate when last human disconnects).
  * Never triggers before the first human player connects or during `TdProbe`.
  */
 export function evaluateEmptyServerShutdown(
@@ -1239,8 +1330,25 @@ export function evaluateEmptyServerShutdown(
 /** Soul cost for Tier-5 Legendary items in the TD Legendary Armory. */
 export const LEGENDARY_ITEM_COST_SOULS = 9600
 
-/** Formats an internal item class name (e.g. `upgrade_eldritch_shot`) for display. */
+/** Official Deadlock localized display names for Tier-5 Legendary items (`citadel_gc_mod_names_english.txt`). */
+export const ITEM_DISPLAY_TITLES: Readonly<Record<string, string>> = {
+  upgrade_celestial_guidance: 'Celestial Blessing',
+  upgrade_eldritch_shot: 'Haunting Shot',
+  upgrade_icarus_wings: 'Seraphim Wings',
+  upgrade_infinite_rounds: 'Infinite Rounds',
+  upgrade_mystical_piano: 'Mystical Piano',
+  upgrade_nullification_aura: 'Nullification Burst',
+  upgrade_omnicharge_pendant: 'Omnicharge Signet',
+  upgrade_prism_blast: 'Prism Blast',
+  upgrade_shrink_ray: 'Shrink Ray',
+}
+
+/** Formats an internal item class name (e.g. `upgrade_eldritch_shot` -> `Haunting Shot`) for display. */
 export function formatItemDisplayTitle(itemName: string): string {
+  const mapped = ITEM_DISPLAY_TITLES[itemName]
+  if (mapped) {
+    return mapped
+  }
   return itemName
     .replace(/^upgrade_/, '')
     .split('_')
@@ -1284,15 +1392,185 @@ export function getDefenderStageSpawnOrigin(stage: DefenseStage): {
 } {
   switch (stage) {
     case 'guardian':
-      return { x: 0, y: -1950, z: 390 }
+      return { x: 0, y: -1950, z: 396 }
     case 'walker':
-      return { x: -1288, y: -3850, z: 384 }
+      return { x: -1288, y: -3850, z: 392 }
     case 'base_guardians':
-      return { x: -1280, y: -5850, z: 645 }
+      return { x: -1280, y: -5850, z: 654 }
     case 'shrines':
-      return { x: -1280, y: -6850, z: 645 }
+      return { x: -1280, y: -6850, z: 654 }
     case 'patron_stage1':
     case 'patron_stage2':
-      return { x: -1280, y: -7200, z: 645 }
+      return { x: -1280, y: -7200, z: 654 }
+  }
+}
+
+/** Detects whether a living defender fell below the map mesh or outside playable bounds. */
+export function isDefenderOutOfBoundsOrBelowMap(pos: {
+  readonly x: number
+  readonly y: number
+  readonly z: number
+}): boolean {
+  if (Math.abs(pos.y) > 11500 || Math.abs(pos.x) > 4500) {
+    return true
+  }
+  if (pos.z < 180) {
+    return true
+  }
+  if (pos.y < -5100 && pos.y >= -9400 && pos.z < 520) {
+    return true
+  }
+  if (pos.y < -9400 && pos.z < 1100) {
+    return true
+  }
+  return false
+}
+
+/** Pure evaluator enforcing a fixed respawn delay for dead defenders and throttling retries. */
+export function evaluateDefenderRespawnDue(opts: {
+  readonly alive: boolean
+  readonly hasHero: boolean
+  readonly nowSeconds: number
+  readonly diedAtSeconds: number | undefined
+  readonly lastRespawnAttemptAt: number | undefined
+  readonly respawnDelaySeconds?: number
+}): {
+  readonly nextDiedAtSeconds: number | undefined
+  readonly shouldCallRespawn: boolean
+  readonly nextLastRespawnAttemptAt: number | undefined
+} {
+  if (opts.alive || !opts.hasHero) {
+    return {
+      nextDiedAtSeconds: undefined,
+      shouldCallRespawn: false,
+      nextLastRespawnAttemptAt: undefined,
+    }
+  }
+  const delay = Math.max(0.5, opts.respawnDelaySeconds ?? HERO_RESPAWN_TIME_SECONDS)
+  const diedAt = opts.diedAtSeconds ?? opts.nowSeconds
+  const due = opts.nowSeconds - diedAt >= delay
+  const retryAllowed =
+    opts.lastRespawnAttemptAt === undefined ||
+    opts.nowSeconds - opts.lastRespawnAttemptAt >= 0.5
+  if (due && retryAllowed) {
+    return {
+      nextDiedAtSeconds: diedAt,
+      shouldCallRespawn: true,
+      nextLastRespawnAttemptAt: opts.nowSeconds,
+    }
+  }
+  return {
+    nextDiedAtSeconds: diedAt,
+    shouldCallRespawn: false,
+    nextLastRespawnAttemptAt: opts.lastRespawnAttemptAt,
+  }
+}
+
+/** Parses configurable Tome growth rate (`tome_scaling` setting or `/tomescale` command). */
+export function parseTomeGrowthPerWave(
+  raw: string | number | undefined,
+): number {
+  if (raw === undefined || raw === '') {
+    return DEFAULT_TOME_GROWTH_PER_WAVE
+  }
+  const num =
+    typeof raw === 'number'
+      ? raw
+      : Number(String(raw).trim().replace(/%$/, ''))
+  if (!Number.isFinite(num)) {
+    return DEFAULT_TOME_GROWTH_PER_WAVE
+  }
+  if (num < 0) {
+    return 0
+  }
+  const normalized = num > MAX_TOME_GROWTH_PER_WAVE ? num / 100 : num
+  return Number(Math.max(0, Math.min(MAX_TOME_GROWTH_PER_WAVE, normalized)).toFixed(4))
+}
+
+/** Computes Tome value multiplier for `wave` (`1.0` at Wave 1, scaling linearly by `growthPerWave`). */
+export function computeTomeWaveMultiplier(
+  wave: number,
+  growthPerWave = DEFAULT_TOME_GROWTH_PER_WAVE,
+): number {
+  const clampedWave = Math.max(1, Math.floor(wave))
+  const rate = Math.max(0, Math.min(MAX_TOME_GROWTH_PER_WAVE, growthPerWave))
+  const raw = 1 + (clampedWave - 1) * rate
+  return Number(Math.min(MAX_TOME_WAVE_MULTIPLIER, raw).toFixed(4))
+}
+
+/** Formats accumulated (potentially fractional) Tome counts cleanly for HUD display. */
+export function formatTomeCountDisplay(value: number): string {
+  const rounded = Math.round(value * 10) / 10
+  return Number.isInteger(rounded) ? `${rounded}` : rounded.toFixed(1)
+}
+
+function formatScaledNum(val: number): string {
+  const rounded = Math.round(val * 10) / 10
+  return Number.isInteger(rounded) ? `${rounded}` : rounded.toFixed(1)
+}
+
+/** Formats a Minor Tome description reflecting the wave-scaled multiplier. */
+export function formatScaledMinorTomeDescription(
+  tome: MinorTomeDef,
+  mult: number,
+): string {
+  const m = Math.max(1, mult)
+  switch (tome.id) {
+    case 'spirit':
+      return `+${Math.round(8 * m)} Spirit Power (+${formatScaledNum(6 * m)}% Ability Dmg)`
+    case 'weapon':
+      return `+${formatScaledNum(10 * m)}% Weapon Damage`
+    case 'firerate':
+      return `+${formatScaledNum(5 * m)}% Weapon Bonus`
+    case 'health':
+      return `+${Math.round(80 * m)} Max HP & +${formatScaledNum(2 * m)} HP/s Regen`
+    case 'cooldown':
+      return `+${formatScaledNum(3 * m)}% Ability Cooldown Reduction`
+    case 'range':
+      return `+${formatScaledNum(3 * m)}% Ability Dmg & Reach`
+    case 'omni':
+      return `+${formatScaledNum(7.5 * m)}% Wpn, +${formatScaledNum(4 * m)}% Abil, +${Math.round(40 * m)} HP, +${formatScaledNum(1.5 * m)}% CDR`
+    case 'ap_jackpot': {
+      const ap = Math.max(1, Math.round((tome.amount ?? 1) * m))
+      return `+${ap} Ability Point${ap === 1 ? '' : 's'}`
+    }
+    case 'soul_jackpot':
+      return `+${Math.round((tome.amount ?? SOUL_CACHE_BASE_SOULS) * m).toLocaleString()} Bonus Souls`
+    default:
+      return tome.description
+  }
+}
+
+/** Formats a Major Boon card subtitle with exact wave-scaled Tome/Soul/AP/Heal values. */
+export function formatScaledMajorBoonSubtitle(
+  boon: MajorBoonDef,
+  mult: number,
+): string {
+  if (mult <= 1.001) {
+    return boon.subtitle
+  }
+  const m = mult
+  switch (boon.id) {
+    case 'archmage':
+      return `+${Math.round(24 * m)} Spirit Power & +${formatScaledNum(6 * m)}% Cooldown Reduction (${m.toFixed(2)}x)`
+    case 'marksman':
+      return `+${formatScaledNum(30 * m)}% Weapon Dmg & +${formatScaledNum(10 * m)}% Fire Rate (${m.toFixed(2)}x)`
+    case 'juggernaut':
+      return `+${Math.round(280 * m)} Max HP, +${formatScaledNum(7 * m)} HP/s Regen & Scaled Omni (${m.toFixed(2)}x)`
+    case 'grandmaster': {
+      const baseAp = boon.bonusAp ?? 3
+      const ap = Math.max(baseAp, Math.round(baseAp * m))
+      return `+${ap} Ability Points & ${m.toFixed(2)}x All-Stats Omni Tome`
+    }
+    case 'warchest': {
+      const souls = Math.round((boon.bonusSouls ?? 1200) * m)
+      return `+${souls.toLocaleString()} Souls & ${m.toFixed(2)}x All-Stats Omni Tome`
+    }
+    case 'bastion': {
+      const heal = Math.round((boon.guardianHeal ?? 2000) * m)
+      return `Fortify All Structures (+${heal.toLocaleString()} Heal) & +${Math.round(80 * m)} Hero HP (${m.toFixed(2)}x)`
+    }
+    default:
+      return `${boon.subtitle} (${m.toFixed(2)}x)`
   }
 }

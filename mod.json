@@ -1,9 +1,18 @@
 {
   "slug": "deadlock-td",
-  "name": "Deadlock Tower Defense",
-  "version": "0.6.3",
-  "description": "Endless single-lane wave survival from Blue Guardian down to the Amber Patron — featuring Colossus Raid Bosses, scaling trooper waves, last-hit Tomes, 1-of-3 Major Boons, Legendary Armory, and All-Structure Fortification!",
+  "name": "Hidden King's Defense",
+  "version": "0.6.4",
+  "description": "Defend the Hidden King's Center Lane from Blue Guardian down to the Patron — featuring Colossus Raid Bosses, scaling trooper waves, last-hit Tomes, 1-of-3 Major Boons, Legendary Armory, All-Structure Fortification, and Ranked Leaderboards!",
   "repository": "https://github.com/Atharv24/deadlock-tower-defense",
+  "tags": [
+    "tower-defense",
+    "co-op",
+    "pve",
+    "survival",
+    "wave-defense",
+    "roguelite",
+    "boss-rush"
+  ],
   "language": "LANGUAGE_TYPESCRIPT",
   "map": "dl_midtown",
   "definitions": [
@@ -17,7 +26,7 @@
   "settings": [
     {
       "key": "hud_mode",
-      "label": "Tower Defense HUD layout",
+      "label": "HUD layout",
       "kind": "KIND_CHOICE",
       "choices": [
         { "value": "full", "label": "Full HUD (Top strip, Base Defense HP, Tome tally)" },
@@ -35,6 +44,19 @@
         { "value": "25", "label": "Relaxed (25s)" }
       ],
       "default": "20"
+    },
+    {
+      "key": "tome_scaling",
+      "label": "Tome value scaling per wave",
+      "kind": "KIND_CHOICE",
+      "choices": [
+        { "value": "0.06", "label": "Standard (+6% Tome power / wave)" },
+        { "value": "0", "label": "Flat (0% - fixed Tome values)" },
+        { "value": "0.03", "label": "Gentle (+3% Tome power / wave)" },
+        { "value": "0.10", "label": "High (+10% Tome power / wave)" },
+        { "value": "0.15", "label": "Turbo (+15% Tome power / wave)" }
+      ],
+      "default": "0.06"
     }
   ],
   "metrics": [
@@ -50,11 +72,22 @@
       "unit": "UNIT_NUMBER",
       "order": "ORDER_DESCENDING",
       "keep": "KEEP_BEST",
-      "windows": ["WINDOW_ALL_TIME", "WINDOW_WEEK"],
+      "windows": ["WINDOW_ALL_TIME", "WINDOW_WEEK", "WINDOW_DAY"],
       "lowest": 1,
       "highest": 999,
       "version": 1,
       "hud": "HUD_END_CARD"
+    },
+    {
+      "name": "td.creeps_slain",
+      "label": "Total Creeps Slain",
+      "unit": "UNIT_NUMBER",
+      "order": "ORDER_DESCENDING",
+      "keep": "KEEP_SUM",
+      "windows": ["WINDOW_ALL_TIME", "WINDOW_WEEK"],
+      "lowest": 1,
+      "highest": 100000,
+      "version": 1
     }
   ]
 }

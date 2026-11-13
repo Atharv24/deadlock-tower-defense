@@ -42,6 +42,7 @@ import {
   planBossDriveStep,
 } from './boss_ai'
 import {
+  BOSS_KILL_SOUL_REWARD,
   BOSS_SPAWN_ANGLES,
   BOSS_SPAWN_ORIGIN,
   computeVanillaEffectiveHpDamageScale,
@@ -167,31 +168,98 @@ export class WaveManager {
     removeEntities('info_neutral_trooper_spawn')
     removeEntities('npc_trooper_neutral')
 
-    let disabledTrooperSpawns = 0
-    for (const sp of findEntities('info_trooper_spawn')) {
-      const team = readField(sp, 'CBaseEntity', 'm_iTeamNum', 'int32')
-      const lane = readField(sp, 'CInfoTrooperSpawn', 'm_iLane', 'int32')
-      if (team === 3 && lane === 4) {
-        fireInput(sp, 'SetSpawningEnabled', { boolean: true })
-      } else {
-        fireInput(sp, 'SetSpawningEnabled', { boolean: false })
-        disabledTrooperSpawns += 1
-      }
-    }
-
-    // Clear any stray friendly or side-lane troopers that spawned during initial map load
-    for (const tr of findEntities('npc_trooper')) {
-      const npc = new Npc(tr).read()
-      if (npc && (npc.team !== 3 || Math.abs(npc.position.x) > 2800)) {
-        killEntity({ victim: tr })
-      }
-    }
+    const disabledTrooperSpawns = this.suppressNonEnemyCenterTrooperSpawners()
+    this.purgeFriendlyAndSideLaneTroopers()
+    this.unlockAllPlayerFlexSlots()
 
     const guardianEnt = guardian.ensureCenterLaneGuardianSpawned()
     if (disabledTrooperSpawns > 0) {
       log(
-        `Configured single-lane defense world (disabled ${disabledTrooperSpawns} non-Center-Enemy trooper spawners, Guardian=${guardianEnt})`,
+        `Configured single-lane defense world (suppressed ${disabledTrooperSpawns} non-Center-Enemy trooper spawners, Guardian=${guardianEnt})`,
       )
+    }
+  }
+
+  /**
+   * Suppresses all Team 2 and side-lane `info_trooper_spawn` entities (disabling spawning and
+   * disabling ziplining) while keeping `CInfoTrooperSpawn.m_iLane` intact — `m_iLane` must NEVER
+   * be overwritten to `0`, because `CInfoTrooperBossSpawn::SpawnTrooperWave` (`server.dll + 0xd4ae03`)
+   * divides by `m_vecSpawnPoints.Count()` (`idiv 0` crash if Lane 4 spawners are detached).
+   * Actual Team 2 wave suppression is enforced natively via `citadel_spawn_combine_only 1`.
+   */
+  suppressNonEnemyCenterTrooperSpawners(): number {
+    let suppressed = 0
+    for (const sp of findEntities('info_trooper_spawn')) {
+      let team = readField(sp, 'CBaseEntity', 'm_iTeamNum', 'uint8') as
+        | number
+        | undefined
+      if (typeof team !== 'number') {
+        const origin = entityPosition(sp)?.position
+        if (origin) {
+          team = origin.y > 0 ? 3 : DEFENDER_TEAM
+        }
+      }
+      const lane = readField(sp, 'CInfoTrooperSpawn', 'm_iLane', 'int32') as
+        | number
+        | undefined
+      if (team === 3 && lane === 4) {
+        fireInput(sp, 'SetSpawningEnabled', { boolean: true })
+        continue
+      }
+      fireInput(sp, 'SetSpawningEnabled', { boolean: false })
+      writeField(sp, 'CInfoTrooperSpawn', 'm_bDisableZiplining', 'bool', true)
+      suppressed += 1
+    }
+    return suppressed
+  }
+
+  /**
+   * Immediately removes any Team 2 friendly lane troopers (including `1/1` HP skybase or
+   * zipline passengers before they can ride the rope) and any stray side-lane enemy troopers.
+   */
+  purgeFriendlyAndSideLaneTroopers(): number {
+    let removed = 0
+    for (const tr of findEntities('npc_trooper')) {
+      const npc = new Npc(tr).read()
+      const team =
+        npc?.team ??
+        (readField(tr, 'CBaseEntity', 'm_iTeamNum', 'uint8') as number | undefined)
+      const lifeState = readField(tr, 'CBaseEntity', 'm_lifeState', 'uint8')
+      if (typeof lifeState === 'number' && lifeState !== 0) {
+        continue
+      }
+      if (team === DEFENDER_TEAM) {
+        if (!new Npc(tr).remove()) {
+          killEntity({ victim: tr })
+        }
+        removed += 1
+        continue
+      }
+      if (
+        team === 3 &&
+        npc &&
+        npc.maxHealth > 1 &&
+        Math.abs(npc.position.x) > 2800
+      ) {
+        killEntity({ victim: tr })
+        removed += 1
+      }
+    }
+    return removed
+  }
+
+  /** Keeps all 4 Flex Slots unlocked for Team 2 defenders so all 12 item slots stay open (#29). */
+  unlockAllPlayerFlexSlots(): void {
+    serverCommand('citadel_unlock_flex_slots')
+    serverCommand(`citadel_unlock_flex_slots ${DEFENDER_TEAM}`)
+    for (const tm of findEntities('citadel_team_manager')) {
+      const team = readField(tm, 'CBaseEntity', 'm_iTeamNum', 'uint8')
+      if (team === DEFENDER_TEAM) {
+        const unlocked = readField(tm, 'CCitadelTeam', 'm_nFlexSlotsUnlocked', 'uint16')
+        if (typeof unlocked !== 'number' || unlocked < 4) {
+          writeField(tm, 'CCitadelTeam', 'm_nFlexSlotsUnlocked', 'uint16', 15)
+        }
+      }
     }
   }
 
@@ -333,6 +401,12 @@ export class WaveManager {
     const damageMult = computeWaveCreepDamageMult(this.wave)
     const soulReward = computeWaveSoulReward(this.wave)
     const { tier } = getWaveCreepModifiers(this.wave)
+
+    if (this.wave === 1) {
+      this.suppressNonEnemyCenterTrooperSpawners()
+      this.unlockAllPlayerFlexSlots()
+    }
+    this.purgeFriendlyAndSideLaneTroopers()
 
     // Keep squad size fixed at 4 (matching the 4 zipline seats so 0 skybase creeps strand)
     // and scale wave numbers by tightening the zipline spawn cadence (20s -> 7s).
@@ -719,7 +793,7 @@ export class WaveManager {
     const collect = (cls: string) => {
       const list: { readonly entity: number; readonly pos: Vector }[] = []
       for (const ent of findEntities(cls)) {
-        const team = readField(ent, 'CBaseEntity', 'm_iTeamNum', 'int32')
+        const team = readField(ent, 'CBaseEntity', 'm_iTeamNum', 'uint8')
         const pos = new Npc(ent).read()?.position ?? entityPosition(ent)?.position
         if (team === DEFENDER_TEAM && pos) {
           list.push({ entity: ent, pos })
@@ -925,18 +999,27 @@ export class WaveManager {
     for (const ent of [...troopers, ...neutrals, ...shamblers]) {
       const npc = new Npc(ent).read()
       if (npc) {
-        if (npc.health <= 0 || npc.maxHealth <= 1) {
-          continue
-        }
-        if (npc.team === DEFENDER_TEAM || Math.abs(npc.position.x) > 2800) {
-          killEntity({ victim: ent })
-          continue
-        }
-        if (npc.position.y > 3500 || npc.position.z > 650) {
+        if (npc.health <= 0) {
           continue
         }
         const lifeState = readField(ent, 'CBaseEntity', 'm_lifeState', 'uint8')
         if (typeof lifeState === 'number' && lifeState !== 0) {
+          continue
+        }
+        if (npc.team === DEFENDER_TEAM) {
+          if (!new Npc(ent).remove()) {
+            killEntity({ victim: ent })
+          }
+          continue
+        }
+        if (npc.maxHealth <= 1) {
+          continue
+        }
+        if (Math.abs(npc.position.x) > 2800) {
+          killEntity({ victim: ent })
+          continue
+        }
+        if (npc.position.y > 3500 || npc.position.z > 650) {
           continue
         }
         out.push({
@@ -952,12 +1035,15 @@ export class WaveManager {
       if (typeof lifeState === 'number' && lifeState !== 0) {
         continue
       }
-      const pos = entityPosition(ent)?.position
-      if (pos && (pos.y > 3500 || pos.z > 650)) {
+      const team = readField(ent, 'CBaseEntity', 'm_iTeamNum', 'uint8') as number | undefined
+      if (team === DEFENDER_TEAM) {
+        if (!new Npc(ent).remove()) {
+          killEntity({ victim: ent })
+        }
         continue
       }
-      const team = readField(ent, 'CBaseEntity', 'm_iTeamNum', 'int32') as number | undefined
-      if (team === DEFENDER_TEAM) {
+      const pos = entityPosition(ent)?.position
+      if (pos && (pos.y > 3500 || pos.z > 650)) {
         continue
       }
       const hp = readField(ent, 'CBaseEntity', 'm_iHealth', 'int32') as number | undefined
@@ -997,7 +1083,7 @@ export class WaveManager {
         cls.designerName === 'npc_trooper_neutral' ||
         cls.designerName === 'npc_necro_skele')
     ) {
-      const team = readField(victim, 'CBaseEntity', 'm_iTeamNum', 'int32')
+      const team = readField(victim, 'CBaseEntity', 'm_iTeamNum', 'uint8')
       return team !== DEFENDER_TEAM
     }
     return false
@@ -1080,8 +1166,11 @@ export class WaveManager {
     for (const conn of players()) {
       if (conn.bot || !conn.ready) continue
       conn.player.addMetric('td.bosses_slain', 1)
-      toast(conn.player, `Wave ${defeatedWave} Boss defeated! +400 Souls & Major Boon unlocked!`)
-      conn.player.adjustSouls(400, false)
+      toast(
+        conn.player,
+        `Wave ${defeatedWave} Boss defeated! +${BOSS_KILL_SOUL_REWARD} Souls & Major Boon unlocked!`,
+      )
+      conn.player.adjustSouls(BOSS_KILL_SOUL_REWARD, false)
     }
     this.onMilestoneWaveCallback?.(defeatedWave)
   }

@@ -8,6 +8,9 @@
 import {
   Action,
   Banner,
+  type BoardPage,
+  type BoardRow,
+  type BoardWindow,
   freeCursor,
   type Hero,
   heroes,
@@ -34,15 +37,19 @@ import {
   DEFENDER_TEAM,
   evaluateLegendaryPurchase,
   formatItemDisplayTitle,
+  formatScaledMajorBoonSubtitle,
+  formatTomeCountDisplay,
   GUARDIAN_REPAIR_AMOUNT_HP,
   GUARDIAN_REPAIR_COST_SOULS,
   isBossWave,
   LEGENDARY_ITEM_COST_SOULS,
+  MAJOR_BOON_POOL,
+  MINOR_TOME_POOL,
   shouldFreeHudCursor,
   type MajorBoonDef,
-  MINOR_TOME_POOL,
 } from './config'
 import type { GuardianManager } from './guardian'
+import type { LeaderboardManager } from './leaderboard'
 import type { TomeManager } from './tomes'
 import type { ActiveBoss, WaveManager } from './wave'
 
@@ -71,6 +78,8 @@ const spawnedHeroSlots = new Set<number>()
 const forceHeroPickerSlots = new Set<number>()
 const heroReselectSlots = new Set<number>()
 const legendaryShopSlots = new Set<number>()
+const leaderboardOpenSlots = new Set<number>()
+const leaderboardWindowBySlot = new Map<number, BoardWindow>()
 const pendingHeroPickUntil = new Map<number, number>()
 const heroSearchBySlot = new Map<number, string>()
 const lastCursorKeyBySlot = new Map<number, string>()
@@ -82,6 +91,7 @@ const cachedHudModeBySlot = new Map<number, { mode: string; expiresAt: number }>
 export function resetHudTransientState(): void {
   pendingHeroPickUntil.clear()
   legendaryShopSlots.clear()
+  leaderboardOpenSlots.clear()
   forceHeroPickerSlots.clear()
   heroReselectSlots.clear()
   lastCursorKeyBySlot.clear()
@@ -97,6 +107,7 @@ export function consumeHeroReselectPlacementReset(slot: number): boolean {
 /** Opens the Panorama Hero Selection UI for a player (e.g. via `/hero`). */
 export function openHeroPickerForPlayer(player: Player): void {
   legendaryShopSlots.delete(player.slot)
+  leaderboardOpenSlots.delete(player.slot)
   forceHeroPickerSlots.add(player.slot)
   lastHudSigBySlot.delete(player.slot)
   lastHudSentAtBySlot.delete(player.slot)
@@ -109,6 +120,7 @@ export function toggleLegendaryShopForPlayer(
 ): boolean {
   const shouldOpen = forceOpen ?? !legendaryShopSlots.has(player.slot)
   if (shouldOpen) {
+    leaderboardOpenSlots.delete(player.slot)
     legendaryShopSlots.add(player.slot)
   } else {
     legendaryShopSlots.delete(player.slot)
@@ -116,6 +128,32 @@ export function toggleLegendaryShopForPlayer(
   lastHudSigBySlot.delete(player.slot)
   lastHudSentAtBySlot.delete(player.slot)
   return shouldOpen
+}
+
+/** Toggles the Tower Defense Leaderboard modal for a player (e.g. via `/leaderboard`, `/lb`, or HUD button). */
+export function toggleLeaderboardForPlayer(
+  player: Player,
+  forceOpen?: boolean,
+): boolean {
+  const shouldOpen = forceOpen ?? !leaderboardOpenSlots.has(player.slot)
+  if (shouldOpen) {
+    legendaryShopSlots.delete(player.slot)
+    leaderboardOpenSlots.add(player.slot)
+  } else {
+    leaderboardOpenSlots.delete(player.slot)
+  }
+  lastHudSigBySlot.delete(player.slot)
+  lastHudSentAtBySlot.delete(player.slot)
+  return shouldOpen
+}
+
+function setLeaderboardWindowForPlayer(
+  player: Player,
+  window: BoardWindow,
+): void {
+  leaderboardWindowBySlot.set(player.slot, window)
+  lastHudSigBySlot.delete(player.slot)
+  lastHudSentAtBySlot.delete(player.slot)
 }
 
 /** Selects a hero for the player on Team 2 (The Hidden King) and closes the picker. */
@@ -149,6 +187,7 @@ export function renderTdHud(
   waves: WaveManager,
   guardian: GuardianManager,
   tomes: TomeManager,
+  leaderboard: LeaderboardManager,
   onRestart: () => void,
 ): void {
   for (const conn of players()) {
@@ -161,6 +200,8 @@ export function renderTdHud(
       spawnedHeroSlots.delete(player.slot)
       forceHeroPickerSlots.delete(player.slot)
       legendaryShopSlots.delete(player.slot)
+      leaderboardOpenSlots.delete(player.slot)
+      leaderboardWindowBySlot.delete(player.slot)
       pendingHeroPickUntil.delete(player.slot)
       heroSearchBySlot.delete(player.slot)
       lastCursorKeyBySlot.delete(player.slot)
@@ -183,14 +224,19 @@ export function renderTdHud(
       (!isPickingInFlight && !hasSpawnedOnce && (!pawn || pawn.hero === 0))
     if (needsHeroPick) {
       legendaryShopSlots.delete(player.slot)
+      leaderboardOpenSlots.delete(player.slot)
     }
     const legendaryShopOpen = !needsHeroPick && legendaryShopSlots.has(player.slot)
+    const leaderboardOpen = !needsHeroPick && leaderboardOpenSlots.has(player.slot)
+    const lbWindow: BoardWindow =
+      leaderboardWindowBySlot.get(player.slot) ?? 'allTime'
 
     const pendingBoons = tomes.pendingBoonChoices.get(player.slot)
     const needsCursor = shouldFreeHudCursor({
       needsHeroPick,
       hasPendingBoons: Boolean(pendingBoons),
       legendaryShopOpen,
+      leaderboardOpen,
       matchState: guardian.matchState,
     })
     const cursorKey = needsCursor ? `true:${pawn?.entity ?? 0}` : 'false'
@@ -221,7 +267,17 @@ export function renderTdHud(
     const shopSig = legendaryShopOpen
       ? `1:${playerSouls}:${ownedLegendaryNames.join(',')}`
       : '0'
-    const hudSig = `${displayWave};${waves.waitingForDefenderHero ? 1 : 0};${nextWaveSeconds};${waves.aliveCreepCount};${guardian.currentStage};${guardian.health};${guardian.maxHealth};${guardian.walkerHealth};${guardian.baseGuardiansHealth};${guardian.shrinesHealth};${guardian.patronHealth};${guardian.patronPhase};${guardian.upgradeLevel};${guardian.matchState};${compact ? 1 : 0};${needsHeroPick ? 1 : 0};${canCancelHeroPick ? 1 : 0};${pawn?.entity ?? 0};${shopSig};${searchSig};${boonSig};${tomes.getKills(player.slot)};${tomes.getTotalTomes(player.slot)};${bossSig}`
+    const boardPage =
+      leaderboardOpen || guardian.matchState === 'defeat'
+        ? leaderboard.getBoardSnapshot(player, lbWindow, now)
+        : undefined
+    const boardSig = `${leaderboardOpen ? 1 : 0}:${lbWindow}:${leaderboard.rankedEligible ? 1 : 0}:${leaderboard.disqualifyReason ?? ''}:${
+      boardPage
+        ? `${boardPage.loading ? 1 : 0}:${boardPage.player?.rank ?? 0}:${boardPage.player?.value ?? 0}:${boardPage.rows.map((r) => `${r.rank},${r.value},${r.tiebreak},${r.name}`).join('|')}`
+        : 'local'
+    }`
+    const tomeRateSig = tomes.getGrowthRate(now)
+    const hudSig = `${displayWave};${waves.waitingForDefenderHero ? 1 : 0};${nextWaveSeconds};${waves.aliveCreepCount};${guardian.currentStage};${guardian.health};${guardian.maxHealth};${guardian.walkerHealth};${guardian.baseGuardiansHealth};${guardian.shrinesHealth};${guardian.patronHealth};${guardian.patronPhase};${guardian.upgradeLevel};${guardian.matchState};${compact ? 1 : 0};${needsHeroPick ? 1 : 0};${canCancelHeroPick ? 1 : 0};${pawn?.entity ?? 0};${shopSig};${boardSig};${searchSig};${boonSig};${tomes.getKills(player.slot)};${tomes.getTotalTomes(player.slot)};${tomeRateSig};${bossSig}`
     const lastSentAt = lastHudSentAtBySlot.get(player.slot) ?? -999
     if (lastHudSigBySlot.get(player.slot) === hudSig && now - lastSentAt < 4.0) {
       continue
@@ -235,10 +291,14 @@ export function renderTdHud(
         waves={waves}
         guardian={guardian}
         tomes={tomes}
+        leaderboard={leaderboard}
         compact={compact}
         needsHeroPick={needsHeroPick}
         canCancelHeroPick={canCancelHeroPick}
         legendaryShopOpen={legendaryShopOpen}
+        leaderboardOpen={leaderboardOpen}
+        leaderboardWindow={lbWindow}
+        boardPage={boardPage}
         playerSouls={playerSouls}
         ownedLegendaryNames={ownedLegendaryNames}
         onRestart={onRestart}
@@ -259,10 +319,14 @@ function TdHudRoot(props: {
   waves: WaveManager
   guardian: GuardianManager
   tomes: TomeManager
+  leaderboard: LeaderboardManager
   compact: boolean
   needsHeroPick: boolean
   canCancelHeroPick: boolean
   legendaryShopOpen: boolean
+  leaderboardOpen: boolean
+  leaderboardWindow: BoardWindow
+  boardPage: BoardPage | undefined
   playerSouls: number
   ownedLegendaryNames: readonly string[]
   onRestart: () => void
@@ -273,10 +337,14 @@ function TdHudRoot(props: {
     waves,
     guardian,
     tomes,
+    leaderboard,
     compact,
     needsHeroPick,
     canCancelHeroPick,
     legendaryShopOpen,
+    leaderboardOpen,
+    leaderboardWindow,
+    boardPage,
     playerSouls,
     ownedLegendaryNames,
     onRestart,
@@ -311,8 +379,8 @@ function TdHudRoot(props: {
       <TopStrip
         heading={
           isBossWave(displayWave)
-            ? `DEADLOCK TD · BOSS WAVE ${displayWave}`
-            : `DEADLOCK TD · WAVE ${displayWave} (TIER ${tier})`
+            ? `HIDDEN KING'S DEFENSE · BOSS WAVE ${displayWave}`
+            : `HIDDEN KING'S DEFENSE · WAVE ${displayWave} (TIER ${tier})`
         }
         line={statusLine}
         lineTone={
@@ -338,9 +406,12 @@ function TdHudRoot(props: {
 
       {compact || needsHeroPick ? null : (
         <DefenseSidePanel
+          now={now}
+          displayWave={displayWave}
           player={player}
           guardian={guardian}
           tomes={tomes}
+          leaderboard={leaderboard}
           hpFraction={hpFraction}
           guardianTone={guardianTone}
         />
@@ -348,6 +419,8 @@ function TdHudRoot(props: {
 
       {pendingBoons && !needsHeroPick ? (
         <MajorBoonModal
+          now={now}
+          displayWave={displayWave}
           player={player}
           boons={pendingBoons}
           guardian={guardian}
@@ -359,6 +432,9 @@ function TdHudRoot(props: {
         <DefeatOverlay
           wave={waves.wave}
           kills={tomes.getKills(player.slot)}
+          playerSlot={player.slot}
+          leaderboard={leaderboard}
+          boardPage={boardPage}
           onRestart={onRestart}
         />
       ) : null}
@@ -376,6 +452,15 @@ function TdHudRoot(props: {
           player={player}
           souls={playerSouls}
           ownedNames={ownedLegendaryNames}
+        />
+      ) : null}
+
+      {leaderboardOpen ? (
+        <LeaderboardModal
+          player={player}
+          window={leaderboardWindow}
+          leaderboard={leaderboard}
+          boardPage={boardPage}
         />
       ) : null}
     </panel>
@@ -590,15 +675,28 @@ function HeroPickerModal(props: {
 }
 
 function DefenseSidePanel(props: {
+  now: number
+  displayWave: number
   player: Player
   guardian: GuardianManager
   tomes: TomeManager
+  leaderboard: LeaderboardManager
   hpFraction: number
   guardianTone: Tone
 }) {
-  const { player, guardian, tomes, hpFraction, guardianTone } = props
+  const {
+    now,
+    displayWave,
+    player,
+    guardian,
+    tomes,
+    leaderboard,
+    hpFraction,
+    guardianTone,
+  } = props
   const tally = tomes.getTally(player.slot)
   const totalTomes = tomes.getTotalTomes(player.slot)
+  const tomeMult = tomes.getWaveMultiplier(displayWave, now)
   const kills = tomes.getKills(player.slot)
   const upgradeCost = guardian.nextUpgradeCost()
   const dmgBonus = guardian.damageBonusPct()
@@ -692,16 +790,35 @@ function DefenseSidePanel(props: {
           </Action>
           <Action
             kind="primary"
-            style={{ width: 'fill' }}
+            style={{ width: 'fill', margin: [0, 0, 4, 0] }}
             onPress={() => toggleLegendaryShopForPlayer(player)}
           >
             {`Legendary Armory (T5 · ${LEGENDARY_ITEM_COST_SOULS.toLocaleString()})`}
           </Action>
+          <Action
+            kind="secondary"
+            style={{ width: 'fill' }}
+            onPress={() => toggleLeaderboardForPlayer(player)}
+          >
+            Leaderboard (/lb)
+          </Action>
         </panel>
+        <label
+          style={{
+            fontSize: 12,
+            bold: true,
+            color: leaderboard.rankedEligible ? '#4ade80' : '#fbbf24',
+            margin: [6, 0, 2, 0],
+          }}
+        >
+          {leaderboard.rankedEligible
+            ? 'Ranked Run · Leaderboard Active'
+            : `Sandbox Run · Unranked (${leaderboard.disqualifyReason ?? 'test'})`}
+        </label>
         <StatRow label="Creep Last-Hits" value={`${kills}`} color="#ffffff" />
         <StatRow
-          label="Tomes Collected (10%)"
-          value={`${totalTomes}`}
+          label={`Tomes (10% · ${tomeMult.toFixed(2)}x)`}
+          value={formatTomeCountDisplay(totalTomes)}
           color="#ffd34d"
         />
         {MINOR_TOME_POOL.map((tomeDef) => {
@@ -711,7 +828,7 @@ function DefenseSidePanel(props: {
             <StatRow
               key={tomeDef.id}
               label={tomeDef.shortLabel}
-              value={`x${count}`}
+              value={`x${formatTomeCountDisplay(count)}`}
               color={tomeDef.color}
             />
           )
@@ -822,12 +939,16 @@ function BossHealthPanel(props: { bosses: readonly ActiveBoss[] }) {
 }
 
 function MajorBoonModal(props: {
+  now: number
+  displayWave: number
   player: Player
   boons: readonly [MajorBoonDef, MajorBoonDef, MajorBoonDef]
   guardian: GuardianManager
   tomes: TomeManager
 }) {
-  const { player, boons, guardian, tomes } = props
+  const { now, displayWave, player, boons, guardian, tomes } = props
+  const boonWave = tomes.pendingBoonWave.get(player.slot) ?? displayWave
+  const boonMult = tomes.getWaveMultiplier(boonWave, now)
   return (
     <panel
       style={{
@@ -853,7 +974,9 @@ function MajorBoonModal(props: {
             <Action
               kind="primary"
               style={{ width: 'fill' }}
-              onPress={() => tomes.chooseMajorBoon(player, idx, guardian)}
+              onPress={() =>
+                tomes.chooseMajorBoon(player, idx, guardian, displayWave)
+              }
             >
               {`${idx + 1}. ${boon.title}`}
             </Action>
@@ -864,7 +987,7 @@ function MajorBoonModal(props: {
                 margin: [2, 4, 4, 4],
               }}
             >
-              {boon.subtitle}
+              {formatScaledMajorBoonSubtitle(boon, boonMult)}
             </label>
           </panel>
         ))}
@@ -876,9 +999,22 @@ function MajorBoonModal(props: {
 function DefeatOverlay(props: {
   wave: number
   kills: number
+  playerSlot: number
+  leaderboard: LeaderboardManager
+  boardPage: BoardPage | undefined
   onRestart: () => void
 }) {
-  const { wave, kills, onRestart } = props
+  const { wave, kills, playerSlot, leaderboard, boardPage, onRestart } = props
+  const sessionBest = leaderboard.sessionBestBySlot.get(playerSlot)
+  const myStanding = boardPage?.player
+  const runStatusText = leaderboard.rankedEligible
+    ? myStanding && myStanding.rank > 0
+      ? `Ranked Score Recorded · Standing #${myStanding.rank} (Best Wave ${myStanding.value})`
+      : sessionBest
+        ? `Score Submitted · Session Best: Wave ${sessionBest.wave} (${sessionBest.kills} Kills)`
+        : 'Score Submitted to Hyperline Leaderboard'
+    : `Sandbox Run (${leaderboard.disqualifyReason ?? 'Unranked'}) — Not Submitted`
+
   return (
     <panel
       style={{
@@ -892,13 +1028,38 @@ function DefeatOverlay(props: {
         detail={`Reached Wave ${wave} · ${kills} Creep Last-Hits`}
         tone="danger"
       />
-      <panel style={{ margin: [14, 0, 0, 0], width: 280 }}>
+      <Plate
+        flow="down"
+        style={{
+          margin: [10, 0, 0, 0],
+          padding: [8, 16, 8, 16],
+          horizontalAlign: 'center',
+        }}
+      >
+        <label
+          style={{
+            fontSize: 13,
+            bold: true,
+            color: leaderboard.rankedEligible ? '#4ade80' : '#fbbf24',
+          }}
+        >
+          {runStatusText}
+        </label>
+      </Plate>
+      <panel style={{ flow: 'right', margin: [12, 0, 0, 0] }}>
+        <Action
+          kind="secondary"
+          style={{ width: 200, margin: [0, 8, 0, 0] }}
+          onPress={(p) => toggleLeaderboardForPlayer(p, true)}
+        >
+          View Leaderboard (/lb)
+        </Action>
         <Action
           kind="primary"
-          style={{ width: 'fill' }}
+          style={{ width: 300 }}
           onPress={() => onRestart()}
         >
-          Restart Tower Defense (/restarttd)
+          Restart Hidden King's Defense (/restarttd)
         </Action>
       </panel>
     </panel>
@@ -1073,6 +1234,210 @@ function LegendaryArmoryModal(props: {
               )
             })}
           </panel>
+        </Plate>
+      </panel>
+    </panel>
+  )
+}
+
+const LEADERBOARD_WINDOWS: readonly { readonly id: BoardWindow; readonly label: string }[] = [
+  { id: 'allTime', label: 'All-Time' },
+  { id: 'week', label: 'This Week' },
+  { id: 'day', label: 'Today' },
+]
+
+function formatLeaderboardRowMetric(row: BoardRow): string {
+  if (row.tiebreak < 0) {
+    return `${Math.abs(row.tiebreak)} Kills`
+  }
+  return `${row.count} ${row.count === 1 ? 'Run' : 'Runs'}`
+}
+
+function LeaderboardModal(props: {
+  player: Player
+  window: BoardWindow
+  leaderboard: LeaderboardManager
+  boardPage: BoardPage | undefined
+}) {
+  const { player, window, leaderboard, boardPage } = props
+  const sessionBest = leaderboard.sessionBestBySlot.get(player.slot)
+  const myRow = boardPage?.player
+
+  return (
+    <panel
+      style={{
+        width: 'fill',
+        height: 'fill',
+        background: '#050814c8',
+        flow: 'down',
+        horizontalAlign: 'center',
+        verticalAlign: 'center',
+      }}
+    >
+      <panel
+        style={{
+          width: 620,
+          flow: 'down',
+          horizontalAlign: 'center',
+          verticalAlign: 'center',
+        }}
+      >
+        <Plate
+          flow="down"
+          style={{
+            width: 'fill',
+            padding: [16, 20, 16, 20],
+          }}
+        >
+          <panel
+            style={{
+              flow: 'right',
+              width: 'fill',
+              margin: [0, 0, 10, 0],
+              verticalAlign: 'center',
+            }}
+          >
+            <panel style={{ flow: 'down', width: 'fill' }}>
+              <Text role="title" tone="accent" plated={true}>
+                HIDDEN KING'S DEFENSE — HIGHEST WAVE
+              </Text>
+              <label
+                style={{
+                  fontSize: 12,
+                  bold: true,
+                  color: leaderboard.rankedEligible ? '#4ade80' : '#fbbf24',
+                  margin: [2, 0, 0, 0],
+                }}
+              >
+                {leaderboard.rankedEligible
+                  ? 'Ranked Run Active · Defeat or Restart (Wave 2+) submits automatically'
+                  : `Sandbox Run · Unranked (${leaderboard.disqualifyReason ?? 'test'}) — /restarttd for Ranked`}
+              </label>
+            </panel>
+            <Action
+              kind="quiet"
+              onPress={(p) => toggleLeaderboardForPlayer(p, false)}
+            >
+              Close (/lb)
+            </Action>
+          </panel>
+
+          <panel style={{ flow: 'right', width: 'fill', margin: [0, 0, 10, 0] }}>
+            {LEADERBOARD_WINDOWS.map((tab) => (
+              <Action
+                key={tab.id}
+                kind={window === tab.id ? 'primary' : 'secondary'}
+                style={{ margin: [0, 6, 0, 0] }}
+                onPress={(p) => setLeaderboardWindowForPlayer(p, tab.id)}
+              >
+                {tab.label}
+              </Action>
+            ))}
+          </panel>
+
+          {boardPage === undefined ? (
+            <panel
+              style={{
+                flow: 'down',
+                width: 'fill',
+                padding: 14,
+                background: '#0f172ae6',
+                borderRadius: 6,
+              }}
+            >
+              <label style={{ fontSize: 14, bold: true, color: '#f8fafc' }}>
+                Local Dev Server — Hyperline Standings Sync When Hosted
+              </label>
+              <label style={{ fontSize: 12, color: '#94a3b8', margin: [4, 0, 0, 0] }}>
+                {sessionBest
+                  ? `Session Best: Wave ${sessionBest.wave} (${sessionBest.kills} Creep Last-Hits)`
+                  : 'No completed runs recorded in this local session yet.'}
+              </label>
+            </panel>
+          ) : boardPage.loading ? (
+            <label style={{ fontSize: 13, color: '#93c5fd', padding: 14 }}>
+              Loading Hyperline standings...
+            </label>
+          ) : boardPage.rows.length === 0 ? (
+            <label style={{ fontSize: 13, color: '#94a3b8', padding: 14 }}>
+              No ranked runs recorded in this window yet — be the first!
+            </label>
+          ) : (
+            <panel style={{ flow: 'down', width: 'fill' }}>
+              {boardPage.rows.slice(0, 10).map((row) => (
+                <panel
+                  key={`${row.rank}:${row.name}`}
+                  style={{
+                    flow: 'right',
+                    width: 'fill',
+                    padding: [6, 10, 6, 10],
+                    margin: [0, 0, 4, 0],
+                    background:
+                      myRow && myRow.rank === row.rank ? '#1e3a8ae6' : '#0f172ae6',
+                    borderRadius: 4,
+                    verticalAlign: 'center',
+                  }}
+                >
+                  <label
+                    style={{
+                      width: 44,
+                      fontSize: 13,
+                      bold: true,
+                      color: row.rank <= 3 ? '#ffd34d' : '#cbd5e1',
+                    }}
+                  >
+                    {`#${row.rank}`}
+                  </label>
+                  <label
+                    style={{
+                      width: 'fill',
+                      fontSize: 13,
+                      bold: true,
+                      color: '#f8fafc',
+                      noWrap: true,
+                      textOverflow: 'shrink',
+                    }}
+                  >
+                    {row.name || 'Defender'}
+                  </label>
+                  <label
+                    style={{
+                      width: 90,
+                      textAlign: 'right',
+                      fontSize: 13,
+                      bold: true,
+                      color: '#4ade80',
+                    }}
+                  >
+                    {`Wave ${row.value}`}
+                  </label>
+                  <label
+                    style={{
+                      width: 96,
+                      textAlign: 'right',
+                      fontSize: 12,
+                      color: '#93c5fd',
+                    }}
+                  >
+                    {formatLeaderboardRowMetric(row)}
+                  </label>
+                </panel>
+              ))}
+            </panel>
+          )}
+
+          {myRow && myRow.rank > 0 ? (
+            <label
+              style={{
+                fontSize: 12,
+                bold: true,
+                color: '#ffd34d',
+                margin: [8, 0, 0, 0],
+              }}
+            >
+              {`Your Standing: #${myRow.rank} · Best Wave ${myRow.value} (${formatLeaderboardRowMetric(myRow)})`}
+            </label>
+          ) : null}
         </Plate>
       </panel>
     </panel>
