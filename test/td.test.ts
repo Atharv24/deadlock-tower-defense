@@ -49,11 +49,14 @@ import {
   evaluateCreepLastHit,
   evaluateDefenderRespawnDue,
   evaluateEmptyServerShutdown,
+  evaluateLeaderboardCheckpoint,
   evaluateLeaderboardSubmission,
   evaluateLegendaryPurchase,
   formatItemDisplayTitle,
+  formatMatchClock,
   formatScaledMajorBoonSubtitle,
   formatScaledMinorTomeDescription,
+  formatSoulsCount,
   formatTomeCountDisplay,
   getBossWaveSpec,
   getCreepScaleAuraModifier,
@@ -88,6 +91,7 @@ import {
   selectUnscaledCreeps,
   serializeTdHandoff,
   shouldFreeHudCursor,
+  shouldPushHudUpdate,
   SOUL_CACHE_BASE_SOULS,
   TD_SERVER_CVARS,
   type TdHandoffState,
@@ -515,10 +519,10 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
     assert.equal(computeVanillaEffectiveHpDamageScale(700, 700), 0.5)
   })
 
-  it('auto-quits server immediately when last human disconnects, ignoring cold startup and supporting optional delay', () => {
-    assert.equal(EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS, 0)
+  it('auto-quits server after 3s grace when last human disconnects so scores flush, ignoring cold startup and cancelling on reconnect (#33)', () => {
+    assert.equal(EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS, 3)
 
-    let state: EmptyServerWatchState = {
+    const state: EmptyServerWatchState = {
       hasSeenHuman: false,
       emptySinceSeconds: undefined,
       quitIssued: false,
@@ -539,18 +543,30 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
     const probeCheck = evaluateEmptyServerShutdown(joined.nextState, 0, 100, true)
     assert.equal(probeCheck.shouldQuit, false)
 
-    // Default delay (0s): last human disconnect at t=100s triggers quit immediately & idempotently
-    const immediateQuit = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false)
-    assert.equal(immediateQuit.shouldQuit, true)
-    assert.equal(immediateQuit.nextState.quitIssued, true)
+    // Default delay (3s): last human disconnect starts 3s flush grace timer, fires at t=103s & stays idempotent
+    const disconnectStart = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false)
+    assert.equal(disconnectStart.shouldQuit, false)
+    assert.equal(disconnectStart.nextState.emptySinceSeconds, 100)
+
+    const beforeGrace = evaluateEmptyServerShutdown(disconnectStart.nextState, 0, 102.9, false)
+    assert.equal(beforeGrace.shouldQuit, false)
+
+    const afterGrace = evaluateEmptyServerShutdown(beforeGrace.nextState, 0, 103, false)
+    assert.equal(afterGrace.shouldQuit, true)
+    assert.equal(afterGrace.nextState.quitIssued, true)
 
     const afterImmediateQuit = evaluateEmptyServerShutdown(
-      immediateQuit.nextState,
+      afterGrace.nextState,
       0,
-      101,
+      104,
       false,
     )
     assert.equal(afterImmediateQuit.shouldQuit, false)
+
+    // Explicit 0s custom delay also works immediately
+    const zeroDelayQuit = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false, 0)
+    assert.equal(zeroDelayQuit.shouldQuit, true)
+    assert.equal(zeroDelayQuit.nextState.quitIssued, true)
 
     // Optional custom delay (30s): starts countdown, cancels on reconnect, fires at 30s
     const delayedStart = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false, 30)
@@ -1159,6 +1175,105 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   const failedCustomModifiers: string[] = []
   const givenItems: Array<{ slot: number; item: string }> = []
   const reportedScores: Array<{ slot: number; board: string; value: number; options: Record<string, unknown> }> = []
+  const addedMetrics: Array<{ slot: number; name: string; value: number }> = []
+  const createdEntities: Array<{ entity: number; designerName: string; team: number }> = []
+  const shopTriggerIds = new Set<number>()
+  type MockShopBounds = {
+    origin: { x: number; y: number; z: number }
+    scaleVec: { x: number; y: number; z: number }
+    mins: { x: number; y: number; z: number }
+    maxs: { x: number; y: number; z: number }
+    model: string
+    radius: number
+    team: number
+    disabled: boolean
+    mapEntity: boolean
+    spawnflags: number
+  }
+  const shopTriggerBounds = new Map<number, MockShopBounds>()
+  const pawnInShopStore = new Map<number, boolean>()
+  const seedDefaultMapShop = () => {
+    shopTriggerIds.add(15001)
+    shopTriggerBounds.set(15001, {
+      origin: { x: -1260, y: -10141, z: 1476 },
+      scaleVec: { x: 1, y: 1, z: 1 },
+      mins: { x: -138, y: -138, z: -130 },
+      maxs: { x: 138, y: 138, z: 130 },
+      model: 'maps/dl_midtown/entities/3568_souls_dealer_shop_trigger_14781_3568_154.vmdl',
+      radius: 0,
+      team: 2,
+      disabled: false,
+      mapEntity: true,
+      spawnflags: 513,
+    })
+    shopTriggerIds.add(15002)
+    shopTriggerBounds.set(15002, {
+      origin: { x: 1260, y: 10141, z: 1476 },
+      scaleVec: { x: 1, y: 1, z: 1 },
+      mins: { x: -138, y: -138, z: -130 },
+      maxs: { x: 138, y: 138, z: 130 },
+      model: 'maps/dl_midtown/entities/3578_souls_dealer_shop_trigger_14781_3578_154.vmdl',
+      radius: 0,
+      team: 3,
+      disabled: false,
+      mapEntity: true,
+      spawnflags: 513,
+    })
+    shopTriggerIds.add(15003)
+    shopTriggerBounds.set(15003, {
+      origin: { x: -5600, y: -1800, z: 380 },
+      scaleVec: { x: 1, y: 1, z: 1 },
+      mins: { x: -144, y: -144, z: -64 },
+      maxs: { x: 144, y: 144, z: 64 },
+      model: 'maps/dl_midtown/entities/shop_rebel_t1_blue_shop_item_trigger_14781_901_36.vmdl',
+      radius: 0,
+      team: 0,
+      disabled: false,
+      mapEntity: true,
+      spawnflags: 513,
+    })
+  }
+  const syncMockShopZone = () => {
+    const pos = defenderPlayer.position
+    let inside = false
+    for (const ent of shopTriggerIds) {
+      const b = shopTriggerBounds.get(ent)
+      if (!b || b.disabled) continue
+      if (b.team !== 2 && b.team !== 0 && b.team !== 4) continue
+      if (b.mapEntity) {
+        if (!b.model) continue
+        const minX = b.origin.x + b.scaleVec.x * b.mins.x
+        const maxX = b.origin.x + b.scaleVec.x * b.maxs.x
+        const minY = b.origin.y + b.scaleVec.y * b.mins.y
+        const maxY = b.origin.y + b.scaleVec.y * b.maxs.y
+        const minZ = b.origin.z + b.scaleVec.z * b.mins.z
+        const maxZ = b.origin.z + b.scaleVec.z * b.maxs.z
+        if (
+          pos.x >= minX &&
+          pos.x <= maxX &&
+          pos.y >= minY &&
+          pos.y <= maxY &&
+          pos.z >= minZ &&
+          pos.z <= maxZ
+        ) {
+          inside = true
+          break
+        }
+      } else {
+        // Enforce PassesTriggerFilters bit 6 (0x40) and CBaseTrigger::InitTrigger radius > 0 on mod-created triggers
+        if ((b.spawnflags & 0x40) === 0 || b.radius <= 0) continue
+        const dx = pos.x - b.origin.x
+        const dy = pos.y - b.origin.y
+        const dz = pos.z - b.origin.z
+        if (dx * dx + dy * dy + dz * dz <= b.radius * b.radius) {
+          inside = true
+          break
+        }
+      }
+    }
+    pawnInShopStore.set(defenderPlayer.pawnEntity, inside)
+  }
+  seedDefaultMapShop()
   const mockBoardPages = new Map<string, unknown>()
   const mockBotPlayers: Array<{ player: MockPlayer; name: string; bot: boolean; ready: boolean; steamId: bigint; generation: number; roles: string[] }> = []
   let mockVanillaMode = false
@@ -1252,7 +1367,8 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     announce(_t: string, _m: string) {
       return true
     }
-    addMetric(_n: string, _v: number) {
+    addMetric(name: string, value: number) {
+      addedMetrics.push({ slot: this.slot, name, value })
       return true
     }
     adjustSouls(delta: number) {
@@ -1355,6 +1471,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       if (facing) this.eyeAngles = { ...facing }
       const s = npcStore.get(this.pawnEntity)
       if (s) s.position = { ...pos }
+      if (this === defenderPlayer) syncMockShopZone()
       return true
     }
     drive(cmd?: {
@@ -1381,6 +1498,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       }
       const s = npcStore.get(this.pawnEntity)
       if (s) s.position = { ...this.position }
+      if (this === defenderPlayer) syncMockShopZone()
 
       // Simulate primary weapon fire when Buttons.attack (1n) is held
       if ((cmd.held & 1n) !== 0n && this.team === 2) {
@@ -1565,10 +1683,83 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       if (cls === 'npc_boss_tier3') return globalThis.__mockModlock.npcStore.has(706) ? [706] : [];
       if (cls === 'npc_boss_tier3core') return [];
       if (cls === 'citadel_team_manager') return [710];
+      if (cls === 'trigger_item_shop') return [...globalThis.__mockModlock.shopTriggerIds];
       return [];
     };
-    export const fireInput = (entity, input, value) => {
+    export const createEntity = (opts) => {
+      const ent = globalThis.__mockModlock.allocSpawnEntity();
+      globalThis.__mockModlock.createdEntities.push({
+        entity: ent,
+        designerName: opts.designerName,
+        team: opts.team,
+      });
+      if (opts.designerName === 'trigger_item_shop') {
+        globalThis.__mockModlock.shopTriggerIds.add(ent);
+        const kvModel = opts.keyValues?.find((kv) => kv.key === 'model')?.value?.text ?? '';
+        const kvRadius = opts.keyValues?.find((kv) => kv.key === 'radius')?.value?.number ?? 0;
+        const kvScales = opts.keyValues?.find((kv) => kv.key === 'scales')?.value?.vector ?? { x: 1, y: 1, z: 1 };
+        const fieldSpawnflags = Number(
+          opts.fields?.find(
+            (f) =>
+              f.className === 'CBaseEntity' &&
+              f.field === 'm_spawnflags' &&
+              f.type === 'uint32',
+          )?.value ?? 0,
+        );
+        const mins = kvModel.includes('center_shop_south_trigger')
+          ? { x: -165, y: -150, z: -122 }
+          : kvModel.includes('3568_souls_dealer_shop_trigger')
+            ? { x: -138, y: -138, z: -130 }
+            : { x: 0, y: 0, z: 0 };
+        const maxs = kvModel.includes('center_shop_south_trigger')
+          ? { x: 165, y: 150, z: 122 }
+          : kvModel.includes('3568_souls_dealer_shop_trigger')
+            ? { x: 138, y: 138, z: 130 }
+            : { x: 0, y: 0, z: 0 };
+        globalThis.__mockModlock.shopTriggerBounds.set(ent, {
+          origin: { ...opts.position },
+          scaleVec: { ...kvScales },
+          mins,
+          maxs,
+          model: kvModel,
+          radius: kvRadius,
+          team: opts.team ?? 2,
+          disabled: false,
+          mapEntity: false,
+          spawnflags: fieldSpawnflags,
+        });
+        globalThis.__mockModlock.npcStore.set(ent, {
+          health: 1,
+          maxHealth: 1,
+          team: opts.team ?? 2,
+          position: { ...opts.position },
+        });
+        globalThis.__mockModlock.syncMockShopZone();
+      }
+      return ent;
+    };
+    export const removeEntity = (entity) => {
+      if (globalThis.__mockModlock.shopTriggerBounds.get(entity)?.mapEntity) {
+        return false;
+      }
+      globalThis.__mockModlock.shopTriggerIds.delete(entity);
+      globalThis.__mockModlock.shopTriggerBounds.delete(entity);
+      globalThis.__mockModlock.npcStore.delete(entity);
+      globalThis.__mockModlock.syncMockShopZone();
+      return true;
+    };
+    export const fireInput = (entity, input, value, _activator) => {
       globalThis.__mockModlock.firedInputs.push({ entity, input });
+      if (globalThis.__mockModlock.shopTriggerIds.has(entity) && input === 'StartTouch') {
+        throw new Error('trigger_item_shop has no input StartTouch');
+      }
+      if (globalThis.__mockModlock.shopTriggerBounds.has(entity)) {
+        const b = globalThis.__mockModlock.shopTriggerBounds.get(entity);
+        if (input === 'Enable') {
+          b.disabled = false;
+          globalThis.__mockModlock.syncMockShopZone();
+        }
+      }
       if (input === 'SetAbsScale' && value && typeof value.number === 'number') {
         globalThis.__mockModlock.scaleStore.set(entity, value.number);
       }
@@ -1615,15 +1806,28 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     };
     export const moveEntity = (entity, pos) => {
       const s = globalThis.__mockModlock.npcStore.get(entity);
-      if (s && pos) s.position = pos;
+      if (s && pos) s.position = { ...pos };
+      const b = globalThis.__mockModlock.shopTriggerBounds.get(entity);
+      // Kinematic VPhysics trigger movement requires spawnflags bit 28 (0x10000000)
+      if (b && pos && (b.spawnflags & 0x10000000) !== 0) {
+        b.origin = { ...pos };
+        globalThis.__mockModlock.syncMockShopZone();
+      }
       return true;
     };
     export const readModifierField = () => undefined;
     export const entityPosition = (entity) => {
+      const sb = globalThis.__mockModlock.shopTriggerBounds.get(entity);
+      if (sb) {
+        return { position: { ...sb.origin }, facing: { pitch: 0, yaw: 0, roll: 0 }, velocity: { x: 0, y: 0, z: 0 } };
+      }
       const s = globalThis.__mockModlock.npcStore.get(entity);
       return s ? { position: s.position, facing: { pitch: 0, yaw: 270, roll: 0 }, velocity: { x: 0, y: 0, z: 0 } } : undefined;
     };
     export const readField = (entity, cls, field, type) => {
+      if (field.includes('.')) {
+        throw new Error('Schema error: dotted field path is not supported: ' + field);
+      }
       if (cls === 'CBaseEntity' && field === 'm_iTeamNum' && type !== 'uint8') {
         throw new Error('Schema error: CBaseEntity.m_iTeamNum is smaller than its requested type ' + type);
       }
@@ -1635,6 +1839,10 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       }
       if (cls === 'CCitadelTeam' && field === 'm_nFlexSlotsUnlocked' && type !== 'uint16') {
         throw new Error('Schema error: CCitadelTeam.m_nFlexSlotsUnlocked must be uint16, got ' + type);
+      }
+      if (cls === 'CCitadelPlayerPawn' && field === 'm_bInItemShopZone') {
+        if (type !== 'bool') throw new Error('Schema error: CCitadelPlayerPawn.m_bInItemShopZone must be bool, got ' + type);
+        return globalThis.__mockModlock.pawnInShopStore.get(entity) ?? false;
       }
       if (entity === 710) {
         if (cls === 'CBaseEntity' && field === 'm_iTeamNum') return 2;
@@ -1665,7 +1873,20 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
         return globalThis.__mockModlock.lifeStateStore.get(entity) ?? 0;
       }
       if (cls === 'CModelState' && field === 'm_ModelName') {
+        const sb = globalThis.__mockModlock.shopTriggerBounds.get(entity);
+        if (sb) return '';
         return globalThis.__mockModlock.modelStore.get(entity);
+      }
+      const shopBound = globalThis.__mockModlock.shopTriggerBounds.get(entity);
+      if (shopBound) {
+        if (cls === 'CBaseEntity' && field === 'm_iTeamNum') {
+          if (type !== 'uint8') throw new Error('Schema error: m_iTeamNum must be uint8, got ' + type);
+          return shopBound.team;
+        }
+        if (cls === 'CBaseTrigger' && field === 'm_bDisabled') {
+          if (type !== 'bool') throw new Error('Schema error: m_bDisabled must be bool, got ' + type);
+          return shopBound.disabled;
+        }
       }
       const s = globalThis.__mockModlock.npcStore.get(entity);
       if (s && cls === 'CBaseEntity') {
@@ -1676,6 +1897,9 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       return undefined;
     };
     export const writeField = (entity, cls, field, type, val) => {
+      if (field.includes('.')) {
+        throw new Error('Schema error: dotted field path is not supported: ' + field);
+      }
       if (cls === 'CInfoTrooperSpawn' && field === 'm_iLane' && typeof val === 'number') {
         globalThis.__mockModlock.spawnerLaneStore.set(entity, val);
       }
@@ -1688,6 +1912,20 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       }
       if (cls === 'CGameSceneNode' && field === 'm_flScale' && typeof val === 'number') {
         globalThis.__mockModlock.scaleStore.set(entity, val);
+      }
+      if (cls === 'CBaseTrigger' && field === 'm_bDisabled' && typeof val === 'boolean') {
+        const sb = globalThis.__mockModlock.shopTriggerBounds.get(entity);
+        if (sb) {
+          sb.disabled = val;
+          globalThis.__mockModlock.syncMockShopZone();
+        }
+      }
+      if (cls === 'CBaseEntity' && field === 'm_iTeamNum' && typeof val === 'number') {
+        const sb = globalThis.__mockModlock.shopTriggerBounds.get(entity);
+        if (sb) {
+          sb.team = val;
+          globalThis.__mockModlock.syncMockShopZone();
+        }
       }
       const s = globalThis.__mockModlock.npcStore.get(entity);
       if (s && cls === 'CBaseEntity' && typeof val === 'number') {
@@ -1761,6 +1999,13 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     mockSettings,
     heldModifierStates,
     reportedScores,
+    addedMetrics,
+    createdEntities,
+    shopTriggerIds,
+    shopTriggerBounds,
+    seedDefaultMapShop,
+    syncMockShopZone,
+    pawnInShopStore,
     mockBoardPages,
     mockBotPlayers,
     entityScanStats: { findByClass: 0, findByName: 0 },
@@ -2473,8 +2718,10 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     waves.reset(0)
     waves.configureWorldForSingleLaneDefense(guardian)
 
-    assert.ok(executedServerCommands.includes('citadel_unlock_flex_slots'))
-    assert.ok(executedServerCommands.includes('citadel_unlock_flex_slots 2'))
+    assert.equal(
+      executedServerCommands.some((c) => c.startsWith('citadel_unlock_flex_slots')),
+      false,
+    )
     assert.equal(teamFlexSlotsStore.get(710), 15)
   })
 
@@ -2596,36 +2843,83 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       slot: defenderPlayer.slot,
       board: BOARD_HIGHEST_WAVE,
       value: 18,
-      options: { tiebreak: -340, key: `${leaderboard.runId}:w:${defenderPlayer.slot}` },
+      options: { tiebreak: -340, key: `${leaderboard.runId}-w-${defenderPlayer.slot}-18-340` },
     })
     assert.deepEqual(reportedScores[1], {
       slot: defenderPlayer.slot,
       board: BOARD_CREEPS_SLAIN,
       value: 340,
-      options: { key: `${leaderboard.runId}:c:${defenderPlayer.slot}` },
+      options: { key: `${leaderboard.runId}-c-${defenderPlayer.slot}-1` },
     })
     assert.equal(leaderboard.sessionBestBySlot.get(defenderPlayer.slot)?.wave, 18)
 
-    // Second submission in the same run must be deduplicated
+    // Second submission with identical progress in the same run must be deduplicated
     assert.equal(leaderboard.submitRunForAllPlayers(18, tomes, 1), 0)
     assert.equal(reportedScores.length, 2)
+
+    // Progressive checkpoint later in the same run reports Wave 19 & ONLY +10 kill delta (total=350, no double-count!)
+    tomes.playerKills.set(defenderPlayer.slot, 350)
+    assert.equal(leaderboard.checkpointAllPlayers(19, tomes), 1)
+    assert.equal(reportedScores.length, 4)
+    assert.deepEqual(reportedScores[2], {
+      slot: defenderPlayer.slot,
+      board: BOARD_HIGHEST_WAVE,
+      value: 19,
+      options: { tiebreak: -350, key: `${leaderboard.runId}-w-${defenderPlayer.slot}-19-350` },
+    })
+    assert.deepEqual(reportedScores[3], {
+      slot: defenderPlayer.slot,
+      board: BOARD_CREEPS_SLAIN,
+      value: 10,
+      options: { key: `${leaderboard.runId}-c-${defenderPlayer.slot}-2` },
+    })
+
+    // Every generated ScoreReport key contains only [A-Za-z0-9_.-] (no colons)
+    for (const s of reportedScores) {
+      assert.match(String(s.options.key), /^[A-Za-z0-9_.-]{1,64}$/)
+    }
 
     // 2. Sandbox disqualification prevents submission until startNewRun()
     leaderboard.startNewRun()
     assert.equal(leaderboard.markUnranked('/souls'), true)
     assert.equal(leaderboard.markUnranked('/skipwave'), false)
     assert.equal(leaderboard.submitRunForAllPlayers(25, tomes, 1), 0)
-    assert.equal(reportedScores.length, 2)
+    assert.equal(reportedScores.length, 4)
 
     leaderboard.startNewRun()
     assert.equal(leaderboard.rankedEligible, true)
     assert.equal(leaderboard.submitRunForPlayer(defenderPlayer as never, 20, 0, 1), true)
     // With 0 kills, only td.highest_wave is reported (since td.creeps_slain has lowest=1)
-    assert.equal(reportedScores.length, 3)
-    assert.equal(reportedScores[2].board, BOARD_HIGHEST_WAVE)
-    assert.equal(reportedScores[2].value, 20)
+    assert.equal(reportedScores.length, 5)
+    assert.equal(reportedScores[4].board, BOARD_HIGHEST_WAVE)
+    assert.equal(reportedScores[4].value, 20)
 
-    // 3. Board reads handle BigInt steamId rows and respect cache TTL
+    // Wave 1 with 0 kills + requireProgressOnWave1 skips reporting, while Wave 1 with 5 kills flushes on disconnect!
+    leaderboard.startNewRun()
+    assert.equal(leaderboard.checkpointPlayer(defenderPlayer as never, 1, 0, { requireProgressOnWave1: true }), false)
+    assert.equal(reportedScores.length, 5)
+    assert.equal(leaderboard.checkpointPlayer(defenderPlayer as never, 1, 5, { requireProgressOnWave1: true }), true)
+    assert.equal(reportedScores.length, 7)
+    assert.equal(reportedScores[5].value, 1)
+    assert.equal(reportedScores[6].value, 5)
+
+    // 3. Handoff checkpoint restore preserves already-reported kills so post-reload checkpoint emits deltas only
+    const handoffCheckpoint = leaderboard.exportCheckpointState()
+    const restoredLb = new LeaderboardManager()
+    restoredLb.restore(
+      leaderboard.runId,
+      leaderboard.rankedEligible,
+      leaderboard.disqualifyReason,
+      [...leaderboard.submittedSlots],
+      handoffCheckpoint,
+    )
+    assert.equal(restoredLb.checkpointPlayer(defenderPlayer as never, 1, 5), false)
+    assert.equal(restoredLb.checkpointPlayer(defenderPlayer as never, 2, 9), true)
+    assert.equal(reportedScores.length, 9)
+    assert.equal(reportedScores[8].board, BOARD_CREEPS_SLAIN)
+    assert.equal(reportedScores[8].value, 4)
+
+    // 4. Board reads handle BigInt steamId rows and respect cache TTL
     mockBoardPages.set(`${BOARD_HIGHEST_WAVE}:allTime`, {
       rows: [{ rank: 1, steamId: 76561198000000001n, name: 'Defender', value: 20, tiebreak: -340, count: 1 }],
       player: { rank: 1, steamId: 76561198000000001n, name: 'Defender', value: 20, tiebreak: -340, count: 1 },
@@ -2638,6 +2932,92 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.equal(cached2?.rows[0].value, 20)
 
     mockBotPlayers.length = 0
+  })
+  it('grants Buy Anywhere via VPhysics trigger_item_shop sphere volumes without sv_cheats 1 and records live td.waves_cleared (#31, #33)', () => {
+    executedServerCommands.length = 0
+    createdEntities.length = 0
+    addedMetrics.length = 0
+    pawnInShopStore.clear()
+    shopTriggerIds.clear()
+    shopTriggerBounds.clear()
+    seedDefaultMapShop()
+
+    const guardian = new GuardianManager()
+    const waves = new WaveManager()
+    guardian.reset()
+    waves.reset(0)
+
+    // 1. Inside spawn shop 15001 -> true; teleporting to Center Lane [0, -1950, 390] drops to false;
+    // ensureDefenderShopAccess preserves map triggers 15001/15002 untouched and grants Buy Anywhere without sv_cheats 1
+    defenderPlayer.teleport({ x: -1260, y: -10141, z: 1476 })
+    assert.equal(pawnInShopStore.get(defenderPlayer.pawnEntity), true)
+
+    defenderPlayer.teleport({ x: 0, y: -1950, z: 390 })
+    assert.equal(pawnInShopStore.get(defenderPlayer.pawnEntity), false)
+
+    assert.equal(
+      waves.ensureDefenderShopAccess(defenderPlayer.pawnEntity, defenderPlayer.position),
+      true,
+    )
+    assert.equal(pawnInShopStore.get(defenderPlayer.pawnEntity), true)
+    assert.equal(executedServerCommands.includes('sv_cheats 1'), false)
+    assert.ok(
+      createdEntities.some(
+        (e) => e.designerName === 'trigger_item_shop' && e.team === 2,
+      ),
+    )
+    assert.deepEqual(shopTriggerBounds.get(15001)?.origin, {
+      x: -1260,
+      y: -10141,
+      z: 1476,
+    })
+    assert.deepEqual(shopTriggerBounds.get(15002)?.origin, {
+      x: 1260,
+      y: 10141,
+      z: 1476,
+    })
+    assert.equal(shopTriggerBounds.get(15002)?.team, 3)
+
+    // 2. Moving into Patron Pit also keeps Buy Anywhere active under sv_cheats 0,
+    // and waves.reset() removes mod-created shop triggers so outside-spawn m_bInItemShopZone returns to false
+    defenderPlayer.teleport({ x: 0, y: -8800, z: 200 })
+    assert.equal(
+      waves.ensureDefenderShopAccess(defenderPlayer.pawnEntity, defenderPlayer.position),
+      true,
+    )
+    assert.equal(pawnInShopStore.get(defenderPlayer.pawnEntity), true)
+
+    waves.reset(10)
+    assert.equal(pawnInShopStore.get(defenderPlayer.pawnEntity), false)
+    assert.equal(
+      waves.ensureDefenderShopAccess(defenderPlayer.pawnEntity, defenderPlayer.position),
+      true,
+    )
+    assert.equal(pawnInShopStore.get(defenderPlayer.pawnEntity), true)
+    waves.reset(10)
+
+    // 3. unlockAllPlayerFlexSlots emits zero cheat commands, and respawnAllStructures brackets sv_cheats cleanly
+    executedServerCommands.length = 0
+    waves.unlockAllPlayerFlexSlots()
+    assert.equal(executedServerCommands.length, 0)
+
+    guardian.respawnAllStructures(false)
+    assert.equal(executedServerCommands[0], 'sv_cheats 1')
+    assert.equal(executedServerCommands[executedServerCommands.length - 1], 'sv_cheats 0')
+
+    executedServerCommands.length = 0
+    guardian.respawnAllStructures(true)
+    assert.equal(executedServerCommands.includes('sv_cheats 0'), false)
+
+    // 4. Advancing to Wave 2 and Wave 3 records td.waves_cleared live (1 and 2)
+    waves.spawnNextWave(10)
+    assert.equal(addedMetrics.filter((m) => m.name === 'td.waves_cleared').length, 0)
+    waves.spawnNextWave(30)
+    waves.spawnNextWave(50)
+    const clearedValues = addedMetrics
+      .filter((m) => m.name === 'td.waves_cleared')
+      .map((m) => m.value)
+    assert.deepEqual(clearedValues, [1, 2])
   })
 })
 
@@ -2991,6 +3371,110 @@ describe('Tier 6 — Playtest Fixes: 5s Respawn, Below-Map Recovery, 12 Slots & 
         isLocalDevPlayer: true,
       }),
       true,
+    )
+  })
+
+  it('formats Souls and Match Clock deterministically without toLocaleString and throttles HUD relay pushes (#32)', () => {
+    assert.equal(formatSoulsCount(0), '0')
+    assert.equal(formatSoulsCount(9600), '9,600')
+    assert.equal(formatSoulsCount(1234567), '1,234,567')
+    assert.equal(formatSoulsCount(-1250), '-1,250')
+
+    assert.equal(formatMatchClock(0), '00:00')
+    assert.equal(formatMatchClock(65), '01:05')
+    assert.equal(formatMatchClock(3661), '1:01:01')
+
+    // First render pushes immediately
+    assert.equal(
+      shouldPushHudUpdate({
+        lastSig: undefined,
+        nextSig: '0;1',
+        lastModalSig: undefined,
+        nextModalSig: 'm0',
+        nowSeconds: 1,
+        lastSentAtSeconds: -999,
+      }),
+      true,
+    )
+
+    // Identical sig within same second is skipped
+    assert.equal(
+      shouldPushHudUpdate({
+        lastSig: '10;1;500',
+        nextSig: '10;1;500',
+        lastModalSig: 'm0',
+        nextModalSig: 'm0',
+        nowSeconds: 10.25,
+        lastSentAtSeconds: 10.0,
+      }),
+      false,
+    )
+
+    // Rapid combat damage changes (< 0.5s since last send) are capped to <= 2 Hz unless modal changed
+    assert.equal(
+      shouldPushHudUpdate({
+        lastSig: '10;1;500',
+        nextSig: '10;1;450',
+        lastModalSig: 'm0',
+        nextModalSig: 'm0',
+        nowSeconds: 10.25,
+        lastSentAtSeconds: 10.0,
+      }),
+      false,
+    )
+    assert.equal(
+      shouldPushHudUpdate({
+        lastSig: '10;1;500',
+        nextSig: '10;1;450',
+        lastModalSig: 'm0',
+        nextModalSig: 'm0',
+        nowSeconds: 10.5,
+        lastSentAtSeconds: 10.0,
+      }),
+      true,
+    )
+
+    // Modal state changes (e.g. opening Boon Picker or Armory) bypass throttle immediately
+    assert.equal(
+      shouldPushHudUpdate({
+        lastSig: '10;1;500',
+        nextSig: '10;1;500;boon',
+        lastModalSig: 'm0',
+        nextModalSig: 'm1',
+        nowSeconds: 10.1,
+        lastSentAtSeconds: 10.0,
+      }),
+      true,
+    )
+
+    // Pure checkpoint evaluation skips Wave 1 / 0 kills only when requireProgressOnWave1=true
+    assert.equal(
+      evaluateLeaderboardCheckpoint({
+        wave: 1,
+        kills: 0,
+        rankedEligible: true,
+        isProbeMode: false,
+        requireProgressOnWave1: true,
+      }).eligible,
+      false,
+    )
+    assert.deepEqual(
+      evaluateLeaderboardCheckpoint({
+        wave: 4,
+        kills: 62,
+        rankedEligible: true,
+        isProbeMode: false,
+        prevBest: { wave: 3, kills: 40 },
+        prevReportedKills: 40,
+      }),
+      {
+        eligible: true,
+        shouldReportWave: true,
+        waveScore: 4,
+        safeKills: 62,
+        tiebreak: -62,
+        creepsDelta: 22,
+      },
     )
   })
 })

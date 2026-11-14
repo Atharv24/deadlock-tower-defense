@@ -198,8 +198,8 @@ export class GuardianManager {
   }
 
   /** Respawns fallen Team 2 structures via engine commands and resets base defense for `/restarttd`. */
-  respawnAllStructures(): void {
-    if (!this.devCheatsEnabled) {
+  respawnAllStructures(devCheatsEnabled = false): void {
+    if (!devCheatsEnabled) {
       serverCommand('sv_cheats 1')
     }
     serverCommand('citadel_respawn_boss_t1')
@@ -207,7 +207,7 @@ export class GuardianManager {
     serverCommand('citadel_respawn_boss_barracks')
     serverCommand('citadel_respawn_boss_shrines')
     serverCommand('citadel_boss_tier_3_testing_reset')
-    if (!this.devCheatsEnabled) {
+    if (!devCheatsEnabled) {
       serverCommand('sv_cheats 0')
     }
 

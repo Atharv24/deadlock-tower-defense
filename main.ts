@@ -69,9 +69,30 @@ import { WaveManager } from './src/wave'
 const guardian = new GuardianManager()
 const tomes = new TomeManager()
 const leaderboard = new LeaderboardManager()
-const waves = new WaveManager((milestoneWave) => {
-  tomes.offerMajorBoonForWave(milestoneWave)
-})
+const waves = new WaveManager(
+  (milestoneWave) => {
+    tomes.offerMajorBoonForWave(milestoneWave)
+    if (guardian.matchState === 'active') {
+      leaderboard.checkpointAllPlayers(Math.max(1, waves.wave), tomes, {
+        requireProgressOnWave1: true,
+      })
+    }
+  },
+  (startedWave) => {
+    if (guardian.matchState === 'active' && startedWave >= 2) {
+      leaderboard.checkpointAllPlayers(startedWave, tomes)
+    }
+  },
+)
+
+/** Isolates repeating timer errors so Modlock's `timer.ts` never permanently cancels a loop (#32). */
+function runTimerSafely(name: string, fn: () => void): void {
+  try {
+    fn()
+  } catch (err) {
+    log(`Timer [${name}] error: ${String(err)}`)
+  }
+}
 
 let probe: TdProbe | undefined
 let localDevMode = false
@@ -131,7 +152,20 @@ function placeDefenderAtFrontline(
  */
 function syncDefenderPlacementAndShopAccess(): void {
   for (const conn of players()) {
-    if (conn.bot) continue
+    if (conn.bot) {
+      if (probe) {
+        const botPawn = conn.player.pawn()
+        if (
+          botPawn &&
+          botPawn.hero > 0 &&
+          botPawn.health > 0 &&
+          botPawn.team === DEFENDER_TEAM
+        ) {
+          waves.ensureDefenderShopAccess(botPawn.entity, botPawn.position)
+        }
+      }
+      continue
+    }
     const p = conn.player
     if (consumeHeroReselectPlacementReset(p.slot)) {
       placedHeroKeyBySlot.delete(p.slot)
@@ -216,9 +250,12 @@ function syncDefenderPlacementAndShopAccess(): void {
       continue
     }
     if (pawn.team === DEFENDER_TEAM) {
-      if (conn.ready && !shopStateHeldEntities.has(pawn.entity)) {
-        holdModifierState(pawn.entity, 'MODIFIER_STATE_IN_SHOP', true)
-        shopStateHeldEntities.add(pawn.entity)
+      if (conn.ready) {
+        if (!shopStateHeldEntities.has(pawn.entity)) {
+          holdModifierState(pawn.entity, 'MODIFIER_STATE_IN_SHOP', true)
+          shopStateHeldEntities.add(pawn.entity)
+        }
+        waves.ensureDefenderShopAccess(pawn.entity, pawn.position)
       }
       const outOfBounds = isDefenderOutOfBoundsOrBelowMap(pawn.position)
       const verifyAt = postSpawnVerifyAtBySlot.get(p.slot)
@@ -243,6 +280,7 @@ function syncDefenderPlacementAndShopAccess(): void {
 /** Saves state across live Modlock hot-reloads (`modlock run`). */
 function persistHandoff(): void {
   const { playerTomes, playerKills } = tomes.exportRecords()
+  const lbCheckpoint = leaderboard.exportCheckpointState()
   handoff(
     serializeTdHandoff({
       version: 1,
@@ -261,6 +299,9 @@ function persistHandoff(): void {
       runRankedEligible: leaderboard.rankedEligible,
       runDisqualifyReason: leaderboard.disqualifyReason,
       runSubmittedSlots: [...leaderboard.submittedSlots],
+      runReportedBestBySlot: lbCheckpoint.reportedBestBySlot,
+      runReportedKillsBySlot: lbCheckpoint.reportedKillsBySlot,
+      runReportSeq: lbCheckpoint.reportSeq,
     }),
   )
 }
@@ -268,7 +309,9 @@ function persistHandoff(): void {
 /** Restarts the Tower Defense match from Wave 1 and respawns all Team 2 structures. */
 function restartMatch(): void {
   if (guardian.matchState === 'active') {
-    leaderboard.submitRunForAllPlayers(waves.wave, tomes, 2)
+    leaderboard.checkpointAllPlayers(waves.wave, tomes, {
+      requireProgressOnWave1: true,
+    })
   }
   placedHeroKeyBySlot.clear()
   ziplineFallbackKeyBySlot.clear()
@@ -277,7 +320,7 @@ function restartMatch(): void {
   lastRespawnAttemptBySlot.clear()
   postSpawnVerifyAtBySlot.clear()
   resetHudTransientState()
-  guardian.respawnAllStructures()
+  guardian.respawnAllStructures(waves.devCheatsEnabled)
   waves.configureWorldForSingleLaneDefense(guardian)
   tomes.reset()
   tomes.setGrowthRateOverride(undefined)
@@ -336,6 +379,11 @@ onStart((args) => {
       restored.runRankedEligible,
       restored.runDisqualifyReason,
       restored.runSubmittedSlots,
+      {
+        reportedBestBySlot: restored.runReportedBestBySlot,
+        reportedKillsBySlot: restored.runReportedKillsBySlot,
+        reportSeq: restored.runReportSeq,
+      },
     )
     log(
       `Restored Hidden King's Defense state at Wave ${waves.wave} from hot-reload handoff`,
@@ -406,11 +454,11 @@ onPlayerJoin((joined) => {
 
 onPlayerLeave((left) => {
   if (!left.connection.bot && left.disconnected && guardian.matchState === 'active') {
-    leaderboard.submitRunForPlayer(
+    leaderboard.checkpointPlayer(
       left.connection.player,
       waves.wave,
       tomes.getKills(left.connection.player.slot),
-      2,
+      { requireProgressOnWave1: true },
     )
   }
   if (!left.connection.bot && left.disconnected && !probe) {
@@ -475,89 +523,106 @@ onDamaged((hit) => {
   }
 })
 
-// Refresh Panorama JSX HUD (memoized on state change) and drive active Enemy Hero
-// Bosses & vanilla steered Center Lane creeps at 10 Hz.
+// Drive active Enemy Hero Bosses & vanilla steered Center Lane creeps at 10 Hz
+// (decoupled from HUD rendering so combat exceptions or spikes cannot disturb UI updates).
 every(0.1, () => {
-  if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
-    waves.tickActiveBosses(nowSeconds, guardian)
-    waves.tickSteeredWaveCreeps(0.1, guardian)
-  }
-  renderTdHud(nowSeconds, waves, guardian, tomes, leaderboard, restartMatch)
+  runTimerSafely('combat-10hz', () => {
+    if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
+      waves.tickActiveBosses(nowSeconds, guardian)
+      waves.tickSteeredWaveCreeps(0.1, guardian)
+    }
+  })
 })
 
-// Fast 250ms pass for defender spawn placement, Buy Anywhere shop state,
+// Dedicated 4 Hz Panorama JSX HUD loop (internally throttled to <= 2 Hz on non-modal combat
+// updates + 1 Hz elapsed clock self-healing diff so CEF never drops the HUD, #32).
+every(0.25, () => {
+  runTimerSafely('hud-4hz', () => {
+    renderTdHud(nowSeconds, waves, guardian, tomes, leaderboard, restartMatch)
+  })
+})
+
+// Fast 250ms pass for defender spawn placement, Buy Anywhere shop access (#31),
 // Graves Zombie proximity checks (0 host calls when empty), and Tome CDR.
 every(0.25, () => {
-  syncDefenderPlacementAndShopAccess()
-  if (guardian.matchState === 'active') {
-    waves.purgeFriendlyAndSideLaneTroopers()
-  }
-  if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
-    waves.tickExplodingZombies(nowSeconds, guardian)
-    tomes.tickVanillaCooldowns(nowSeconds)
-  }
+  runTimerSafely('world-4hz', () => {
+    syncDefenderPlacementAndShopAccess()
+    if (guardian.matchState === 'active') {
+      waves.purgeFriendlyAndSideLaneTroopers()
+    }
+    if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
+      waves.tickExplodingZombies(nowSeconds, guardian)
+      tomes.tickVanillaCooldowns(nowSeconds)
+    }
+  })
 })
 
 // 500ms pass to sync newly dismounted creep HP & elite entity modifiers.
 every(0.5, () => {
-  if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
-    waves.scaleNewlySpawnedCreeps(nowSeconds)
-  }
+  runTimerSafely('creep-scale-2hz', () => {
+    if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
+      waves.scaleNewlySpawnedCreeps(nowSeconds)
+    }
+  })
 })
 
 // 1-second tick for wave scheduling, Base Defense monitoring, and empty-server watch.
 every(1, () => {
-  guardian.poll(waves.wave, nowSeconds)
-  if (guardian.matchState === 'defeat') {
-    leaderboard.submitRunForAllPlayers(waves.wave, tomes, 1)
-  }
-
-  let humanCount = 0
-  for (const conn of players()) {
-    if (!conn.bot) {
-      humanCount += 1
+  runTimerSafely('wave-1hz', () => {
+    guardian.poll(waves.wave, nowSeconds)
+    if (guardian.matchState === 'defeat') {
+      leaderboard.checkpointAllPlayers(waves.wave, tomes)
     }
-  }
-  if (guardian.matchState === 'active') {
-    tomes.tickVanillaRegen()
-  }
 
-  const prevEmptySince = emptyServerWatch.emptySinceSeconds
-  const shutdownEval = evaluateEmptyServerShutdown(
-    emptyServerWatch,
-    humanCount,
-    nowSeconds,
-    probe !== undefined,
-  )
-  emptyServerWatch = shutdownEval.nextState
-  if (
-    prevEmptySince === undefined &&
-    emptyServerWatch.emptySinceSeconds !== undefined &&
-    !shutdownEval.shouldQuit
-  ) {
-    log(
-      `All human players disconnected — shutting down server in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`,
-    )
-  } else if (
-    prevEmptySince !== undefined &&
-    emptyServerWatch.emptySinceSeconds === undefined
-  ) {
-    log('Human player reconnected — cancelled empty-server shutdown timer')
-  }
-  if (shutdownEval.shouldQuit) {
-    log(
-      'No human players remaining — ending match and shutting down server (quit)',
-    )
-    serverCommand('quit')
-    return
-  }
+    let humanCount = 0
+    for (const conn of players()) {
+      if (!conn.bot) {
+        humanCount += 1
+      }
+    }
+    if (guardian.matchState === 'active') {
+      tomes.tickVanillaRegen()
+    }
 
-  waves.tick(nowSeconds, guardian.matchState === 'active', guardian)
+    const prevEmptySince = emptyServerWatch.emptySinceSeconds
+    const shutdownEval = evaluateEmptyServerShutdown(
+      emptyServerWatch,
+      humanCount,
+      nowSeconds,
+      probe !== undefined,
+    )
+    emptyServerWatch = shutdownEval.nextState
+    if (
+      prevEmptySince === undefined &&
+      emptyServerWatch.emptySinceSeconds !== undefined &&
+      !shutdownEval.shouldQuit
+    ) {
+      log(
+        `All human players disconnected — shutting down server in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`,
+      )
+    } else if (
+      prevEmptySince !== undefined &&
+      emptyServerWatch.emptySinceSeconds === undefined
+    ) {
+      log('Human player reconnected — cancelled empty-server shutdown timer')
+    }
+    if (shutdownEval.shouldQuit) {
+      log(
+        'No human players remaining — ending match and shutting down server (quit)',
+      )
+      serverCommand('quit')
+      return
+    }
+
+    waves.tick(nowSeconds, guardian.matchState === 'active', guardian)
+  })
 })
 
 // Persist hot-reload state every 5 seconds (instead of on every kill/second).
 every(5, () => {
-  persistHandoff()
+  runTimerSafely('handoff-5s', () => {
+    persistHandoff()
+  })
 })
 
 onFrame((frame) => {

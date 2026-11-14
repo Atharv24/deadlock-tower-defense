@@ -28,6 +28,11 @@ import {
 } from './config'
 import type { GuardianManager } from './guardian'
 
+function hasLiveHeroPawn(player: Player): boolean {
+  const pawn = player.pawn()
+  return Boolean(pawn && pawn.hero > 0 && pawn.health > 0 && pawn.team >= 2)
+}
+
 export class TomeManager {
   readonly rewardedCreeps = new Set<number>()
   readonly playerTomes = new Map<number, Record<string, number>>()
@@ -204,7 +209,9 @@ export class TomeManager {
 
     const scaledDesc = formatScaledMinorTomeDescription(tome, mult)
     player.addMetric('td.tomes_earned', 1)
-    player.sound('Powerup.Pickup.Generic')
+    if (hasLiveHeroPawn(player)) {
+      player.sound('Powerup.Pickup.Generic')
+    }
     this.lastGrantedNotice =
       mult > 1.001
         ? `${tome.name} (${mult.toFixed(2)}x: ${scaledDesc})`
@@ -224,13 +231,18 @@ export class TomeManager {
     for (const conn of players()) {
       const p = conn.player
       const pawn = p.pawn()
-      if (pawn && pawn.team !== 2) {
+      if (conn.bot && (!pawn || pawn.team !== DEFENDER_TEAM)) {
+        continue
+      }
+      if (pawn && pawn.team !== DEFENDER_TEAM) {
         continue
       }
       const choices = pickThreeMajorBoons(clampedWave, p.slot)
       this.pendingBoonChoices.set(p.slot, choices)
       this.pendingBoonWave.set(p.slot, clampedWave)
-      p.sound('Powerup.Pickup.Generic')
+      if (hasLiveHeroPawn(p)) {
+        p.sound('Powerup.Pickup.Generic')
+      }
       toast(
         p,
         `BOSS DEFEATED · MAJOR BOON READY! Hold TAB to click a Boon (or type /boon 1, /boon 2, /boon 3).`,
@@ -291,7 +303,9 @@ export class TomeManager {
     }
 
     const subtitle = formatScaledMajorBoonSubtitle(boon, mult)
-    player.sound('Powerup.Pickup.Generic')
+    if (hasLiveHeroPawn(player)) {
+      player.sound('Powerup.Pickup.Generic')
+    }
     this.lastGrantedNotice = `MAJOR BOON: ${boon.title}`
     toast(player, `CHOSE MAJOR BOON: ${boon.title} (${subtitle})!`)
     return boon

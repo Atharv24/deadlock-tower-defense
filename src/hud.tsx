@@ -16,6 +16,7 @@ import {
   heroes,
   type Item,
   items,
+  log,
   Meter,
   Pill,
   Plate,
@@ -37,7 +38,9 @@ import {
   DEFENDER_TEAM,
   evaluateLegendaryPurchase,
   formatItemDisplayTitle,
+  formatMatchClock,
   formatScaledMajorBoonSubtitle,
+  formatSoulsCount,
   formatTomeCountDisplay,
   GUARDIAN_REPAIR_AMOUNT_HP,
   GUARDIAN_REPAIR_COST_SOULS,
@@ -46,6 +49,7 @@ import {
   MAJOR_BOON_POOL,
   MINOR_TOME_POOL,
   shouldFreeHudCursor,
+  shouldPushHudUpdate,
   type MajorBoonDef,
 } from './config'
 import type { GuardianManager } from './guardian'
@@ -84,6 +88,7 @@ const pendingHeroPickUntil = new Map<number, number>()
 const heroSearchBySlot = new Map<number, string>()
 const lastCursorKeyBySlot = new Map<number, string>()
 const lastHudSigBySlot = new Map<number, string>()
+const lastModalSigBySlot = new Map<number, string>()
 const lastHudSentAtBySlot = new Map<number, number>()
 const cachedHudModeBySlot = new Map<number, { mode: string; expiresAt: number }>()
 
@@ -96,6 +101,7 @@ export function resetHudTransientState(): void {
   heroReselectSlots.clear()
   lastCursorKeyBySlot.clear()
   lastHudSigBySlot.clear()
+  lastModalSigBySlot.clear()
   lastHudSentAtBySlot.clear()
 }
 
@@ -110,6 +116,7 @@ export function openHeroPickerForPlayer(player: Player): void {
   leaderboardOpenSlots.delete(player.slot)
   forceHeroPickerSlots.add(player.slot)
   lastHudSigBySlot.delete(player.slot)
+  lastModalSigBySlot.delete(player.slot)
   lastHudSentAtBySlot.delete(player.slot)
 }
 
@@ -126,6 +133,7 @@ export function toggleLegendaryShopForPlayer(
     legendaryShopSlots.delete(player.slot)
   }
   lastHudSigBySlot.delete(player.slot)
+  lastModalSigBySlot.delete(player.slot)
   lastHudSentAtBySlot.delete(player.slot)
   return shouldOpen
 }
@@ -143,6 +151,7 @@ export function toggleLeaderboardForPlayer(
     leaderboardOpenSlots.delete(player.slot)
   }
   lastHudSigBySlot.delete(player.slot)
+  lastModalSigBySlot.delete(player.slot)
   lastHudSentAtBySlot.delete(player.slot)
   return shouldOpen
 }
@@ -153,6 +162,7 @@ function setLeaderboardWindowForPlayer(
 ): void {
   leaderboardWindowBySlot.set(player.slot, window)
   lastHudSigBySlot.delete(player.slot)
+  lastModalSigBySlot.delete(player.slot)
   lastHudSentAtBySlot.delete(player.slot)
 }
 
@@ -167,6 +177,7 @@ export function selectDefenderHero(
   heroReselectSlots.add(player.slot)
   pendingHeroPickUntil.set(player.slot, now + 6)
   lastHudSigBySlot.delete(player.slot)
+  lastModalSigBySlot.delete(player.slot)
   lastHudSentAtBySlot.delete(player.slot)
   player.selectHero(hero.name, DEFENDER_TEAM)
   toast(player, `Deploying as ${hero.title} (The Hidden King)!`)
@@ -191,124 +202,158 @@ export function renderTdHud(
   onRestart: () => void,
 ): void {
   for (const conn of players()) {
-    if (!conn.ready || conn.bot) {
+    const isProbeDefender =
+      leaderboard.isProbeMode &&
+      conn.bot &&
+      conn.player.pawn()?.team === DEFENDER_TEAM
+    if ((!conn.ready || conn.bot) && !isProbeDefender) {
       continue
     }
     const player = conn.player
-    if (connectedGenerations.get(player.slot) !== conn.generation) {
-      connectedGenerations.set(player.slot, conn.generation)
-      spawnedHeroSlots.delete(player.slot)
-      forceHeroPickerSlots.delete(player.slot)
-      legendaryShopSlots.delete(player.slot)
-      leaderboardOpenSlots.delete(player.slot)
-      leaderboardWindowBySlot.delete(player.slot)
-      pendingHeroPickUntil.delete(player.slot)
-      heroSearchBySlot.delete(player.slot)
-      lastCursorKeyBySlot.delete(player.slot)
+    try {
+      if (connectedGenerations.get(player.slot) !== conn.generation) {
+        connectedGenerations.set(player.slot, conn.generation)
+        spawnedHeroSlots.delete(player.slot)
+        forceHeroPickerSlots.delete(player.slot)
+        legendaryShopSlots.delete(player.slot)
+        leaderboardOpenSlots.delete(player.slot)
+        leaderboardWindowBySlot.delete(player.slot)
+        pendingHeroPickUntil.delete(player.slot)
+        heroSearchBySlot.delete(player.slot)
+        lastCursorKeyBySlot.delete(player.slot)
+        lastHudSigBySlot.delete(player.slot)
+        lastModalSigBySlot.delete(player.slot)
+        lastHudSentAtBySlot.delete(player.slot)
+        cachedHudModeBySlot.delete(player.slot)
+      }
+
+      const pawn = player.pawn()
+
+      if (pawn && pawn.hero > 0 && pawn.team === DEFENDER_TEAM) {
+        spawnedHeroSlots.add(player.slot)
+        pendingHeroPickUntil.delete(player.slot)
+      }
+
+      const isPickingInFlight = (pendingHeroPickUntil.get(player.slot) ?? 0) > now
+      const hasSpawnedOnce = spawnedHeroSlots.has(player.slot)
+      const needsHeroPick =
+        forceHeroPickerSlots.has(player.slot) ||
+        (!isPickingInFlight && !hasSpawnedOnce && (!pawn || pawn.hero === 0))
+      if (needsHeroPick) {
+        legendaryShopSlots.delete(player.slot)
+        leaderboardOpenSlots.delete(player.slot)
+      }
+      const legendaryShopOpen =
+        !needsHeroPick && legendaryShopSlots.has(player.slot)
+      const leaderboardOpen =
+        !needsHeroPick && leaderboardOpenSlots.has(player.slot)
+      const lbWindow: BoardWindow =
+        leaderboardWindowBySlot.get(player.slot) ?? 'allTime'
+
+      const pendingBoons = tomes.pendingBoonChoices.get(player.slot)
+      const needsCursor = shouldFreeHudCursor({
+        needsHeroPick,
+        hasPendingBoons: Boolean(pendingBoons),
+        legendaryShopOpen,
+        leaderboardOpen,
+        matchState: guardian.matchState,
+      })
+      const cursorKey = needsCursor ? `true:${pawn?.entity ?? 0}` : 'false'
+      if (lastCursorKeyBySlot.get(player.slot) !== cursorKey) {
+        lastCursorKeyBySlot.set(player.slot, cursorKey)
+        if (!conn.bot) {
+          freeCursor(player, needsCursor)
+        }
+      }
+
+      const canCancelHeroPick = Boolean(pawn && pawn.hero > 0)
+      const compact = getCachedCompactHudMode(player, now)
+      const displayWave = Math.max(1, waves.wave)
+      const nextWaveSeconds = Math.max(0, Math.ceil(waves.nextWaveTime - now))
+      const bossSig = waves.activeBosses
+        .filter((b) => b.configuredPawnEntity > 0 && b.currentHp > 0)
+        .slice(0, 2)
+        .map(
+          (b) =>
+            `${b.wave}:${b.configuredPawnEntity}:${b.currentHp}:${b.currentMaxHp}`,
+        )
+        .join('|')
+      const boonSig = pendingBoons ? pendingBoons.map((b) => b.id).join(',') : ''
+      const searchSig = needsHeroPick
+        ? (heroSearchBySlot.get(player.slot) ?? '')
+        : ''
+      const ownedLegendaryNames = legendaryShopOpen
+        ? player
+            .abilities()
+            .map((a) => a.name)
+            .filter((name) => LEGENDARY_ITEMS.some((it) => it.name === name))
+            .sort()
+        : []
+      const playerSouls = pawn ? Math.max(0, Math.floor(pawn.souls)) : 0
+      const shopSig = legendaryShopOpen
+        ? `1:${playerSouls}:${ownedLegendaryNames.join(',')}`
+        : '0'
+      const boardPage =
+        leaderboardOpen || guardian.matchState === 'defeat'
+          ? leaderboard.getBoardSnapshot(player, lbWindow, now)
+          : undefined
+      const boardSig = `${leaderboardOpen ? 1 : 0}:${lbWindow}:${leaderboard.rankedEligible ? 1 : 0}:${leaderboard.disqualifyReason ?? ''}:${
+        boardPage
+          ? `${boardPage.loading ? 1 : 0}:${boardPage.player?.rank ?? 0}:${boardPage.player?.value ?? 0}:${boardPage.rows.map((r) => `${r.rank},${r.value},${r.tiebreak},${r.name}`).join('|')}`
+          : 'local'
+      }`
+      const tomeRateSig = tomes.getGrowthRate(now)
+      const clockSec = Math.max(0, Math.floor(now))
+      const modalSig = `${needsHeroPick ? 1 : 0};${canCancelHeroPick ? 1 : 0};${searchSig};${boonSig};${legendaryShopOpen ? 1 : 0};${shopSig};${leaderboardOpen ? 1 : 0};${lbWindow};${guardian.matchState};${compact ? 1 : 0};${pawn?.entity ?? 0}`
+      const hudSig = `${clockSec};${displayWave};${waves.waitingForDefenderHero ? 1 : 0};${nextWaveSeconds};${waves.aliveCreepCount};${guardian.currentStage};${guardian.health};${guardian.maxHealth};${guardian.walkerHealth};${guardian.baseGuardiansHealth};${guardian.shrinesHealth};${guardian.patronHealth};${guardian.patronPhase};${guardian.upgradeLevel};${guardian.matchState};${compact ? 1 : 0};${needsHeroPick ? 1 : 0};${canCancelHeroPick ? 1 : 0};${pawn?.entity ?? 0};${shopSig};${boardSig};${searchSig};${boonSig};${tomes.getKills(player.slot)};${tomes.getTotalTomes(player.slot)};${tomeRateSig};${bossSig}`
+      const lastSentAt = lastHudSentAtBySlot.get(player.slot) ?? -999
+      if (
+        !shouldPushHudUpdate({
+          lastSig: lastHudSigBySlot.get(player.slot),
+          nextSig: hudSig,
+          lastModalSig: lastModalSigBySlot.get(player.slot),
+          nextModalSig: modalSig,
+          nowSeconds: now,
+          lastSentAtSeconds: lastSentAt,
+          minIntervalSeconds: 0.5,
+        })
+      ) {
+        continue
+      }
+
+      const shown = show(
+        player,
+        <TdHudRoot
+          now={now}
+          player={player}
+          waves={waves}
+          guardian={guardian}
+          tomes={tomes}
+          leaderboard={leaderboard}
+          compact={compact}
+          needsHeroPick={needsHeroPick}
+          canCancelHeroPick={canCancelHeroPick}
+          legendaryShopOpen={legendaryShopOpen}
+          leaderboardOpen={leaderboardOpen}
+          leaderboardWindow={lbWindow}
+          boardPage={boardPage}
+          playerSouls={playerSouls}
+          ownedLegendaryNames={ownedLegendaryNames}
+          onRestart={onRestart}
+        />,
+      )
+      if (shown) {
+        lastHudSigBySlot.set(player.slot, hudSig)
+        lastModalSigBySlot.set(player.slot, modalSig)
+        lastHudSentAtBySlot.set(player.slot, now)
+      } else {
+        lastHudSigBySlot.delete(player.slot)
+        lastModalSigBySlot.delete(player.slot)
+      }
+    } catch (err) {
       lastHudSigBySlot.delete(player.slot)
-      lastHudSentAtBySlot.delete(player.slot)
-      cachedHudModeBySlot.delete(player.slot)
-    }
-
-    const pawn = player.pawn()
-
-    if (pawn && pawn.hero > 0 && pawn.team === DEFENDER_TEAM) {
-      spawnedHeroSlots.add(player.slot)
-      pendingHeroPickUntil.delete(player.slot)
-    }
-
-    const isPickingInFlight = (pendingHeroPickUntil.get(player.slot) ?? 0) > now
-    const hasSpawnedOnce = spawnedHeroSlots.has(player.slot)
-    const needsHeroPick =
-      forceHeroPickerSlots.has(player.slot) ||
-      (!isPickingInFlight && !hasSpawnedOnce && (!pawn || pawn.hero === 0))
-    if (needsHeroPick) {
-      legendaryShopSlots.delete(player.slot)
-      leaderboardOpenSlots.delete(player.slot)
-    }
-    const legendaryShopOpen = !needsHeroPick && legendaryShopSlots.has(player.slot)
-    const leaderboardOpen = !needsHeroPick && leaderboardOpenSlots.has(player.slot)
-    const lbWindow: BoardWindow =
-      leaderboardWindowBySlot.get(player.slot) ?? 'allTime'
-
-    const pendingBoons = tomes.pendingBoonChoices.get(player.slot)
-    const needsCursor = shouldFreeHudCursor({
-      needsHeroPick,
-      hasPendingBoons: Boolean(pendingBoons),
-      legendaryShopOpen,
-      leaderboardOpen,
-      matchState: guardian.matchState,
-    })
-    const cursorKey = needsCursor ? `true:${pawn?.entity ?? 0}` : 'false'
-    if (lastCursorKeyBySlot.get(player.slot) !== cursorKey) {
-      lastCursorKeyBySlot.set(player.slot, cursorKey)
-      freeCursor(player, needsCursor)
-    }
-
-    const canCancelHeroPick = Boolean(pawn && pawn.hero > 0)
-    const compact = getCachedCompactHudMode(player, now)
-    const displayWave = Math.max(1, waves.wave)
-    const nextWaveSeconds = Math.max(0, Math.ceil(waves.nextWaveTime - now))
-    const bossSig = waves.activeBosses
-      .filter((b) => b.configuredPawnEntity > 0 && b.currentHp > 0)
-      .slice(0, 2)
-      .map((b) => `${b.wave}:${b.configuredPawnEntity}:${b.currentHp}:${b.currentMaxHp}`)
-      .join('|')
-    const boonSig = pendingBoons ? pendingBoons.map((b) => b.id).join(',') : ''
-    const searchSig = needsHeroPick ? (heroSearchBySlot.get(player.slot) ?? '') : ''
-    const ownedLegendaryNames = legendaryShopOpen
-      ? player
-          .abilities()
-          .map((a) => a.name)
-          .filter((name) => LEGENDARY_ITEMS.some((it) => it.name === name))
-          .sort()
-      : []
-    const playerSouls = pawn ? Math.max(0, Math.floor(pawn.souls)) : 0
-    const shopSig = legendaryShopOpen
-      ? `1:${playerSouls}:${ownedLegendaryNames.join(',')}`
-      : '0'
-    const boardPage =
-      leaderboardOpen || guardian.matchState === 'defeat'
-        ? leaderboard.getBoardSnapshot(player, lbWindow, now)
-        : undefined
-    const boardSig = `${leaderboardOpen ? 1 : 0}:${lbWindow}:${leaderboard.rankedEligible ? 1 : 0}:${leaderboard.disqualifyReason ?? ''}:${
-      boardPage
-        ? `${boardPage.loading ? 1 : 0}:${boardPage.player?.rank ?? 0}:${boardPage.player?.value ?? 0}:${boardPage.rows.map((r) => `${r.rank},${r.value},${r.tiebreak},${r.name}`).join('|')}`
-        : 'local'
-    }`
-    const tomeRateSig = tomes.getGrowthRate(now)
-    const hudSig = `${displayWave};${waves.waitingForDefenderHero ? 1 : 0};${nextWaveSeconds};${waves.aliveCreepCount};${guardian.currentStage};${guardian.health};${guardian.maxHealth};${guardian.walkerHealth};${guardian.baseGuardiansHealth};${guardian.shrinesHealth};${guardian.patronHealth};${guardian.patronPhase};${guardian.upgradeLevel};${guardian.matchState};${compact ? 1 : 0};${needsHeroPick ? 1 : 0};${canCancelHeroPick ? 1 : 0};${pawn?.entity ?? 0};${shopSig};${boardSig};${searchSig};${boonSig};${tomes.getKills(player.slot)};${tomes.getTotalTomes(player.slot)};${tomeRateSig};${bossSig}`
-    const lastSentAt = lastHudSentAtBySlot.get(player.slot) ?? -999
-    if (lastHudSigBySlot.get(player.slot) === hudSig && now - lastSentAt < 4.0) {
-      continue
-    }
-
-    const shown = show(
-      player,
-      <TdHudRoot
-        now={now}
-        player={player}
-        waves={waves}
-        guardian={guardian}
-        tomes={tomes}
-        leaderboard={leaderboard}
-        compact={compact}
-        needsHeroPick={needsHeroPick}
-        canCancelHeroPick={canCancelHeroPick}
-        legendaryShopOpen={legendaryShopOpen}
-        leaderboardOpen={leaderboardOpen}
-        leaderboardWindow={lbWindow}
-        boardPage={boardPage}
-        playerSouls={playerSouls}
-        ownedLegendaryNames={ownedLegendaryNames}
-        onRestart={onRestart}
-      />,
-    )
-    if (shown) {
-      lastHudSigBySlot.set(player.slot, hudSig)
-      lastHudSentAtBySlot.set(player.slot, now)
-    } else {
-      lastHudSigBySlot.delete(player.slot)
+      lastModalSigBySlot.delete(player.slot)
+      log(`HUD render error for slot ${player.slot}: ${String(err)}`)
     }
   }
 }
@@ -371,8 +416,8 @@ function TdHudRoot(props: {
     hpFraction > 0.5 ? 'success' : hpFraction > 0.25 ? 'accent' : 'danger'
 
   const statusLine = waves.waitingForDefenderHero
-    ? 'Waiting for Hero Selection · Wave 1 launches 5s after you deploy'
-    : `Next: ${nextWaveSeconds}s (Every ${cadenceSec}s) · Alive: ${waves.aliveCreepCount} · HP: ${targetCreepHp} · Dmg: ${damageMult.toFixed(2)}x · Size: ${creepScale.toFixed(2)}x`
+    ? `Waiting for Hero Selection · Wave 1 launches 5s after you deploy · Time: ${formatMatchClock(now)}`
+    : `Next: ${nextWaveSeconds}s (Every ${cadenceSec}s) · Alive: ${waves.aliveCreepCount} · HP: ${targetCreepHp} · Dmg: ${damageMult.toFixed(2)}x · Size: ${creepScale.toFixed(2)}x · Time: ${formatMatchClock(now)}`
 
   return (
     <panel style={{ width: 'fill', height: 'fill' }}>
@@ -793,7 +838,7 @@ function DefenseSidePanel(props: {
             style={{ width: 'fill', margin: [0, 0, 4, 0] }}
             onPress={() => toggleLegendaryShopForPlayer(player)}
           >
-            {`Legendary Armory (T5 · ${LEGENDARY_ITEM_COST_SOULS.toLocaleString()})`}
+            {`Legendary Armory (T5 · ${formatSoulsCount(LEGENDARY_ITEM_COST_SOULS)})`}
           </Action>
           <Action
             kind="secondary"
@@ -1100,10 +1145,11 @@ function purchaseLegendaryItem(player: Player, item: Item): void {
   }
 
   lastHudSigBySlot.delete(player.slot)
+  lastModalSigBySlot.delete(player.slot)
   lastHudSentAtBySlot.delete(player.slot)
   toast(
     player,
-    `Equipped Legendary: ${formatItemDisplayTitle(item.name)} (-${check.cost.toLocaleString()} Souls)!`,
+    `Equipped Legendary: ${formatItemDisplayTitle(item.name)} (-${formatSoulsCount(check.cost)} Souls)!`,
   )
 }
 
@@ -1150,7 +1196,7 @@ function LegendaryArmoryModal(props: {
                 LEGENDARY ARMORY · TIER 5 ITEMS
               </Text>
               <label style={{ fontSize: 13, color: '#cbd5e1', margin: [2, 0, 0, 0] }}>
-                {`Hover any item for full stats · Cost: ${LEGENDARY_ITEM_COST_SOULS.toLocaleString()} Souls · Your Souls: ${souls.toLocaleString()}`}
+                {`Hover any item for full stats · Cost: ${formatSoulsCount(LEGENDARY_ITEM_COST_SOULS)} Souls · Your Souls: ${formatSoulsCount(souls)}`}
               </label>
             </panel>
             <Action
@@ -1227,7 +1273,7 @@ function LegendaryArmoryModal(props: {
                         margin: [2, 0, 0, 0],
                       }}
                     >
-                      {owned ? 'OWNED' : `${LEGENDARY_ITEM_COST_SOULS.toLocaleString()} Souls`}
+                      {owned ? 'OWNED' : `${formatSoulsCount(LEGENDARY_ITEM_COST_SOULS)} Souls`}
                     </label>
                   </panel>
                 </button>

@@ -5,6 +5,7 @@
 import {
   addBot,
   Buttons,
+  createEntity,
   damage,
   type DamagedEvent,
   type DamageEvent,
@@ -18,11 +19,13 @@ import {
   killEntity,
   Layers,
   log,
+  moveEntity,
   Npc,
   type Player,
   players,
   readField,
   removeEntities,
+  removeEntity,
   serverCommand,
   spawnNpc,
   toast,
@@ -116,6 +119,11 @@ interface SteeredWaveCreep {
 }
 
 const BOSS_SPAWN_X_OFFSETS = [-165, -55, 55, 165] as const
+const ARENA_SHOP_TRIGGER_ORIGIN: Vector = { x: 0, y: -4800, z: 600 }
+const ARENA_SHOP_TRIGGER_RADIUS = 16000
+const PERSONAL_SHOP_TRIGGER_RADIUS = 256
+// Bit 0 (clients) | Bit 1 (NPCs) | Bit 6 (allow all pawns incl. bots) | Bit 28 (kinematic moveable VPhysics trigger)
+const SHOP_TRIGGER_SPAWNFLAGS = 0x10000043
 
 export class WaveManager {
   wave = 0
@@ -139,10 +147,24 @@ export class WaveManager {
     readonly patrons: { readonly entity: number; readonly pos: Vector }[]
   }
   private restoreIntervalAt = 0
+  private shopTriggerEntity = 0
+  private readonly personalShopTriggers = new Map<
+    number,
+    {
+      triggerEnt: number
+      lastPawnPos: Vector
+      nudgeToggle: boolean
+    }
+  >()
   private readonly onMilestoneWaveCallback?: (wave: number) => void
+  private readonly onWaveStartedCallback?: (wave: number) => void
 
-  constructor(onMilestoneWave?: (wave: number) => void) {
+  constructor(
+    onMilestoneWave?: (wave: number) => void,
+    onWaveStarted?: (wave: number) => void,
+  ) {
     this.onMilestoneWaveCallback = onMilestoneWave
+    this.onWaveStartedCallback = onWaveStarted
   }
 
   /** Applies server CVars for single-lane Tower Defense. */
@@ -175,6 +197,7 @@ export class WaveManager {
     const disabledTrooperSpawns = this.suppressNonEnemyCenterTrooperSpawners()
     this.purgeFriendlyAndSideLaneTroopers()
     this.unlockAllPlayerFlexSlots()
+    this.cleanupShopTriggers()
 
     const guardianEnt = guardian.ensureCenterLaneGuardianSpawned()
     if (disabledTrooperSpawns > 0) {
@@ -254,14 +277,6 @@ export class WaveManager {
 
   /** Keeps all 4 Flex Slots unlocked for Team 2 defenders so all 12 item slots stay open (#29). */
   unlockAllPlayerFlexSlots(): void {
-    if (!this.devCheatsEnabled) {
-      serverCommand('sv_cheats 1')
-    }
-    serverCommand('citadel_unlock_flex_slots')
-    serverCommand(`citadel_unlock_flex_slots ${DEFENDER_TEAM}`)
-    if (!this.devCheatsEnabled) {
-      serverCommand('sv_cheats 0')
-    }
     for (const tm of findEntities('citadel_team_manager')) {
       const team = readField(tm, 'CBaseEntity', 'm_iTeamNum', 'uint8')
       if (team === DEFENDER_TEAM) {
@@ -271,6 +286,170 @@ export class WaveManager {
         }
       }
     }
+  }
+
+  private cleanupShopTriggers(): void {
+    if (this.shopTriggerEntity > 0) {
+      removeEntity(this.shopTriggerEntity)
+      this.shopTriggerEntity = 0
+    }
+    for (const entry of this.personalShopTriggers.values()) {
+      removeEntity(entry.triggerEnt)
+    }
+    this.personalShopTriggers.clear()
+  }
+
+  private configureShopTriggerForDefenders(triggerEnt: number): void {
+    writeField(triggerEnt, 'CBaseEntity', 'm_iTeamNum', 'uint8', DEFENDER_TEAM)
+    writeField(triggerEnt, 'CBaseTrigger', 'm_bDisabled', 'bool', false)
+    writeField(triggerEnt, 'CTriggerItemShop', 'm_vAudioOffset', 'vector', {
+      x: 0,
+      y: 0,
+      z: 0,
+    })
+    fireInput(triggerEnt, 'Enable')
+  }
+
+  private spawnShopSphereTrigger(origin: Vector, radius: number): number {
+    const created = createEntity({
+      designerName: 'trigger_item_shop',
+      subclass: '',
+      team: DEFENDER_TEAM,
+      position: origin,
+      facing: { pitch: 0, yaw: 0, roll: 0 },
+      keyValues: [
+        { key: 'origin', value: { vector: origin } },
+        { key: 'radius', value: { number: radius } },
+        { key: 'okifnomodel', value: { boolean: true } },
+        { key: 'StartDisabled', value: { boolean: false } },
+        { key: 'spawnflags', value: { integer: SHOP_TRIGGER_SPAWNFLAGS } },
+      ],
+      fields: [
+        {
+          className: 'CBaseEntity',
+          field: 'm_spawnflags',
+          type: 'uint32',
+          value: SHOP_TRIGGER_SPAWNFLAGS,
+        },
+        {
+          className: 'CBaseTrigger',
+          field: 'm_bDisabled',
+          type: 'bool',
+          value: false,
+        },
+        {
+          className: 'CTriggerItemShop',
+          field: 'm_vAudioOffset',
+          type: 'vector',
+          value: { x: 0, y: 0, z: 0 },
+        },
+      ],
+    })
+    if (created && created > 0) {
+      this.configureShopTriggerForDefenders(created)
+      return created
+    }
+    return 0
+  }
+
+  /**
+   * Grants Buy Anywhere without `sv_cheats 1` (#31): spawns native `radius` Rubikon
+   * sphere `trigger_item_shop` volumes (Layer A arena-wide `radius = 16000` at
+   * `{ x: 0, y: -4800, z: 600 }` + Layer B kinematic `1 << 28` per-pawn `radius = 256`
+   * centered at `pos.z + zOffset`) with `spawnflags = 0x10000043` so native VPhysics
+   * `CTriggerItemShop::StartTouch` keeps `CCitadelPlayerPawn.m_bInItemShopZone=true`.
+   */
+  ensureDefenderShopAccess(pawnEntity: number, pawnPosition?: Vector): boolean {
+    if (pawnEntity <= 0) {
+      return false
+    }
+
+    if (this.shopTriggerEntity <= 0 || !entityPosition(this.shopTriggerEntity)) {
+      const created = this.spawnShopSphereTrigger(
+        ARENA_SHOP_TRIGGER_ORIGIN,
+        ARENA_SHOP_TRIGGER_RADIUS,
+      )
+      if (created > 0) {
+        this.shopTriggerEntity = created
+      }
+    }
+
+    for (const [trackedPawn, entry] of this.personalShopTriggers) {
+      const lifeState = readField(trackedPawn, 'CBaseEntity', 'm_lifeState', 'uint8')
+      if (typeof lifeState !== 'number' || lifeState !== 0) {
+        removeEntity(entry.triggerEnt)
+        this.personalShopTriggers.delete(trackedPawn)
+      }
+    }
+
+    const pos = pawnPosition ?? entityPosition(pawnEntity)?.position
+    const inShopNow =
+      readField(pawnEntity, 'CCitadelPlayerPawn', 'm_bInItemShopZone', 'bool') ===
+      true
+
+    if (pos) {
+      let personal = this.personalShopTriggers.get(pawnEntity)
+      if (personal && !entityPosition(personal.triggerEnt)) {
+        this.personalShopTriggers.delete(pawnEntity)
+        personal = undefined
+      }
+
+      const driftX = personal
+        ? Math.abs(pos.x - personal.lastPawnPos.x)
+        : Infinity
+      const driftY = personal
+        ? Math.abs(pos.y - personal.lastPawnPos.y)
+        : Infinity
+      const driftZ = personal
+        ? Math.abs(pos.z - personal.lastPawnPos.z)
+        : Infinity
+      const needsReposition =
+        !inShopNow ||
+        !personal ||
+        driftX > 70 ||
+        driftY > 70 ||
+        driftZ > 32
+
+      if (needsReposition) {
+        const zOffset = !inShopNow && personal?.nudgeToggle ? 420 : 36
+        const targetOrigin: Vector = {
+          x: pos.x,
+          y: pos.y,
+          z: pos.z + zOffset,
+        }
+        if (!personal) {
+          const pEnt = this.spawnShopSphereTrigger(
+            targetOrigin,
+            PERSONAL_SHOP_TRIGGER_RADIUS,
+          )
+          if (pEnt > 0) {
+            this.personalShopTriggers.set(pawnEntity, {
+              triggerEnt: pEnt,
+              lastPawnPos: { ...pos },
+              nudgeToggle: true,
+            })
+          }
+        } else {
+          if (!inShopNow) {
+            this.configureShopTriggerForDefenders(personal.triggerEnt)
+          }
+          moveEntity(personal.triggerEnt, targetOrigin, {
+            pitch: 0,
+            yaw: 0,
+            roll: 0,
+          })
+          personal.lastPawnPos = { ...pos }
+          personal.nudgeToggle = !personal.nudgeToggle
+        }
+      }
+    }
+
+    return (
+      readField(pawnEntity, 'CCitadelPlayerPawn', 'm_bInItemShopZone', 'bool') ===
+        true ||
+      this.personalShopTriggers.has(pawnEntity) ||
+      this.shopTriggerEntity > 0
+    )
   }
 
   /** Resets wave state for a new world or /restarttd. */
@@ -289,6 +468,7 @@ export class WaveManager {
     this.steeredWaveCreeps.clear()
     this.cachedBuildingTargets = undefined
     this.restoreIntervalAt = 0
+    this.cleanupShopTriggers()
     this.applyServerConfig()
   }
 
@@ -415,7 +595,14 @@ export class WaveManager {
     if (this.wave === 1) {
       this.suppressNonEnemyCenterTrooperSpawners()
       this.unlockAllPlayerFlexSlots()
+    } else if (this.wave >= 2) {
+      for (const conn of players()) {
+        if (!conn.bot && conn.ready) {
+          conn.player.addMetric('td.waves_cleared', this.wave - 1)
+        }
+      }
     }
+    this.onWaveStartedCallback?.(this.wave)
     this.purgeFriendlyAndSideLaneTroopers()
 
     // Keep squad size fixed at 4 (matching the 4 zipline seats so 0 skybase creeps strand)

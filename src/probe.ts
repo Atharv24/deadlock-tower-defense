@@ -19,7 +19,6 @@ import {
   players,
   ProbeRun,
   readField,
-  serverCommand,
   spawnNpc,
 } from 'modlock'
 
@@ -70,6 +69,7 @@ export class TdProbe {
   private bossMarchVerified = false
   private defenderHpBeforeBoss = 0
   private guardianHpBeforeBoss = 0
+  private defenderTeleportedAt = 0
 
   tick(
     now: number,
@@ -92,7 +92,7 @@ export class TdProbe {
       case 'world':
         return this.checkWorld(guardian)
       case 'defender':
-        return this.checkDefender()
+        return this.checkDefender(now, waves)
       case 'wave_scale':
         return this.checkWaveAndScaling(now, waves)
       case 'tome_grant':
@@ -185,14 +185,42 @@ export class TdProbe {
     return false
   }
 
-  private checkDefender(): boolean | string {
+  private checkDefender(now: number, waves: WaveManager): boolean | string {
     const pawn = this.defender?.pawn()
     if (!pawn || pawn.health <= 0) {
       return false
     }
-    this.defender?.teleport(PLAYER_SPAWN_ORIGIN, PLAYER_SPAWN_ANGLES)
+    const dist = Math.hypot(
+      pawn.position.x - PLAYER_SPAWN_ORIGIN.x,
+      pawn.position.y - PLAYER_SPAWN_ORIGIN.y,
+    )
+    if (dist > 350) {
+      this.defender?.teleport(PLAYER_SPAWN_ORIGIN, PLAYER_SPAWN_ANGLES)
+      this.defenderTeleportedAt = now
+      waves.ensureDefenderShopAccess(pawn.entity, PLAYER_SPAWN_ORIGIN)
+      return false
+    }
+    if (this.defenderTeleportedAt === 0) {
+      this.defenderTeleportedAt = now
+    }
+    waves.ensureDefenderShopAccess(pawn.entity, pawn.position)
+    if (now - this.defenderTeleportedAt < 0.35) {
+      return false
+    }
+    const inShop = readField(
+      pawn.entity,
+      'CCitadelPlayerPawn',
+      'm_bInItemShopZone',
+      'bool',
+    )
+    if (inShop !== true) {
+      if (now - this.defenderTeleportedAt < 3.0) {
+        return false
+      }
+      return `defender pawn ${pawn.entity} at [${Math.round(pawn.position.x)}, ${Math.round(pawn.position.y)}, ${Math.round(pawn.position.z)}] m_bInItemShopZone expected true under sv_cheats 0, got ${String(inShop)}`
+    }
     log(
-      `Probe: defender hero spawned at [${Math.round(pawn.position.x)}, ${Math.round(pawn.position.y)}, ${Math.round(pawn.position.z)}]`,
+      `Probe: defender hero stationed at [${Math.round(pawn.position.x)}, ${Math.round(pawn.position.y)}, ${Math.round(pawn.position.z)}] with Buy Anywhere active (m_bInItemShopZone=true)`,
     )
     this.step = 'wave_scale'
     return false
@@ -664,11 +692,21 @@ export class TdProbe {
     guardian: GuardianManager,
   ): boolean | string {
     // 1. Destroy Blue T1 Guardian and verify match stays ACTIVE and advances frontline to Blue Walker!
-    // Also exercise `citadel_spawn_trooper_wave` live to prove CInfoTrooperBossSpawn never divides by zero.
+    // Also spawn a friendly Team 2 trooper under sv_cheats 0 and verify purge removes it cleanly.
     if (this.progressionKilledGuardianAt === 0) {
-      serverCommand('sv_cheats 1')
-      serverCommand('citadel_spawn_trooper_wave')
-      serverCommand('sv_cheats 0')
+      spawnNpc({
+        className: 'npc_trooper',
+        unit: 'trooper_normal',
+        team: 2,
+        lane: 4,
+        position: { x: 0, y: -2100, z: 384 },
+        facing: { pitch: 0, yaw: 90, roll: 0 },
+      })
+      waves.purgeFriendlyAndSideLaneTroopers()
+      const dp = this.defender?.pawn()
+      if (dp && dp.health > 0) {
+        waves.ensureDefenderShopAccess(dp.entity, dp.position)
+      }
       killEntity({ victim: guardian.entity })
       this.progressionKilledGuardianAt = now
       guardian.poll(waves.wave, now)
@@ -680,6 +718,10 @@ export class TdProbe {
 
     // Allow a couple ticks for Source 2 C++ BossInvuln to update on Blue Walker (`rebels_t2_boss_blue`)
     if (now - this.progressionKilledGuardianAt < 0.6) {
+      const dp = this.defender?.pawn()
+      if (dp && dp.health > 0) {
+        waves.ensureDefenderShopAccess(dp.entity, dp.position)
+      }
       guardian.poll(waves.wave, now)
       return false
     }
@@ -718,8 +760,21 @@ export class TdProbe {
       }
     }
 
+    const defPawn = this.defender?.pawn()
+    if (defPawn && defPawn.entity > 0 && defPawn.health > 0) {
+      const stillInShop = readField(
+        defPawn.entity,
+        'CCitadelPlayerPawn',
+        'm_bInItemShopZone',
+        'bool',
+      )
+      if (stillInShop !== true) {
+        return `defender pawn ${defPawn.entity} lost Buy Anywhere (m_bInItemShopZone=${String(stillInShop)}) across server ticks under sv_cheats 0`
+      }
+    }
+
     log(
-      `Probe: verified Guardian death keeps match ACTIVE, advances frontline to Blue Walker (${walkerBefore} -> ${guardian.walkerHealth} HP), and preserves full Guardian -> Walker -> Base Guardians -> Shrines -> Patron Stage 1 -> Stage 2 progression — ALL CHECKS PASSED`,
+      `Probe: verified Guardian death keeps match ACTIVE, advances frontline to Blue Walker (${walkerBefore} -> ${guardian.walkerHealth} HP), preserves Buy Anywhere under sv_cheats 0, and maintains Guardian -> Walker -> Base Guardians -> Shrines -> Patron Stage 1 -> Stage 2 progression — ALL CHECKS PASSED`,
     )
     return true
   }

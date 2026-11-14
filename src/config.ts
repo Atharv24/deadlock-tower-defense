@@ -1189,6 +1189,84 @@ export function evaluateLeaderboardSubmission(
   }
 }
 
+export interface LeaderboardCheckpointInput {
+  readonly wave: number
+  readonly kills: number
+  readonly rankedEligible: boolean
+  readonly isProbeMode: boolean
+  readonly requireProgressOnWave1?: boolean
+  readonly prevBest?: { readonly wave: number; readonly kills: number }
+  readonly prevReportedKills?: number
+}
+
+export interface LeaderboardCheckpointDecision {
+  readonly eligible: boolean
+  readonly shouldReportWave: boolean
+  readonly waveScore: number
+  readonly safeKills: number
+  readonly tiebreak: number
+  readonly creepsDelta: number
+}
+
+/**
+ * Pure evaluator for progressive per-wave / disconnect Hyperline leaderboard checkpoints:
+ * - `td.highest_wave` (`KEEP_BEST`) updates whenever wave (or kills tiebreak) improves.
+ * - `td.creeps_slain` (`KEEP_SUM`) reports only the delta since the last checkpoint so kills
+ *   accumulate accurately across live checkpoints and mid-run disconnects without double-counting.
+ */
+export function evaluateLeaderboardCheckpoint(
+  opts: LeaderboardCheckpointInput,
+): LeaderboardCheckpointDecision {
+  if (opts.isProbeMode || !opts.rankedEligible) {
+    return {
+      eligible: false,
+      shouldReportWave: false,
+      waveScore: 0,
+      safeKills: 0,
+      tiebreak: 0,
+      creepsDelta: 0,
+    }
+  }
+  const flooredWave = Math.floor(opts.wave)
+  const safeKills = Math.max(0, Math.floor(opts.kills))
+  if (flooredWave < 1) {
+    return {
+      eligible: false,
+      shouldReportWave: false,
+      waveScore: 0,
+      safeKills: 0,
+      tiebreak: 0,
+      creepsDelta: 0,
+    }
+  }
+  if (opts.requireProgressOnWave1 && flooredWave === 1 && safeKills <= 0) {
+    return {
+      eligible: false,
+      shouldReportWave: false,
+      waveScore: 0,
+      safeKills: 0,
+      tiebreak: 0,
+      creepsDelta: 0,
+    }
+  }
+  const waveScore = Math.min(999, Math.max(1, flooredWave))
+  const shouldReportWave =
+    !opts.prevBest ||
+    waveScore > opts.prevBest.wave ||
+    (waveScore === opts.prevBest.wave && safeKills > opts.prevBest.kills)
+  const prevKills = Math.max(0, Math.floor(opts.prevReportedKills ?? 0))
+  const creepsDelta = Math.min(100_000, Math.max(0, safeKills - prevKills))
+  return {
+    eligible: true,
+    shouldReportWave,
+    waveScore,
+    safeKills,
+    // Lower tiebreak ranks first in Modlock scores.proto; negate kills so more Creep Last-Hits wins ties.
+    tiebreak: -safeKills,
+    creepsDelta,
+  }
+}
+
 export interface TdHandoffState {
   readonly version: 1
   readonly wave: number
@@ -1206,6 +1284,9 @@ export interface TdHandoffState {
   readonly runRankedEligible?: boolean
   readonly runDisqualifyReason?: string
   readonly runSubmittedSlots?: readonly number[]
+  readonly runReportedBestBySlot?: Record<string, { wave: number; kills: number }>
+  readonly runReportedKillsBySlot?: Record<string, number>
+  readonly runReportSeq?: number
 }
 
 /** Serializes Tower Defense state for Modlock hot-reload `handoff()`. */
@@ -1257,14 +1338,25 @@ export function deserializeTdHandoff(raw: string | undefined): TdHandoffState | 
       ...(Array.isArray(parsed.runSubmittedSlots)
         ? { runSubmittedSlots: parsed.runSubmittedSlots }
         : {}),
+      ...(parsed.runReportedBestBySlot &&
+      typeof parsed.runReportedBestBySlot === 'object'
+        ? { runReportedBestBySlot: parsed.runReportedBestBySlot }
+        : {}),
+      ...(parsed.runReportedKillsBySlot &&
+      typeof parsed.runReportedKillsBySlot === 'object'
+        ? { runReportedKillsBySlot: parsed.runReportedKillsBySlot }
+        : {}),
+      ...(typeof parsed.runReportSeq === 'number'
+        ? { runReportSeq: parsed.runReportSeq }
+        : {}),
     }
   } catch {
     return undefined
   }
 }
 
-/** Seconds with 0 connected human players (after at least 1 human joined) before shutting down the server (`quit`). */
-export const EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS = 0
+/** Seconds with 0 connected human players (after at least 1 human joined) before shutting down the server (`quit`), allowing score/metric RPCs to flush cleanly. */
+export const EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS = 3
 
 export interface EmptyServerWatchState {
   readonly hasSeenHuman: boolean
@@ -1274,7 +1366,7 @@ export interface EmptyServerWatchState {
 
 /**
  * Evaluates whether the dedicated server should shut down (`serverCommand('quit')`)
- * after all human players have disconnected for `delaySeconds` (default 0s — immediate when last human disconnects).
+ * after all human players have disconnected for `delaySeconds` (default 3s so async score/metric RPCs finish before exit).
  * Never triggers before the first human player connects or during `TdProbe`.
  */
 export function evaluateEmptyServerShutdown(
@@ -1325,6 +1417,55 @@ export function evaluateEmptyServerShutdown(
     },
     shouldQuit: false,
   }
+}
+
+/** Deterministic integer formatting (`9600` -> `9,600`) avoiding QuickJS locale variance (#32). */
+export function formatSoulsCount(value: number): string {
+  if (!Number.isFinite(value)) {
+    return '0'
+  }
+  const rounded = Math.round(value)
+  const sign = rounded < 0 ? '-' : ''
+  const absStr = String(Math.abs(rounded))
+  return `${sign}${absStr.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`
+}
+
+/** Deterministic `MM:SS` (or `H:MM:SS`) match timer formatting for the HUD top strip (#32). */
+export function formatMatchClock(seconds: number): string {
+  if (!Number.isFinite(seconds)) {
+    return '00:00'
+  }
+  const totalSec = Math.max(0, Math.floor(seconds))
+  const hours = Math.floor(totalSec / 3600)
+  const mins = Math.floor((totalSec % 3600) / 60)
+  const secs = totalSec % 60
+  const pad2 = (n: number): string => (n < 10 ? `0${n}` : `${n}`)
+  return hours > 0
+    ? `${hours}:${pad2(mins)}:${pad2(secs)}`
+    : `${pad2(mins)}:${pad2(secs)}`
+}
+
+/**
+ * Gates Panorama HUD updates so modal/state changes render immediately, identical signatures
+ * skip redundant work, and sustained combat updates never exceed ~2 Hz over the CEF title relay (#32).
+ */
+export function shouldPushHudUpdate(opts: {
+  readonly lastSig: string | undefined
+  readonly nextSig: string
+  readonly lastModalSig: string | undefined
+  readonly nextModalSig: string
+  readonly nowSeconds: number
+  readonly lastSentAtSeconds: number
+  readonly minIntervalSeconds?: number
+}): boolean {
+  if (opts.lastSig === undefined || opts.lastModalSig !== opts.nextModalSig) {
+    return true
+  }
+  if (opts.lastSig === opts.nextSig) {
+    return false
+  }
+  const minInterval = opts.minIntervalSeconds ?? 0.5
+  return opts.nowSeconds - opts.lastSentAtSeconds >= minInterval
 }
 
 /** Soul cost for Tier-5 Legendary items in the TD Legendary Armory. */
@@ -1378,7 +1519,7 @@ export function evaluateLegendaryPurchase(opts: {
   if (opts.souls < cost) {
     return {
       ok: false,
-      reason: `Need ${cost.toLocaleString()} Souls for ${formatItemDisplayTitle(opts.itemName)} (have ${opts.souls.toLocaleString()}).`,
+      reason: `Need ${formatSoulsCount(cost)} Souls for ${formatItemDisplayTitle(opts.itemName)} (have ${formatSoulsCount(opts.souls)}).`,
     }
   }
   return { ok: true, cost }
@@ -1535,7 +1676,7 @@ export function formatScaledMinorTomeDescription(
       return `+${ap} Ability Point${ap === 1 ? '' : 's'}`
     }
     case 'soul_jackpot':
-      return `+${Math.round((tome.amount ?? SOUL_CACHE_BASE_SOULS) * m).toLocaleString()} Bonus Souls`
+      return `+${formatSoulsCount(Math.round((tome.amount ?? SOUL_CACHE_BASE_SOULS) * m))} Bonus Souls`
     default:
       return tome.description
   }
@@ -1564,11 +1705,11 @@ export function formatScaledMajorBoonSubtitle(
     }
     case 'warchest': {
       const souls = Math.round((boon.bonusSouls ?? 1200) * m)
-      return `+${souls.toLocaleString()} Souls & ${m.toFixed(2)}x All-Stats Omni Tome`
+      return `+${formatSoulsCount(souls)} Souls & ${m.toFixed(2)}x All-Stats Omni Tome`
     }
     case 'bastion': {
       const heal = Math.round((boon.guardianHeal ?? 2000) * m)
-      return `Fortify All Structures (+${heal.toLocaleString()} Heal) & +${Math.round(80 * m)} Hero HP (${m.toFixed(2)}x)`
+      return `Fortify All Structures (+${formatSoulsCount(heal)} Heal) & +${Math.round(80 * m)} Hero HP (${m.toFixed(2)}x)`
     }
     default:
       return `${boon.subtitle} (${m.toFixed(2)}x)`

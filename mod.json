@@ -1,7 +1,7 @@
 {
   "slug": "deadlock-td",
   "name": "Hidden King's Defense",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "Defend the Hidden King's Center Lane from Blue Guardian down to the Patron — featuring Colossus Raid Bosses, scaling trooper waves, last-hit Tomes, 1-of-3 Major Boons, Legendary Armory, All-Structure Fortification, and Ranked Leaderboards!",
   "repository": "https://github.com/Atharv24/deadlock-tower-defense",
   "tags": [
@@ -75,8 +75,7 @@
       "windows": ["WINDOW_ALL_TIME", "WINDOW_WEEK", "WINDOW_DAY"],
       "lowest": 1,
       "highest": 999,
-      "version": 1,
-      "hud": "HUD_END_CARD"
+      "version": 1
     },
     {
       "name": "td.creeps_slain",
