@@ -505,13 +505,20 @@ export function renderTdHud(
         leaderboardOpen || guardian.matchState === 'defeat'
           ? leaderboard.getBoardSnapshot(player, lbWindow, now)
           : undefined
-      const boardSig = `${leaderboardOpen ? 1 : 0}:${leaderboard.isLocalDev ? 1 : 0}:${lbWindow}:${leaderboard.rankedEligible ? 1 : 0}:${leaderboard.disqualifyReason ?? ''}:${
+      const boardAcceptSig = `${
+        leaderboard.lastReportAccepted === undefined
+          ? 'u'
+          : leaderboard.lastReportAccepted
+            ? '1'
+            : '0'
+      }:${leaderboard.acceptedReportsCount}`
+      const boardSig = `${leaderboardOpen ? 1 : 0}:${leaderboard.isLocalDev ? 1 : 0}:${lbWindow}:${leaderboard.rankedEligible ? 1 : 0}:${leaderboard.disqualifyReason ?? ''}:${boardAcceptSig}:${
         boardPage
           ? `${boardPage.loading ? 1 : 0}:${boardPage.player?.rank ?? 0}:${boardPage.player?.value ?? 0}:${boardPage.rows.map((r) => `${r.rank},${r.value},${r.tiebreak},${r.name}`).join('|')}`
           : 'local'
       }`
       const tomeRateSig = tomes.getGrowthRate(now)
-      const modalSig = `${needsHeroPick ? 1 : 0};${canCancelHeroPick ? 1 : 0};${searchSig};${boonSig};${legendaryShopOpen ? 1 : 0};${shopSig};${leaderboardOpen ? 1 : 0};${lbWindow};${guardian.matchState};${compact ? 1 : 0};${pawn?.entity ?? 0};${effectiveHudEpoch}`
+      const modalSig = `${needsHeroPick ? 1 : 0};${canCancelHeroPick ? 1 : 0};${searchSig};${boonSig};${legendaryShopOpen ? 1 : 0};${shopSig};${leaderboardOpen ? `1:${boardAcceptSig}` : '0'};${lbWindow};${guardian.matchState};${compact ? 1 : 0};${pawn?.entity ?? 0};${effectiveHudEpoch}`
       const hudSig = `${displayWave};${waves.waitingForDefenderHero ? 1 : 0};${nextWaveSeconds};${waves.aliveCreepCount};${guardian.currentStage};${guardian.health};${guardian.maxHealth};${guardian.walkerHealth};${guardian.baseGuardiansHealth};${guardian.shrinesHealth};${guardian.patronHealth};${guardian.patronPhase};${guardian.upgradeLevel};${guardian.matchState};${compact ? 1 : 0};${needsHeroPick ? 1 : 0};${canCancelHeroPick ? 1 : 0};${pawn?.entity ?? 0};${shopSig};${boardSig};${searchSig};${boonSig};${tomes.getKills(player.slot)};${tomes.getTotalTomes(player.slot)};${tomeRateSig};${bossSig};${effectiveHudEpoch}`
       const lastSentAt = lastHudSentAtBySlot.get(player.slot) ?? -999
       const willPush = shouldPushHudUpdate({
@@ -1587,7 +1594,13 @@ function LeaderboardModal(props: {
   const subtitleText = getLeaderboardSubtitleCopy({
     rankedEligible: leaderboard.rankedEligible,
     disqualifyReason: leaderboard.disqualifyReason,
+    lastReportAccepted: leaderboard.lastReportAccepted,
+    acceptedReportsCount: leaderboard.acceptedReportsCount,
   })
+  const subtitleColor =
+    !leaderboard.rankedEligible || leaderboard.lastReportAccepted === false
+      ? '#fbbf24'
+      : '#4ade80'
   const unavailableCopy =
     boardPage === undefined
       ? getLeaderboardUnavailableCopy({
@@ -1595,6 +1608,8 @@ function LeaderboardModal(props: {
           currentWave,
           currentKills,
           sessionBest,
+          lastReportAccepted: leaderboard.lastReportAccepted,
+          acceptedReportsCount: leaderboard.acceptedReportsCount,
         })
       : undefined
 
@@ -1640,7 +1655,7 @@ function LeaderboardModal(props: {
                 style={{
                   fontSize: 12,
                   bold: true,
-                  color: leaderboard.rankedEligible ? '#4ade80' : '#fbbf24',
+                  color: subtitleColor,
                   margin: [2, 0, 0, 0],
                 }}
               >

@@ -552,7 +552,7 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
     assert.equal(computeVanillaEffectiveHpDamageScale(700, 700), 0.5)
   })
 
-  it('auto-quits server after 3s grace when last human disconnects so scores flush, ignoring cold startup and cancelling on reconnect (#33)', () => {
+  it('auto-resets hosted server to idle after 3s flush grace and auto-quits only in local --arg dev mode (#33, v0.7.5)', () => {
     assert.equal(EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS, 3)
 
     const state: EmptyServerWatchState = {
@@ -561,68 +561,88 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
       quitIssued: false,
     }
 
-    // Cold server startup (0..60s before first human joins) must NEVER trigger quit
+    // Cold server startup (0..60s before first human joins) must NEVER trigger quit or reset
     const coldCheck = evaluateEmptyServerShutdown(state, 0, 60, false)
     assert.equal(coldCheck.shouldQuit, false)
+    assert.equal(coldCheck.shouldResetMatch, false)
     assert.equal(coldCheck.nextState.hasSeenHuman, false)
 
     // First human joins at t=65s
     const joined = evaluateEmptyServerShutdown(coldCheck.nextState, 1, 65, false)
     assert.equal(joined.shouldQuit, false)
+    assert.equal(joined.shouldResetMatch, false)
     assert.equal(joined.nextState.hasSeenHuman, true)
     assert.equal(joined.nextState.emptySinceSeconds, undefined)
 
-    // Probe mode bypasses shutdown
+    // Probe mode bypasses shutdown & reset
     const probeCheck = evaluateEmptyServerShutdown(joined.nextState, 0, 100, true)
     assert.equal(probeCheck.shouldQuit, false)
+    assert.equal(probeCheck.shouldResetMatch, false)
 
-    // Default delay (3s): last human disconnect starts 3s flush grace timer, fires at t=103s & stays idempotent
+    // 1. Hosted mode (allowProcessQuit=false, default): waits 3s flush grace, then emits shouldResetMatch=true ONCE without calling quit!
     const disconnectStart = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false)
     assert.equal(disconnectStart.shouldQuit, false)
+    assert.equal(disconnectStart.shouldResetMatch, false)
     assert.equal(disconnectStart.nextState.emptySinceSeconds, 100)
 
     const beforeGrace = evaluateEmptyServerShutdown(disconnectStart.nextState, 0, 102.9, false)
     assert.equal(beforeGrace.shouldQuit, false)
+    assert.equal(beforeGrace.shouldResetMatch, false)
 
-    const afterGrace = evaluateEmptyServerShutdown(beforeGrace.nextState, 0, 103, false)
-    assert.equal(afterGrace.shouldQuit, true)
-    assert.equal(afterGrace.nextState.quitIssued, true)
+    const afterGraceHosted = evaluateEmptyServerShutdown(beforeGrace.nextState, 0, 103, false)
+    assert.equal(afterGraceHosted.shouldQuit, false)
+    assert.equal(afterGraceHosted.shouldResetMatch, true)
+    assert.equal(afterGraceHosted.nextState.hasSeenHuman, false)
+    assert.equal(afterGraceHosted.nextState.emptySinceSeconds, undefined)
+    assert.equal(afterGraceHosted.nextState.quitIssued, false)
 
-    const afterImmediateQuit = evaluateEmptyServerShutdown(
-      afterGrace.nextState,
+    // Subsequent empty ticks stay idle at Wave 0 without looping reset or quit
+    const afterHostedReset = evaluateEmptyServerShutdown(
+      afterGraceHosted.nextState,
       0,
       104,
       false,
     )
-    assert.equal(afterImmediateQuit.shouldQuit, false)
+    assert.equal(afterHostedReset.shouldQuit, false)
+    assert.equal(afterHostedReset.shouldResetMatch, false)
+    assert.equal(afterHostedReset.nextState.hasSeenHuman, false)
 
-    // Explicit 0s custom delay also works immediately
-    const zeroDelayQuit = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false, 0)
+    // Explicit 0s custom delay also works immediately (hosted -> reset, local dev -> quit)
+    const zeroDelayHosted = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false, 0, false)
+    assert.equal(zeroDelayHosted.shouldQuit, false)
+    assert.equal(zeroDelayHosted.shouldResetMatch, true)
+
+    const zeroDelayQuit = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false, 0, true)
     assert.equal(zeroDelayQuit.shouldQuit, true)
+    assert.equal(zeroDelayQuit.shouldResetMatch, false)
     assert.equal(zeroDelayQuit.nextState.quitIssued, true)
 
-    // Optional custom delay (30s): starts countdown, cancels on reconnect, fires at 30s
-    const delayedStart = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false, 30)
+    // 2. Local --arg dev mode (allowProcessQuit=true): optional custom delay (30s) cancels on reconnect and quits once at 30s
+    const delayedStart = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false, 30, true)
     assert.equal(delayedStart.shouldQuit, false)
+    assert.equal(delayedStart.shouldResetMatch, false)
     assert.equal(delayedStart.nextState.emptySinceSeconds, 100)
 
-    const reconnected = evaluateEmptyServerShutdown(delayedStart.nextState, 1, 120, false, 30)
+    const reconnected = evaluateEmptyServerShutdown(delayedStart.nextState, 1, 120, false, 30, true)
     assert.equal(reconnected.shouldQuit, false)
+    assert.equal(reconnected.shouldResetMatch, false)
     assert.equal(reconnected.nextState.emptySinceSeconds, undefined)
 
-    const delayedAgain = evaluateEmptyServerShutdown(reconnected.nextState, 0, 200, false, 30)
+    const delayedAgain = evaluateEmptyServerShutdown(reconnected.nextState, 0, 200, false, 30, true)
     assert.equal(delayedAgain.shouldQuit, false)
     assert.equal(delayedAgain.nextState.emptySinceSeconds, 200)
 
-    const at29s = evaluateEmptyServerShutdown(delayedAgain.nextState, 0, 229, false, 30)
+    const at29s = evaluateEmptyServerShutdown(delayedAgain.nextState, 0, 229, false, 30, true)
     assert.equal(at29s.shouldQuit, false)
 
-    const at30s = evaluateEmptyServerShutdown(at29s.nextState, 0, 230, false, 30)
+    const at30s = evaluateEmptyServerShutdown(at29s.nextState, 0, 230, false, 30, true)
     assert.equal(at30s.shouldQuit, true)
+    assert.equal(at30s.shouldResetMatch, false)
     assert.equal(at30s.nextState.quitIssued, true)
 
-    const afterDelayedQuit = evaluateEmptyServerShutdown(at30s.nextState, 0, 231, false, 30)
+    const afterDelayedQuit = evaluateEmptyServerShutdown(at30s.nextState, 0, 231, false, 30, true)
     assert.equal(afterDelayedQuit.shouldQuit, false)
+    assert.equal(afterDelayedQuit.shouldResetMatch, false)
   })
 })
 
@@ -1312,6 +1332,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   const mockBoardPages = new Map<string, unknown>()
   const mockBotPlayers: Array<{ player: MockPlayer; name: string; bot: boolean; ready: boolean; steamId: bigint; generation: number; roles: string[] }> = []
   let mockVanillaMode = false
+  let mockReportScoreResult = true
   let nextSpawnedEntityId = 2000
   let probePassed = false
   let probeFailedReason = ''
@@ -1701,7 +1722,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     ];
     export const reportScore = (player, board, value, options = {}) => {
       globalThis.__mockModlock.reportedScores.push({ slot: player.slot, board, value, options });
-      return true;
+      return globalThis.__mockModlock.getReportScoreResult();
     };
     export const readBoard = (board, read = {}) => {
       return globalThis.__mockModlock.mockBoardPages.get(board + ':' + (read.window ?? 'allTime'));
@@ -2087,6 +2108,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     neutralIds,
     necroSkeleIds,
     isVanillaMode: () => mockVanillaMode,
+    getReportScoreResult: () => mockReportScoreResult,
     modelStore,
     allocSpawnEntity: () => ++nextSpawnedEntityId,
     activeBossBots,
@@ -3309,6 +3331,86 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.equal(lb.getBoardSnapshot(defenderPlayer as never, 'allTime', 0.5)?.rows.length, 2)
     mockBoardPages.clear()
   })
+
+  it('captures reportScore() host acceptance state across checkpoints, /restarttd, idle reset, and handoff (v0.7.5)', () => {
+    reportedScores.length = 0
+    mockReportScoreResult = true
+
+    const lb = new LeaderboardManager()
+    assert.equal(lb.lastReportAccepted, undefined)
+    assert.equal(lb.acceptedReportsCount, 0)
+
+    // When host rejects/has no `scores` service (`reportScore` returns false), surface false without incrementing acceptedReportsCount
+    mockReportScoreResult = false
+    assert.equal(lb.checkpointPlayer(defenderPlayer as never, 2, 12), true)
+    assert.equal(lb.lastReportAccepted, false)
+    assert.equal(lb.acceptedReportsCount, 0)
+
+    // When host accepts `scores` RPC (`reportScore` returns true), update lastReportAccepted=true & increment acceptedReportsCount
+    mockReportScoreResult = true
+    assert.equal(lb.checkpointPlayer(defenderPlayer as never, 3, 25), true)
+    assert.equal(lb.lastReportAccepted, true)
+    assert.equal(lb.acceptedReportsCount, 1)
+
+    // `/restarttd` (`startNewRun`) starts a new runId while preserving session host acceptance diagnostics
+    const checkpointBeforeRestart = lb.exportCheckpointState()
+    assert.equal(checkpointBeforeRestart.lastReportAccepted, true)
+    assert.equal(checkpointBeforeRestart.acceptedReportsCount, 1)
+
+    lb.startNewRun()
+    assert.equal(lb.lastReportAccepted, true)
+    assert.equal(lb.acceptedReportsCount, 1)
+
+    // Serialize -> Deserialize TdHandoffState -> LeaderboardManager.restore preserves host acceptance status
+    const rawHandoff = serializeTdHandoff({
+      version: 1,
+      wave: 3,
+      nextWaveTime: 45,
+      matchState: 'active',
+      guardianUpgradeLevel: 0,
+      guardianBonusMaxHp: 0,
+      scaledCreeps: [],
+      rewardedCreeps: [],
+      playerTomes: {},
+      playerKills: { '0': 25 },
+      runId: lb.runId,
+      runRankedEligible: true,
+      runSubmittedSlots: [0],
+      runReportedBestBySlot: checkpointBeforeRestart.reportedBestBySlot,
+      runReportedKillsBySlot: checkpointBeforeRestart.reportedKillsBySlot,
+      runReportSeq: checkpointBeforeRestart.reportSeq,
+      runLastReportAccepted: checkpointBeforeRestart.lastReportAccepted,
+      runAcceptedReportsCount: checkpointBeforeRestart.acceptedReportsCount,
+    })
+    const parsedHandoff = deserializeTdHandoff(rawHandoff)
+    assert.equal(parsedHandoff?.runLastReportAccepted, true)
+    assert.equal(parsedHandoff?.runAcceptedReportsCount, 1)
+
+    const restoredLb = new LeaderboardManager()
+    restoredLb.restore(
+      parsedHandoff?.runId,
+      parsedHandoff?.runRankedEligible,
+      parsedHandoff?.runDisqualifyReason,
+      parsedHandoff?.runSubmittedSlots,
+      {
+        reportedBestBySlot: parsedHandoff?.runReportedBestBySlot,
+        reportedKillsBySlot: parsedHandoff?.runReportedKillsBySlot,
+        reportSeq: parsedHandoff?.runReportSeq,
+        lastReportAccepted: parsedHandoff?.runLastReportAccepted,
+        acceptedReportsCount: parsedHandoff?.runAcceptedReportsCount,
+      },
+    )
+    assert.equal(restoredLb.lastReportAccepted, true)
+    assert.equal(restoredLb.acceptedReportsCount, 1)
+
+    // Fresh world / hosted idle reset clears session diagnostics cleanly
+    restoredLb.resetSessionDiagnostics()
+    assert.equal(restoredLb.lastReportAccepted, undefined)
+    assert.equal(restoredLb.acceptedReportsCount, 0)
+    assert.equal(restoredLb.sessionBestBySlot.size, 0)
+
+    mockReportScoreResult = true
+  })
 })
 
 describe('Tier 5 — HUD Stability CVars & Legendary Armory', () => {
@@ -3869,7 +3971,9 @@ describe('Hyperline Dedicated Server Clock Backsteps & Leaderboard Copy (v0.7.1)
     })
     assert.equal(respawnAfter5s.shouldCallRespawn, true)
 
-    // Empty server shutdown timer stamped at 180s reclamps on clock drop to 0.5s, then quits 3s later
+    // Empty server watch timer stamped at 180s reclamps on clock drop to 0.5s:
+    // hosted mode (default) resets match once 3s later without calling quit;
+    // local --arg dev mode (`allowProcessQuit = true`) quits once 3s later.
     const emptyReset = evaluateEmptyServerShutdown(
       { hasSeenHuman: true, emptySinceSeconds: 180.0, quitIssued: false },
       0,
@@ -3877,15 +3981,43 @@ describe('Hyperline Dedicated Server Clock Backsteps & Leaderboard Copy (v0.7.1)
       false,
     )
     assert.equal(emptyReset.shouldQuit, false)
+    assert.equal(emptyReset.shouldResetMatch, false)
     assert.equal(emptyReset.nextState.emptySinceSeconds, 0.5)
-    const emptyDue = evaluateEmptyServerShutdown(emptyReset.nextState, 0, 3.6, false)
-    assert.equal(emptyDue.shouldQuit, true)
+    const emptyHostedDue = evaluateEmptyServerShutdown(emptyReset.nextState, 0, 3.6, false)
+    assert.equal(emptyHostedDue.shouldQuit, false)
+    assert.equal(emptyHostedDue.shouldResetMatch, true)
+    assert.equal(emptyHostedDue.nextState.hasSeenHuman, false)
+
+    const emptyDevDue = evaluateEmptyServerShutdown(
+      emptyReset.nextState,
+      0,
+      3.6,
+      false,
+      EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
+      true,
+    )
+    assert.equal(emptyDevDue.shouldQuit, true)
+    assert.equal(emptyDevDue.shouldResetMatch, false)
   })
 
-  it('formats accurate LeaderboardModal subtitles and unavailable/Draft fallback copy without mislabeling hosted servers', () => {
-    const rankedSubtitle = getLeaderboardSubtitleCopy({ rankedEligible: true })
-    assert.ok(rankedSubtitle.includes('Ranked Run Active'))
-    assert.equal(rankedSubtitle.includes('Defeat or Restart (Wave 2+)'), false)
+  it('formats accurate LeaderboardModal subtitles and unavailable/acceptance copy without mislabeling hosted servers (v0.7.1, v0.7.5)', () => {
+    const rankedPendingSubtitle = getLeaderboardSubtitleCopy({ rankedEligible: true })
+    assert.ok(rankedPendingSubtitle.includes('Ranked Run Active'))
+    assert.ok(rankedPendingSubtitle.includes('Wave 2+ or 1+ kill'))
+    assert.equal(rankedPendingSubtitle.includes('Defeat or Restart (Wave 2+)'), false)
+
+    const rankedAcceptedSubtitle = getLeaderboardSubtitleCopy({
+      rankedEligible: true,
+      lastReportAccepted: true,
+      acceptedReportsCount: 3,
+    })
+    assert.ok(rankedAcceptedSubtitle.includes('Server accepted 3 score checkpoints'))
+
+    const rankedRejectedSubtitle = getLeaderboardSubtitleCopy({
+      rankedEligible: true,
+      lastReportAccepted: false,
+    })
+    assert.ok(rankedRejectedSubtitle.includes('Host scores service inactive'))
 
     const unrankedSubtitle = getLeaderboardSubtitleCopy({
       rankedEligible: false,
@@ -3894,17 +4026,38 @@ describe('Hyperline Dedicated Server Clock Backsteps & Leaderboard Copy (v0.7.1)
     assert.ok(unrankedSubtitle.includes('Unranked'))
     assert.ok(unrankedSubtitle.includes('--arg dev'))
 
-    // Hosted Hyperline server (e.g. Draft mod where readBoard returns undefined) must NEVER claim "Local Dev Server"
-    const hostedFallback = getLeaderboardUnavailableCopy({
+    // Hosted Hyperline server across all 3 `lastReportAccepted` states must NEVER claim "Local Dev Server"
+    const hostedPending = getLeaderboardUnavailableCopy({
+      isLocalDev: false,
+      currentWave: 1,
+      currentKills: 0,
+    })
+    assert.equal(hostedPending.title.includes('Local Dev'), false)
+    assert.ok(hostedPending.detail.includes('Reach Wave 2'))
+
+    const hostedAccepted = getLeaderboardUnavailableCopy({
       isLocalDev: false,
       currentWave: 4,
       currentKills: 37,
       sessionBest: { wave: 6, kills: 72 },
+      lastReportAccepted: true,
+      acceptedReportsCount: 2,
     })
-    assert.equal(hostedFallback.title.includes('Local Dev'), false)
-    assert.equal(hostedFallback.detail.includes('Local Dev'), false)
-    assert.ok(hostedFallback.statsLine.includes('Current Run: Wave 4 (37 Creep Last-Hits)'))
-    assert.ok(hostedFallback.statsLine.includes('Session Best: Wave 6 (72 Creep Last-Hits)'))
+    assert.equal(hostedAccepted.title.includes('Local Dev'), false)
+    assert.ok(hostedAccepted.title.includes('Hyperline Scores Accepted'))
+    assert.ok(hostedAccepted.detail.includes('Server accepted 2 Ranked score checkpoints'))
+    assert.ok(hostedAccepted.statsLine.includes('Current Run: Wave 4 (37 Creep Last-Hits)'))
+    assert.ok(hostedAccepted.statsLine.includes('Session Best: Wave 6 (72 Creep Last-Hits)'))
+
+    const hostedRejected = getLeaderboardUnavailableCopy({
+      isLocalDev: false,
+      currentWave: 3,
+      currentKills: 15,
+      lastReportAccepted: false,
+      acceptedReportsCount: 0,
+    })
+    assert.ok(hostedRejected.title.includes('Host Scores Service Inactive'))
+    assert.ok(hostedRejected.detail.includes('returned false from reportScore()'))
 
     // True local dev mode (--arg dev) clearly says Local Dev Mode and shows Current Run
     const localDevFallback = getLeaderboardUnavailableCopy({

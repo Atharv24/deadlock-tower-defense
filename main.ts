@@ -335,6 +335,10 @@ function persistHandoff(): void {
       runReportedBestBySlot: lbCheckpoint.reportedBestBySlot,
       runReportedKillsBySlot: lbCheckpoint.reportedKillsBySlot,
       runReportSeq: lbCheckpoint.reportSeq,
+      ...(lbCheckpoint.lastReportAccepted !== undefined
+        ? { runLastReportAccepted: lbCheckpoint.lastReportAccepted }
+        : {}),
+      runAcceptedReportsCount: lbCheckpoint.acceptedReportsCount,
     }),
   )
 }
@@ -417,6 +421,8 @@ onStart((args) => {
         reportedBestBySlot: restored.runReportedBestBySlot,
         reportedKillsBySlot: restored.runReportedKillsBySlot,
         reportSeq: restored.runReportSeq,
+        lastReportAccepted: restored.runLastReportAccepted,
+        acceptedReportsCount: restored.runAcceptedReportsCount,
       },
     )
     log(
@@ -465,6 +471,7 @@ onWorld((mapName) => {
   resetHudTransientState()
   guardian.reset()
   tomes.reset()
+  leaderboard.resetSessionDiagnostics()
   leaderboard.startNewRun()
   if (localDevMode) {
     leaderboard.markUnranked('--arg dev')
@@ -481,7 +488,11 @@ onPlayerJoin((joined) => {
   }
   if (!joined.connection.bot && !probe) {
     if (emptyServerWatch.emptySinceSeconds !== undefined) {
-      log('Human player reconnected — cancelled empty-server shutdown timer')
+      log(
+        localDevMode
+          ? 'Human player reconnected — cancelled empty-server shutdown timer'
+          : 'Human player reconnected — cancelled empty-server reset timer',
+      )
     }
     emptyServerWatch = {
       hasSeenHuman: true,
@@ -516,19 +527,35 @@ onPlayerLeave((left) => {
       remainingHumans,
       nowSeconds,
       false,
+      EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
+      localDevMode,
     )
     emptyServerWatch = shutdownEval.nextState
     if (shutdownEval.shouldQuit) {
       log(
-        'Last human player disconnected — ending match and shutting down server (quit)',
+        'Last human player disconnected — ending match and shutting down local dev server (quit)',
       )
       serverCommand('quit')
+    } else if (shutdownEval.shouldResetMatch) {
+      log(
+        'Last human player disconnected — resetting match to Wave 0 idle state (keeping hosted server online)',
+      )
+      restartMatch()
+      leaderboard.resetSessionDiagnostics()
+      emptyServerWatch = {
+        hasSeenHuman: false,
+        emptySinceSeconds: undefined,
+        quitIssued: false,
+      }
+      persistHandoff()
     } else if (
       remainingHumans === 0 &&
       emptyServerWatch.emptySinceSeconds !== undefined
     ) {
       log(
-        `All human players disconnected — shutting down server in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`,
+        localDevMode
+          ? `All human players disconnected — shutting down local dev server in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`
+          : `All human players disconnected — resetting match to idle in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`,
       )
     }
   }
@@ -678,27 +705,51 @@ every(1, () => {
       humanCount,
       nowSeconds,
       probe !== undefined,
+      EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
+      localDevMode,
     )
     emptyServerWatch = shutdownEval.nextState
     if (
       prevEmptySince === undefined &&
       emptyServerWatch.emptySinceSeconds !== undefined &&
-      !shutdownEval.shouldQuit
+      !shutdownEval.shouldQuit &&
+      !shutdownEval.shouldResetMatch
     ) {
       log(
-        `All human players disconnected — shutting down server in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`,
+        localDevMode
+          ? `All human players disconnected — shutting down local dev server in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`
+          : `All human players disconnected — resetting match to idle in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`,
       )
     } else if (
       prevEmptySince !== undefined &&
-      emptyServerWatch.emptySinceSeconds === undefined
+      emptyServerWatch.emptySinceSeconds === undefined &&
+      !shutdownEval.shouldResetMatch
     ) {
-      log('Human player reconnected — cancelled empty-server shutdown timer')
+      log(
+        localDevMode
+          ? 'Human player reconnected — cancelled empty-server shutdown timer'
+          : 'Human player reconnected — cancelled empty-server reset timer',
+      )
     }
     if (shutdownEval.shouldQuit) {
       log(
-        'No human players remaining — ending match and shutting down server (quit)',
+        'No human players remaining — ending match and shutting down local dev server (quit)',
       )
       serverCommand('quit')
+      return
+    }
+    if (shutdownEval.shouldResetMatch) {
+      log(
+        'No human players remaining — resetting match to Wave 0 idle state (keeping hosted server online)',
+      )
+      restartMatch()
+      leaderboard.resetSessionDiagnostics()
+      emptyServerWatch = {
+        hasSeenHuman: false,
+        emptySinceSeconds: undefined,
+        quitIssued: false,
+      }
+      persistHandoff()
       return
     }
 

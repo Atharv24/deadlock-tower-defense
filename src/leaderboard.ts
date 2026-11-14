@@ -30,6 +30,8 @@ export interface LeaderboardCheckpointHandoff {
   readonly reportedBestBySlot: Record<string, { wave: number; kills: number }>
   readonly reportedKillsBySlot: Record<string, number>
   readonly reportSeq: number
+  readonly lastReportAccepted?: boolean
+  readonly acceptedReportsCount?: number
 }
 
 /** Tracks per-match ranked eligibility, live checkpoint reporting, and cached board pages. */
@@ -43,6 +45,8 @@ export class LeaderboardManager {
   readonly reportedBestBySlot = new Map<number, { wave: number; kills: number }>()
   readonly reportedKillsBySlot = new Map<number, number>()
   reportSeq = 0
+  lastReportAccepted: boolean | undefined = undefined
+  acceptedReportsCount = 0
   readonly sessionBestBySlot = new Map<number, { wave: number; kills: number }>()
   private readonly boardCache = new Map<
     string,
@@ -61,6 +65,14 @@ export class LeaderboardManager {
     this.boardCache.clear()
   }
 
+  /** Clears per-session standings and host score acceptance diagnostics (fresh world load / idle lobby reset). */
+  resetSessionDiagnostics(): void {
+    this.sessionBestBySlot.clear()
+    this.lastReportAccepted = undefined
+    this.acceptedReportsCount = 0
+    this.boardCache.clear()
+  }
+
   /** Exports per-slot checkpoint progress for hot-reload handoff persistence. */
   exportCheckpointState(): LeaderboardCheckpointHandoff {
     const reportedBestBySlot: Record<string, { wave: number; kills: number }> = {}
@@ -75,6 +87,10 @@ export class LeaderboardManager {
       reportedBestBySlot,
       reportedKillsBySlot,
       reportSeq: this.reportSeq,
+      ...(this.lastReportAccepted !== undefined
+        ? { lastReportAccepted: this.lastReportAccepted }
+        : {}),
+      acceptedReportsCount: this.acceptedReportsCount,
     }
   }
 
@@ -126,6 +142,14 @@ export class LeaderboardManager {
     this.reportSeq =
       typeof checkpointState?.reportSeq === 'number'
         ? Math.max(0, Math.floor(checkpointState.reportSeq))
+        : 0
+    this.lastReportAccepted =
+      typeof checkpointState?.lastReportAccepted === 'boolean'
+        ? checkpointState.lastReportAccepted
+        : undefined
+    this.acceptedReportsCount =
+      typeof checkpointState?.acceptedReportsCount === 'number'
+        ? Math.max(0, Math.floor(checkpointState.acceptedReportsCount))
         : 0
     this.boardCache.clear()
   }
@@ -182,27 +206,45 @@ export class LeaderboardManager {
       })
     }
 
+    let waveAccepted = true
+    let creepsAccepted = true
     if (decision.shouldReportWave) {
       this.reportedBestBySlot.set(player.slot, {
         wave: decision.waveScore,
         kills: decision.safeKills,
       })
-      reportScore(player, BOARD_HIGHEST_WAVE, decision.waveScore, {
-        tiebreak: decision.tiebreak,
-        key: `${this.runId}-w-${player.slot}-${decision.waveScore}-${decision.safeKills}`,
-      })
+      waveAccepted = reportScore(
+        player,
+        BOARD_HIGHEST_WAVE,
+        decision.waveScore,
+        {
+          tiebreak: decision.tiebreak,
+          key: `${this.runId}-w-${player.slot}-${decision.waveScore}-${decision.safeKills}`,
+        },
+      )
     }
     if (decision.creepsDelta >= 1) {
       this.reportSeq += 1
       this.reportedKillsBySlot.set(player.slot, decision.safeKills)
-      reportScore(player, BOARD_CREEPS_SLAIN, decision.creepsDelta, {
-        key: `${this.runId}-c-${player.slot}-${this.reportSeq}`,
-      })
+      creepsAccepted = reportScore(
+        player,
+        BOARD_CREEPS_SLAIN,
+        decision.creepsDelta,
+        {
+          key: `${this.runId}-c-${player.slot}-${this.reportSeq}`,
+        },
+      )
+    }
+
+    const accepted = waveAccepted && creepsAccepted
+    this.lastReportAccepted = accepted
+    if (accepted) {
+      this.acceptedReportsCount += 1
     }
 
     this.boardCache.clear()
     log(
-      `Reported TD checkpoint ${this.runId} for slot ${player.slot}: Wave ${decision.waveScore}, totalKills=${decision.safeKills} (+${decision.creepsDelta} delta)`,
+      `Reported TD checkpoint ${this.runId} for slot ${player.slot}: Wave ${decision.waveScore}, totalKills=${decision.safeKills} (+${decision.creepsDelta} delta), scoresAccepted=${accepted} (acceptedCount=${this.acceptedReportsCount})`,
     )
     return true
   }

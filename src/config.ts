@@ -1282,16 +1282,25 @@ export function evaluateLeaderboardCheckpoint(
 export function getLeaderboardSubtitleCopy(opts: {
   readonly rankedEligible: boolean
   readonly disqualifyReason?: string
+  readonly lastReportAccepted?: boolean
+  readonly acceptedReportsCount?: number
 }): string {
-  if (opts.rankedEligible) {
-    return 'Ranked Run Active · Wave & kill progress checkpoints automatically'
+  if (!opts.rankedEligible) {
+    return `Sandbox Run · Unranked (${opts.disqualifyReason ?? 'dev'}) — /restarttd for Ranked`
   }
-  return `Sandbox Run · Unranked (${opts.disqualifyReason ?? 'dev'}) — /restarttd for Ranked`
+  if (opts.lastReportAccepted === true) {
+    const count = Math.max(1, Math.floor(opts.acceptedReportsCount ?? 1))
+    return `Ranked Run Active · Server accepted ${count} score checkpoint${count === 1 ? '' : 's'}`
+  }
+  if (opts.lastReportAccepted === false) {
+    return 'Ranked Run Active · Host scores service inactive (reportScore=false)'
+  }
+  return 'Ranked Run Active · Wave 2+ or 1+ kill checkpoints automatically'
 }
 
 /**
  * Formats fallback copy for `LeaderboardModal` when `readBoard` returns `undefined`
- * (e.g. while a Hyperline mod is still in Draft state, or in `--arg dev` local mode),
+ * (including host `scores` acceptance diagnostics on hosted Hyperline servers vs `--arg dev` local mode),
  * never mislabeling hosted Hyperline servers as `"Local Dev Server"`.
  */
 export function getLeaderboardUnavailableCopy(opts: {
@@ -1299,6 +1308,8 @@ export function getLeaderboardUnavailableCopy(opts: {
   readonly currentWave: number
   readonly currentKills: number
   readonly sessionBest?: { readonly wave: number; readonly kills: number }
+  readonly lastReportAccepted?: boolean
+  readonly acceptedReportsCount?: number
 }): {
   readonly title: string
   readonly detail: string
@@ -1318,9 +1329,26 @@ export function getLeaderboardUnavailableCopy(opts: {
       statsLine,
     }
   }
+  if (opts.lastReportAccepted === true) {
+    const count = Math.max(1, Math.floor(opts.acceptedReportsCount ?? 1))
+    return {
+      title: 'Hyperline Scores Accepted — Standings Syncing',
+      detail: `Server accepted ${count} Ranked score checkpoint${count === 1 ? '' : 's'} this session. Web leaderboard standings refresh after processing.`,
+      statsLine,
+    }
+  }
+  if (opts.lastReportAccepted === false) {
+    return {
+      title: 'Host Scores Service Inactive — Session Progress Tracked',
+      detail:
+        'This server host returned false from reportScore() (scores service not active on host). Your session progress is still tracked below.',
+      statsLine,
+    }
+  }
   return {
     title: 'Global Standings Syncing — Live Session Progress Tracked',
-    detail: 'Global Hyperline leaderboards populate once the mod is published out of Draft. Your live run checkpoints continue automatically.',
+    detail:
+      'Reach Wave 2 (or get 1+ Creep Last-Hit before leaving) to submit your first Ranked score checkpoint to Hyperline.',
     statsLine,
   }
 }
@@ -1345,6 +1373,8 @@ export interface TdHandoffState {
   readonly runReportedBestBySlot?: Record<string, { wave: number; kills: number }>
   readonly runReportedKillsBySlot?: Record<string, number>
   readonly runReportSeq?: number
+  readonly runLastReportAccepted?: boolean
+  readonly runAcceptedReportsCount?: number
 }
 
 /** Serializes Tower Defense state for Modlock hot-reload `handoff()`. */
@@ -1407,13 +1437,19 @@ export function deserializeTdHandoff(raw: string | undefined): TdHandoffState | 
       ...(typeof parsed.runReportSeq === 'number'
         ? { runReportSeq: parsed.runReportSeq }
         : {}),
+      ...(typeof parsed.runLastReportAccepted === 'boolean'
+        ? { runLastReportAccepted: parsed.runLastReportAccepted }
+        : {}),
+      ...(typeof parsed.runAcceptedReportsCount === 'number'
+        ? { runAcceptedReportsCount: parsed.runAcceptedReportsCount }
+        : {}),
     }
   } catch {
     return undefined
   }
 }
 
-/** Seconds with 0 connected human players (after at least 1 human joined) before shutting down the server (`quit`), allowing score/metric RPCs to flush cleanly. */
+/** Seconds with 0 connected human players (after at least 1 human joined) before resetting a hosted server to Wave 0 idle or quitting a local `--arg dev` session, allowing score/metric RPCs to flush cleanly. */
 export const EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS = 3
 
 export interface EmptyServerWatchState {
@@ -1423,8 +1459,12 @@ export interface EmptyServerWatchState {
 }
 
 /**
- * Evaluates whether the dedicated server should shut down (`serverCommand('quit')`)
- * after all human players have disconnected for `delaySeconds` (default 3s so async score/metric RPCs finish before exit).
+ * Evaluates empty-server cleanup after all human players disconnect for `delaySeconds`
+ * (default 3s so async score/metric RPCs finish cleanly):
+ * - When `allowProcessQuit` is `true` (local `--arg dev`), emits `shouldQuit: true` once (`serverCommand('quit')`).
+ * - When `allowProcessQuit` is `false` (hosted Hyperline server), NEVER calls `quit` (which would drop
+ *   `modlock-host` underneath Hyperline's `--control` supervisor with `"server disconnected"`); instead emits
+ *   `shouldResetMatch: true` once and returns to idle (`hasSeenHuman: false`) ready for the next join.
  * Never triggers before the first human player connects or during `TdProbe`.
  */
 export function evaluateEmptyServerShutdown(
@@ -1433,13 +1473,18 @@ export function evaluateEmptyServerShutdown(
   nowSeconds: number,
   isProbeMode: boolean,
   delaySeconds = EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
-): { readonly nextState: EmptyServerWatchState; readonly shouldQuit: boolean } {
+  allowProcessQuit = false,
+): {
+  readonly nextState: EmptyServerWatchState
+  readonly shouldQuit: boolean
+  readonly shouldResetMatch: boolean
+} {
   if (isProbeMode || state.quitIssued) {
-    return { nextState: state, shouldQuit: false }
+    return { nextState: state, shouldQuit: false, shouldResetMatch: false }
   }
   if (humanPlayerCount > 0) {
     if (state.hasSeenHuman && state.emptySinceSeconds === undefined) {
-      return { nextState: state, shouldQuit: false }
+      return { nextState: state, shouldQuit: false, shouldResetMatch: false }
     }
     return {
       nextState: {
@@ -1448,27 +1493,40 @@ export function evaluateEmptyServerShutdown(
         quitIssued: false,
       },
       shouldQuit: false,
+      shouldResetMatch: false,
     }
   }
   if (!state.hasSeenHuman) {
-    return { nextState: state, shouldQuit: false }
+    return { nextState: state, shouldQuit: false, shouldResetMatch: false }
   }
   const emptySince =
     state.emptySinceSeconds === undefined || nowSeconds < state.emptySinceSeconds
       ? nowSeconds
       : state.emptySinceSeconds
   if (nowSeconds - emptySince >= delaySeconds) {
+    if (allowProcessQuit) {
+      return {
+        nextState: {
+          hasSeenHuman: true,
+          emptySinceSeconds: emptySince,
+          quitIssued: true,
+        },
+        shouldQuit: true,
+        shouldResetMatch: false,
+      }
+    }
     return {
       nextState: {
-        hasSeenHuman: true,
-        emptySinceSeconds: emptySince,
-        quitIssued: true,
+        hasSeenHuman: false,
+        emptySinceSeconds: undefined,
+        quitIssued: false,
       },
-      shouldQuit: true,
+      shouldQuit: false,
+      shouldResetMatch: true,
     }
   }
   if (state.emptySinceSeconds === emptySince) {
-    return { nextState: state, shouldQuit: false }
+    return { nextState: state, shouldQuit: false, shouldResetMatch: false }
   }
   return {
     nextState: {
@@ -1477,6 +1535,7 @@ export function evaluateEmptyServerShutdown(
       quitIssued: false,
     },
     shouldQuit: false,
+    shouldResetMatch: false,
   }
 }
 
