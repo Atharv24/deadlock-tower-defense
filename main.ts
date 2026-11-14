@@ -12,12 +12,16 @@ import {
   handoff,
   holdModifierState,
   log,
+  onAbilityCast,
   onChat,
   onDamage,
   onDamaged,
   onFrame,
+  onKill,
   onPlayerJoin,
   onPlayerLeave,
+  onSettingChanged,
+  onSpawn,
   onStart,
   onWorld,
   type Player,
@@ -41,6 +45,7 @@ import {
   type EmptyServerWatchState,
   evaluateDefenderRespawnDue,
   evaluateEmptyServerShutdown,
+  hasClockSteppedBackward,
   HERO_RESPAWN_TIME_SECONDS,
   isDefenderOutOfBoundsOrBelowMap,
   isLocalDevModeArgs,
@@ -54,10 +59,16 @@ import {
 import { GuardianManager } from './src/guardian'
 import {
   consumeHeroReselectPlacementReset,
+  consumeImmediateHudSync,
+  handleHudClockBackstep,
+  invalidateHudSettingCache,
   openHeroPickerForPlayer,
+  pollNativeShopStateEveryFrame,
   renderTdHud,
+  requestImmediateHudSync,
   resetHudTransientState,
   selectDefenderHero,
+  toggleCompactHudForPlayer,
   toggleLeaderboardForPlayer,
   toggleLegendaryShopForPlayer,
 } from './src/hud'
@@ -98,6 +109,7 @@ let probe: TdProbe | undefined
 let localDevMode = false
 let devCommandsRegistered = false
 let nowSeconds = 0
+let lastHudPollAt = -1
 let skipInitialWorldReset = false
 let emptyServerWatch: EmptyServerWatchState = {
   hasSeenHuman: false,
@@ -110,6 +122,27 @@ const shopStateHeldEntities = new Set<number>()
 const diedAtBySlot = new Map<number, number>()
 const lastRespawnAttemptBySlot = new Map<number, number>()
 const postSpawnVerifyAtBySlot = new Map<number, number>()
+
+/** Reconciles server timers and Panorama HUD caches when a dedicated host clock resets backward. */
+function reconcileClockBackstep(prevNow: number, nextNow: number): void {
+  log(
+    `Detected server clock reset (${prevNow.toFixed(2)}s -> ${nextNow.toFixed(2)}s); reconciling timers & HUD state`,
+  )
+  diedAtBySlot.clear()
+  lastRespawnAttemptBySlot.clear()
+  postSpawnVerifyAtBySlot.clear()
+  if (emptyServerWatch.emptySinceSeconds !== undefined) {
+    emptyServerWatch = {
+      ...emptyServerWatch,
+      emptySinceSeconds: nextNow,
+    }
+  }
+  lastHudPollAt = -1
+  waves.handleClockBackstep(prevNow, nextNow)
+  tomes.invalidateSettingCache()
+  leaderboard.clearBoardCache()
+  handleHudClockBackstep()
+}
 
 /** Ground-traces the target frontline anchor so defenders always spawn cleanly above the walkable floor mesh. */
 function resolveSafeFrontlineOrigin(rawOrigin: Vector): Vector {
@@ -266,12 +299,12 @@ function syncDefenderPlacementAndShopAccess(): void {
           forceVerifyReplace = true
         }
       }
-      if (
-        placedHeroKeyBySlot.get(p.slot) !== pawnKey ||
-        outOfBounds ||
-        forceVerifyReplace
-      ) {
+      const isNewPawnKey = placedHeroKeyBySlot.get(p.slot) !== pawnKey
+      if (isNewPawnKey || outOfBounds || forceVerifyReplace) {
         placeDefenderAtFrontline(p, pawnKey, outOfBounds || forceVerifyReplace)
+        if (isNewPawnKey && guardian.matchState === 'active') {
+          tomes.syncHeroModifiers(p, pawn.entity)
+        }
       }
     }
   }
@@ -345,6 +378,7 @@ function restartMatch(): void {
 
 onStart((args) => {
   localDevMode = isLocalDevModeArgs(args)
+  leaderboard.isLocalDev = localDevMode
   waves.devCheatsEnabled = localDevMode
   guardian.devCheatsEnabled = localDevMode
 
@@ -412,7 +446,15 @@ onWorld((mapName) => {
   waves.configureWorldForSingleLaneDefense(guardian)
   if (skipInitialWorldReset) {
     skipInitialWorldReset = false
+    requestImmediateHudSync()
     return
+  }
+  nowSeconds = 0
+  lastHudPollAt = -1
+  emptyServerWatch = {
+    hasSeenHuman: false,
+    emptySinceSeconds: undefined,
+    quitIssued: false,
   }
   placedHeroKeyBySlot.clear()
   ziplineFallbackKeyBySlot.clear()
@@ -435,6 +477,7 @@ onWorld((mapName) => {
 onPlayerJoin((joined) => {
   if (!joined.connection.bot) {
     waves.unlockAllPlayerFlexSlots()
+    requestImmediateHudSync()
   }
   if (!joined.connection.bot && !probe) {
     if (emptyServerWatch.emptySinceSeconds !== undefined) {
@@ -523,6 +566,59 @@ onDamaged((hit) => {
   }
 })
 
+onSpawn((player, pawn) => {
+  runTimerSafely('on-spawn', () => {
+    if (pawn.team !== DEFENDER_TEAM || pawn.hero <= 0) {
+      return
+    }
+    syncDefenderPlacementAndShopAccess()
+    if (guardian.matchState === 'active') {
+      tomes.syncHeroModifiers(player, pawn.entity)
+    }
+    requestImmediateHudSync()
+  })
+})
+
+onSettingChanged((player, key) => {
+  if (key === 'hud_mode') {
+    invalidateHudSettingCache(player.slot)
+  } else if (key === 'tome_scaling') {
+    tomes.invalidateSettingCache()
+    requestImmediateHudSync()
+  }
+})
+
+onAbilityCast((cast) => {
+  runTimerSafely('on-ability-cast', () => {
+    if (guardian.matchState === 'active') {
+      tomes.onAbilityCast(cast, nowSeconds)
+    }
+  })
+})
+
+onKill((kill) => {
+  runTimerSafely('on-kill', () => {
+    if (guardian.matchState !== 'active') {
+      return
+    }
+    if (
+      kill.attacker > 0 &&
+      !guardian.isFriendlyStructureEntity(kill.attacker) &&
+      waves.isEnemyRewardVictim(kill.victim)
+    ) {
+      tomes.onKill(
+        kill,
+        new Set([kill.victim]),
+        guardian,
+        Math.random(),
+        Math.random(),
+        Math.max(1, waves.wave),
+      )
+    }
+    waves.handleEntityKilled(kill)
+  })
+})
+
 // Drive active Enemy Hero Bosses & vanilla steered Center Lane creeps at 10 Hz
 // (decoupled from HUD rendering so combat exceptions or spikes cannot disturb UI updates).
 every(0.1, () => {
@@ -534,16 +630,8 @@ every(0.1, () => {
   })
 })
 
-// Dedicated 4 Hz Panorama JSX HUD loop (internally throttled to <= 2 Hz on non-modal combat
-// updates + 1 Hz elapsed clock self-healing diff so CEF never drops the HUD, #32).
-every(0.25, () => {
-  runTimerSafely('hud-4hz', () => {
-    renderTdHud(nowSeconds, waves, guardian, tomes, leaderboard, restartMatch)
-  })
-})
-
 // Fast 250ms pass for defender spawn placement, Buy Anywhere shop access (#31),
-// Graves Zombie proximity checks (0 host calls when empty), and Tome CDR.
+// and Graves Zombie proximity checks (0 host calls when empty).
 every(0.25, () => {
   runTimerSafely('world-4hz', () => {
     syncDefenderPlacementAndShopAccess()
@@ -552,7 +640,6 @@ every(0.25, () => {
     }
     if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
       waves.tickExplodingZombies(nowSeconds, guardian)
-      tomes.tickVanillaCooldowns(nowSeconds)
     }
   })
 })
@@ -581,6 +668,7 @@ every(1, () => {
       }
     }
     if (guardian.matchState === 'active') {
+      tomes.tickVanillaCooldowns(nowSeconds)
       tomes.tickVanillaRegen()
     }
 
@@ -626,8 +714,35 @@ every(5, () => {
 })
 
 onFrame((frame) => {
+  if (hasClockSteppedBackward(nowSeconds, frame.timeSeconds)) {
+    reconcileClockBackstep(nowSeconds, frame.timeSeconds)
+  }
   nowSeconds = frame.timeSeconds
   probe?.tick(nowSeconds, waves, guardian, tomes)
+  try {
+    pollNativeShopStateEveryFrame(nowSeconds)
+  } catch (err) {
+    log('shop-poll error:', String(err))
+  }
+  const forceHud = consumeImmediateHudSync()
+  if (
+    forceHud ||
+    lastHudPollAt < 0 ||
+    nowSeconds < lastHudPollAt ||
+    nowSeconds - lastHudPollAt >= 0.25
+  ) {
+    lastHudPollAt = nowSeconds
+    runTimerSafely('hud-frame', () => {
+      renderTdHud(
+        nowSeconds,
+        waves,
+        guardian,
+        tomes,
+        leaderboard,
+        restartMatch,
+      )
+    })
+  }
 })
 
 // Register slash commands for BOTH All-Chat/console (`command()`) and Team Chat (`onChat` with `!line.all`).
@@ -641,7 +756,7 @@ function registerTdCommand(name: string, handler: TdCommandHandler): void {
 }
 
 function canPlayerUseDevCommands(player: Player): boolean {
-  const conn = players().find((c) => c.player.slot === player.slot)
+  const conn = player.connection()
   return canExecuteDevCommand({
     devModeEnabled: localDevMode,
     isBot: conn?.bot ?? true,
@@ -840,6 +955,10 @@ registerTdCommand('t5', (player: Player) => {
     player,
     opened ? 'Opened Legendary Armory (Tier 5).' : 'Closed Legendary Armory.',
   )
+})
+
+registerTdCommand('hud', (player: Player) => {
+  toggleCompactHudForPlayer(player)
 })
 
 registerTdCommand('unstuck', (player: Player) => {

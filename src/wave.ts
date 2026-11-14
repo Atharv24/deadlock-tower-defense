@@ -15,7 +15,9 @@ import {
   entityPosition,
   findEntities,
   fireInput,
+  holdEntityModifier,
   holdModifierState,
+  type KillEvent,
   killEntity,
   Layers,
   log,
@@ -45,9 +47,13 @@ import {
   planBossDriveStep,
 } from './boss_ai'
 import {
+  BOSS_BASE_MAX_HP,
+  BOSS_COLOSSUS_ENTITY_MODIFIER,
+  BOSS_COLOSSUS_APPLIED_SCALE,
   BOSS_KILL_SOUL_REWARD,
   BOSS_SPAWN_ANGLES,
   BOSS_SPAWN_ORIGIN,
+  computeResidualWeaponDamageMult,
   computeVanillaEffectiveHpDamageScale,
   computeWaveCreepDamageMult,
   computeWaveCreepHp,
@@ -55,6 +61,7 @@ import {
   computeWaveSoulReward,
   computeWaveSpawnIntervalSeconds,
   DEFENDER_TEAM,
+  ELITE_HASTE_ENTITY_MODIFIER,
   evaluateCreepHealthSync,
   getBossWaveSpec,
   getWaveCreepModifiers,
@@ -472,6 +479,17 @@ export class WaveManager {
     this.applyServerConfig()
   }
 
+  /** Shifts wave & zombie timestamps when a dedicated server resets its match clock. */
+  handleClockBackstep(prevNow: number, nextNow: number): void {
+    const delta = nextNow - prevNow
+    const remaining = Math.max(1, this.nextWaveTime - prevNow)
+    this.nextWaveTime = nextNow + Math.min(remaining, this.waveInterval)
+    this.restoreIntervalAt = 0
+    for (const [ent, armAt] of this.armedZombies.entries()) {
+      this.armedZombies.set(ent, Math.max(nextNow, armAt + delta))
+    }
+  }
+
   /** Restores state from Modlock hot-reload handoff. */
   restore(
     wave: number,
@@ -793,6 +811,7 @@ export class WaveManager {
       }
       this.creepSpecs.set(handle, spec)
       this.applyCreepHealth(handle, spec.targetHp, spec.targetHp)
+      this.attachWaveCreepModifiers(handle, spec.wave)
     }
 
     // Check previously scaled live creeps for engine maxHealth resets (single-pass snapshot, 0 extra Npc.read calls).
@@ -812,6 +831,7 @@ export class WaveManager {
         }
         this.creepSpecs.set(handle, spec)
         this.applyCreepHealth(handle, spec.targetHp, spec.targetHp)
+        this.attachWaveCreepModifiers(handle, spec.wave)
         continue
       }
 
@@ -861,9 +881,10 @@ export class WaveManager {
             for (const conn of players()) {
               const pawn = conn.player.pawn()
               if (pawn && pawn.entity === hit.attacker && pawn.team === DEFENDER_TEAM) {
-                const bonuses = tomes.getVanillaBonuses(conn.player.slot)
-                totalMult *=
-                  hit.ability > 0 ? bonuses.abilityDamageMult : bonuses.weaponDamageMult
+                const slot = conn.player.slot
+                const bonuses = tomes.getVanillaBonuses(slot)
+                const weaponMult = computeResidualWeaponDamageMult(tomes.getTally(slot))
+                totalMult *= hit.ability > 0 ? bonuses.abilityDamageMult : weaponMult
                 break
               }
             }
@@ -1414,7 +1435,10 @@ export class WaveManager {
         750 + spec.bonusHp,
       )
       holdModifierState(pawn.entity, 'MODIFIER_STATE_VISIBLE_TO_ENEMY', true)
-      conn.player.holdModifier('upgrade_colossus/modifier_colossus_active', true)
+      holdEntityModifier(pawn.entity, BOSS_COLOSSUS_ENTITY_MODIFIER, true)
+      if (bossWave >= 10) {
+        holdEntityModifier(pawn.entity, ELITE_HASTE_ENTITY_MODIFIER, true)
+      }
       this.activeBosses.push({
         wave: bossWave,
         tier: spec.tier,
@@ -1433,7 +1457,7 @@ export class WaveManager {
         currentHp: pawn.health,
         currentMaxHp: estMaxHp,
         vanillaMaxHpTarget: estMaxHp,
-        appliedScale: 1.38,
+        appliedScale: BOSS_COLOSSUS_APPLIED_SCALE,
         initialHealDone: true,
       })
       log(
@@ -1489,18 +1513,20 @@ export class WaveManager {
         }
 
         boss.bot.teleport(boss.spawnOrigin, BOSS_SPAWN_ANGLES)
-        // Grant stock `upgrade_colossus` + hold `modifier_colossus_active` via `Player.holdModifier`
+        // Grant stock `upgrade_colossus` + hold `modifier_colossus_active` via `holdEntityModifier`
         // (tuned to 1.38x in `mod.json`) for native C++ model + skeletal hitbox scaling, Tier-4 Boss
         // items, and wave-scaled Effective Max HP (`3,500` -> `26,000+` HP)!
         boss.bot.giveItem('upgrade_colossus')
-        boss.bot.giveModifier('upgrade_colossus/modifier_colossus_active', -1)
-        boss.bot.holdModifier('upgrade_colossus/modifier_colossus_active', true)
+        holdEntityModifier(pawn.entity, BOSS_COLOSSUS_ENTITY_MODIFIER, true)
+        if (boss.wave >= 10) {
+          holdEntityModifier(pawn.entity, ELITE_HASTE_ENTITY_MODIFIER, true)
+        }
         if (boss.tier >= 2) boss.bot.giveItem('upgrade_titan_round')
         if (boss.tier >= 3) boss.bot.giveItem('upgrade_boundless_spirit')
         if (boss.tier >= 4) boss.bot.giveItem('upgrade_juggernaut')
         if (boss.tier >= 5) boss.bot.giveItem('upgrade_damage_recycler')
-        boss.appliedScale = 1.38
-        boss.vanillaMaxHpTarget = 1000 + boss.targetMaxHp
+        boss.appliedScale = BOSS_COLOSSUS_APPLIED_SCALE
+        boss.vanillaMaxHpTarget = BOSS_BASE_MAX_HP + boss.targetMaxHp
 
         const upgradeMask = computeBossAbilityUpgradeMask(boss.tier)
         for (const abil of abils) {
@@ -1703,6 +1729,32 @@ export class WaveManager {
         }
         boss.bot.drive(plan.drive)
       }
+    }
+  }
+
+  /**
+   * Retires a killed Boss immediately via Modlock `onKill` (fallback if `onDamaged`
+   * was bypassed) and prunes slain creep tracking entries.
+   */
+  handleEntityKilled(kill: KillEvent): void {
+    if (kill.victim <= 0) {
+      return
+    }
+    const bossIdx = this.activeBosses.findIndex(
+      (b) => b.configuredPawnEntity > 0 && b.pawnEntity === kill.victim,
+    )
+    if (bossIdx >= 0) {
+      this.rewardAndRetireBoss(bossIdx)
+      return
+    }
+    this.creepSpecs.delete(kill.victim)
+    this.scaledCreeps.delete(kill.victim)
+    this.steeredWaveCreeps.delete(kill.victim)
+  }
+
+  private attachWaveCreepModifiers(handle: number, wave: number): void {
+    if (handle > 0 && wave >= 6) {
+      holdEntityModifier(handle, ELITE_HASTE_ENTITY_MODIFIER, true)
     }
   }
 

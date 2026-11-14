@@ -13,6 +13,7 @@ import {
   findEntities,
   findEntitiesByName,
   fireInput,
+  holdEntityModifier,
   log,
   Npc,
   type Player,
@@ -41,6 +42,7 @@ import {
   evaluateBaseDefenseProgression,
   getDefenderStageSpawnOrigin,
   getStructureFortifyAuraSpec,
+  getStructureFortifyEntityModifiers,
   GUARDIAN_BASE_MAX_HP,
   GUARDIAN_ORIGIN,
   GUARDIAN_REPAIR_AMOUNT_HP,
@@ -54,6 +56,7 @@ import {
   type RepairableStructureInput,
   SHRINE_BASE_MAX_HP,
   SHRINE_UPGRADE_HP_BONUS,
+  syncEntityModifierSet,
   WALKER_BASE_MAX_HP,
   WALKER_ORIGIN,
   WALKER_TARGETNAMES,
@@ -132,6 +135,7 @@ export class GuardianManager {
 
   private readonly initializedEntities = new Set<number>()
   private readonly friendlyStructureSet = new Set<number>()
+  private readonly appliedStructureModifiers = new Map<number, Set<string>>()
   private readonly announcedMilestones = new Set<DefenseStage>()
   private patronStage2HpInitialized = false
   private guardianSeen = false
@@ -190,6 +194,7 @@ export class GuardianManager {
 
     this.initializedEntities.clear()
     this.friendlyStructureSet.clear()
+    this.appliedStructureModifiers.clear()
     this.announcedMilestones.clear()
     this.announcedMilestones.add('guardian')
     this.patronStage2HpInitialized = false
@@ -755,6 +760,12 @@ export class GuardianManager {
       this.patronMaxHealth = pTargetMax
     }
 
+    for (const ent of this.appliedStructureModifiers.keys()) {
+      if (!this.friendlyStructureSet.has(ent)) {
+        this.appliedStructureModifiers.delete(ent)
+      }
+    }
+
     // 6. Evaluate active defense stage & defeat condition
     const evalResult = evaluateBaseDefenseProgression({
       guardianHp: this.health,
@@ -1148,7 +1159,29 @@ export class GuardianManager {
         maxHealth: desiredMax,
       }
     }
+    if (state.alive) {
+      this.syncStructureFortifyModifiers(ent)
+    } else {
+      this.appliedStructureModifiers.delete(ent)
+    }
     return state
+  }
+
+  /**
+   * Attaches real C++ `holdEntityModifier` fortification buffs (+18%/lv Fire Rate and Lv.2+
+   * +12% CDR) onto combat Team 2 structures, skipping weaponless `destroyable_building` Shrines.
+   */
+  private syncStructureFortifyModifiers(ent: number): void {
+    if (ent <= 0 || entityClass(ent)?.designerName === 'destroyable_building') {
+      return
+    }
+    const desired = getStructureFortifyEntityModifiers(this.upgradeLevel)
+    syncEntityModifierSet(
+      ent,
+      desired,
+      this.appliedStructureModifiers,
+      holdEntityModifier,
+    )
   }
 
   private locateGuardianCandidate(): number {

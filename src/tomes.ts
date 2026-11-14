@@ -3,7 +3,10 @@
 // 1-of-3 Major Boon milestone picker state.
 
 import {
+  type AbilityCastEvent,
   type DamagedEvent,
+  holdEntityModifier,
+  type KillEvent,
   log,
   type Player,
   players,
@@ -18,12 +21,14 @@ import {
   evaluateCreepLastHit,
   formatScaledMajorBoonSubtitle,
   formatScaledMinorTomeDescription,
+  getHeroTomeEntityModifierPlan,
   type LastHitEvaluation,
   type MajorBoonDef,
   type MinorTomeDef,
   parseTomeGrowthPerWave,
   pickThreeMajorBoons,
   SOUL_CACHE_BASE_SOULS,
+  syncEntityModifierSet,
   type VanillaTomeBonuses,
 } from './config'
 import type { GuardianManager } from './guardian'
@@ -47,6 +52,8 @@ export class TomeManager {
   private cachedSettingRate = DEFAULT_TOME_GROWTH_PER_WAVE
   private cachedSettingExpiresAt = -1
   private readonly trimmedCooldownStarts = new Map<string, number>()
+  private readonly appliedHeroEntityModifiers = new Map<number, Set<string>>()
+  private readonly playerLastPawnEntity = new Map<number, number>()
 
   /** Resets Tome & Boon state for a new match or /restarttd. */
   reset(): void {
@@ -56,6 +63,8 @@ export class TomeManager {
     this.pendingBoonChoices.clear()
     this.pendingBoonWave.clear()
     this.trimmedCooldownStarts.clear()
+    this.appliedHeroEntityModifiers.clear()
+    this.playerLastPawnEntity.clear()
     this.lastGrantedNotice = ''
   }
 
@@ -65,12 +74,21 @@ export class TomeManager {
     this.cachedSettingExpiresAt = -1
   }
 
+  /** Invalidates the cached `tome_scaling` setting (e.g. on `onSettingChanged` or clock reset). */
+  invalidateSettingCache(): void {
+    this.cachedSettingExpiresAt = -1
+  }
+
   /** Returns active Tome growth rate per wave (`override` or cached `tome_scaling` setting). */
   getGrowthRate(now = 0): number {
     if (this.growthRateOverride !== undefined) {
       return this.growthRateOverride
     }
-    if (this.cachedSettingExpiresAt < 0 || now >= this.cachedSettingExpiresAt) {
+    if (
+      this.cachedSettingExpiresAt < 0 ||
+      now >= this.cachedSettingExpiresAt ||
+      now + 2.0 < this.cachedSettingExpiresAt
+    ) {
       const conns = players()
       const reader = conns.find((c) => !c.bot && c.ready) ?? conns[0]
       const rawSetting = reader?.player.setting('tome_scaling')
@@ -102,6 +120,9 @@ export class TomeManager {
     this.playerKills.clear()
     for (const [slotStr, kills] of Object.entries(playerKills)) {
       this.playerKills.set(Number(slotStr), Number(kills))
+    }
+    for (const conn of players()) {
+      this.syncHeroModifiers(conn.player)
     }
   }
 
@@ -164,7 +185,11 @@ export class TomeManager {
       tomePickRoll,
     )
 
-    if (result.isPlayerKill && result.playerSlot !== undefined) {
+    if (
+      result.isPlayerKill &&
+      result.playerSlot !== undefined &&
+      result.reason !== 'duplicate_kill'
+    ) {
       while (this.rewardedCreeps.size > 512) {
         const oldest = this.rewardedCreeps.values().next().value
         if (oldest === undefined) break
@@ -181,6 +206,35 @@ export class TomeManager {
     }
 
     return result
+  }
+
+  /**
+   * Handles a Modlock `onKill` event as a deterministic fallback/supplement to `onDamaged`,
+   * sharing `rewardedCreeps` deduplication so each enemy unit grants at most one kill/Tome roll.
+   */
+  onKill(
+    kill: KillEvent,
+    validCreepEntities: ReadonlySet<number>,
+    guardian: GuardianManager,
+    rngRoll = Math.random(),
+    tomePickRoll = Math.random(),
+    currentWave = 1,
+  ): LastHitEvaluation {
+    return this.onDamaged(
+      {
+        victim: kill.victim,
+        attacker: kill.attacker,
+        ability: kill.ability,
+        healthBefore: 1,
+        healthLost: 1,
+        dealt: 1,
+      },
+      validCreepEntities,
+      guardian,
+      rngRoll,
+      tomePickRoll,
+      currentWave,
+    )
   }
 
   /** Grants a wave-scaled Minor Tome directly to a player and increments their Tome tally. */
@@ -223,6 +277,7 @@ export class TomeManager {
         : `TOME DROP: ${tome.name} — ${scaledDesc}!`,
     )
     log(`Player slot ${player.slot} earned ${tome.name} (${mult.toFixed(2)}x on Wave ${Math.max(1, currentWave)})`)
+    this.syncHeroModifiers(player)
   }
 
   /** Offers a 1-of-3 Major Boon choice to all Team 2 defenders on milestone/Boss waves. */
@@ -308,6 +363,7 @@ export class TomeManager {
     }
     this.lastGrantedNotice = `MAJOR BOON: ${boon.title}`
     toast(player, `CHOSE MAJOR BOON: ${boon.title} (${subtitle})!`)
+    this.syncHeroModifiers(player)
     return boon
   }
 
@@ -336,38 +392,77 @@ export class TomeManager {
     return computeVanillaTomeBonuses(this.getTally(playerSlot))
   }
 
-  /** Applies Tome of Focus / Omni cooldown reduction across active defender abilities. */
+  /** Reconciles real C++ `holdEntityModifier` Tome buffs on a Defender's live hero pawn. */
+  syncHeroModifiers(player: Player, pawnEntityOverride?: number): void {
+    let ent = pawnEntityOverride ?? 0
+    if (pawnEntityOverride === undefined) {
+      const pawn = player.pawn()
+      if (!pawn || pawn.team !== DEFENDER_TEAM || pawn.hero <= 0 || pawn.health <= 0) {
+        return
+      }
+      ent = pawn.entity
+    }
+    if (ent <= 0) {
+      return
+    }
+    const prevEnt = this.playerLastPawnEntity.get(player.slot)
+    if (prevEnt && prevEnt !== ent) {
+      this.appliedHeroEntityModifiers.delete(prevEnt)
+    }
+    this.playerLastPawnEntity.set(player.slot, ent)
+    const desired = getHeroTomeEntityModifierPlan(this.getTally(player.slot))
+    syncEntityModifierSet(
+      ent,
+      desired,
+      this.appliedHeroEntityModifiers,
+      holdEntityModifier,
+    )
+  }
+
+  /** Trims ability cooldown immediately on `onAbilityCast` when the hero holds Tome CDR. */
+  onAbilityCast(cast: AbilityCastEvent, nowSeconds: number): void {
+    if (cast.player.slot < 0 || cast.slot < 0 || cast.slot > 3) {
+      return
+    }
+    this.trimPlayerCooldowns(cast.player, nowSeconds)
+  }
+
+  /** Applies Tome of Focus / Omni cooldown reduction across active defender abilities (1 Hz fallback). */
   tickVanillaCooldowns(nowSeconds: number): void {
     if (this.playerTomes.size === 0) {
       return
     }
     for (const conn of players()) {
-      const slot = conn.player.slot
-      if (!this.playerTomes.has(slot)) continue
-      const bonuses = this.getVanillaBonuses(slot)
-      if (bonuses.cooldownReductionFraction <= 0) continue
-      const pawn = conn.player.pawn()
-      if (!pawn || pawn.team !== DEFENDER_TEAM || pawn.hero <= 0 || pawn.health <= 0) {
+      this.trimPlayerCooldowns(conn.player, nowSeconds)
+    }
+  }
+
+  private trimPlayerCooldowns(player: Player, nowSeconds: number): void {
+    const slot = player.slot
+    if (!this.playerTomes.has(slot)) return
+    const bonuses = this.getVanillaBonuses(slot)
+    if (bonuses.cooldownReductionFraction <= 0) return
+    const pawn = player.pawn()
+    if (!pawn || pawn.team !== DEFENDER_TEAM || pawn.hero <= 0 || pawn.health <= 0) {
+      return
+    }
+    for (const abil of player.abilities()) {
+      if (abil.slot < 0 || abil.slot > 3 || abil.cooldownEnd <= nowSeconds + 0.35) {
         continue
       }
-      for (const abil of conn.player.abilities()) {
-        if (abil.slot < 0 || abil.slot > 3 || abil.cooldownEnd <= nowSeconds + 0.35) {
-          continue
-        }
-        const key = `${slot}:${abil.name}`
-        if (Math.abs((this.trimmedCooldownStarts.get(key) ?? -1) - abil.cooldownStart) < 0.05) {
-          continue
-        }
-        const fullDuration = Math.max(0, abil.cooldownEnd - abil.cooldownStart)
-        if (fullDuration <= 0.4) continue
-        const trimmedEnd =
-          abil.cooldownStart + fullDuration * (1 - bonuses.cooldownReductionFraction)
-        this.trimmedCooldownStarts.set(key, abil.cooldownStart)
-        conn.player.setAbility({
-          ability: abil.name,
-          cooldownEnd: Math.max(nowSeconds + 0.1, trimmedEnd),
-        })
+      const key = `${slot}:${abil.name}`
+      if (Math.abs((this.trimmedCooldownStarts.get(key) ?? -1) - abil.cooldownStart) < 0.05) {
+        continue
       }
+      const fullDuration = Math.max(0, abil.cooldownEnd - abil.cooldownStart)
+      if (fullDuration <= 0.4) continue
+      const trimmedEnd =
+        abil.cooldownStart + fullDuration * (1 - bonuses.cooldownReductionFraction)
+      this.trimmedCooldownStarts.set(key, abil.cooldownStart)
+      player.setAbility({
+        ability: abil.name,
+        cooldownEnd: Math.max(nowSeconds + 0.1, trimmedEnd),
+      })
     }
   }
 

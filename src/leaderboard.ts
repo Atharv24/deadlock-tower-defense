@@ -38,6 +38,7 @@ export class LeaderboardManager {
   rankedEligible = true
   disqualifyReason: string | undefined = undefined
   isProbeMode = false
+  isLocalDev = false
   readonly submittedSlots = new Set<number>()
   readonly reportedBestBySlot = new Map<number, { wave: number; kills: number }>()
   readonly reportedKillsBySlot = new Map<number, number>()
@@ -268,7 +269,12 @@ export class LeaderboardManager {
     return submitted
   }
 
-  /** Returns a cached `td.highest_wave` page (short TTL while loading so HUD stays fast). */
+  /** Clears cached leaderboard snapshots (e.g. on server clock reset). */
+  clearBoardCache(): void {
+    this.boardCache.clear()
+  }
+
+  /** Returns a cached `td.highest_wave` page (short TTL while loading or unavailable so HUD recovers fast). */
   getBoardSnapshot(
     player: Player,
     window: BoardWindow,
@@ -277,11 +283,11 @@ export class LeaderboardManager {
   ): BoardPage | undefined {
     const cacheKey = `${player.slot}:${window}:${limit}`
     const cached = this.boardCache.get(cacheKey)
-    if (cached && now < cached.expiresAt) {
+    if (cached && now < cached.expiresAt && now + 2.0 >= cached.expiresAt) {
       return cached.page
     }
     const page = readBoard(BOARD_HIGHEST_WAVE, { window, limit, player })
-    const ttl = page?.loading ? 0.4 : 1.5
+    const ttl = page === undefined ? 0.75 : page.loading ? 0.4 : 1.5
     this.boardCache.set(cacheKey, { page, expiresAt: now + ttl })
     return page
   }

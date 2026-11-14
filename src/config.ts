@@ -32,6 +32,16 @@ export const BOSS_KILL_SOUL_REWARD = 133
 
 export const BOSS_WAVE_INTERVAL = 5
 export const MAX_BOSS_TIER = 5
+export const BOSS_BASE_MAX_HP = 1000
+export const BOSS_TIER_BONUS_HP = [1750, 3250, 5500, 8500, 13000] as const
+export const BOSS_ENDLESS_BOOST_HP = 1600
+export const MAX_BOSS_ENDLESS_BOOST_STACKS = 12
+export const BOSS_TIER_SCALE = [1.35, 1.5, 1.65, 1.8, 1.95] as const
+export const BOSS_SCALE_STEP = 0.1
+export const MAX_BOSS_EXTRA_SIZE_STACKS = 1
+export const BOSS_COLOSSUS_APPLIED_SCALE = 1.38
+export const BOSS_BASE_DAMAGE_MULT = 1.15
+export const BOSS_DAMAGE_MULT_PER_BOSS_WAVE = 0.2
 
 export const BOSS_HERO_POOL = [
   'hero_warden',
@@ -742,12 +752,13 @@ export function computeBossTier(wave: number): number {
   return Math.min(MAX_BOSS_TIER, bossIndex)
 }
 
-const BOSS_TIER_BONUS_HP = [1750, 3250, 5500, 8500, 13000] as const
-const BOSS_TIER_SCALE = [1.35, 1.5, 1.65, 1.8, 1.95] as const
-const BOSS_SCALE_STEP = 0.1
-const MAX_BOSS_EXTRA_SIZE_STACKS = 1
-const MAX_BOSS_ENDLESS_BOOST_STACKS = 12
-const BOSS_ENDLESS_BOOST_HP = 1600
+/** Computes outgoing damage multiplier for the 0-indexed Boss wave encounter (`0` = Wave 5, `1` = Wave 10, ...). */
+export function computeBossDamageMult(bossIndex: number): number {
+  const clampedIdx = Math.max(0, Math.floor(bossIndex))
+  return Number(
+    (BOSS_BASE_DAMAGE_MULT + clampedIdx * BOSS_DAMAGE_MULT_PER_BOSS_WAVE).toFixed(3),
+  )
+}
 
 /** Returns the Boss hero name, VData modifier, and scaling parameters for a Boss wave. */
 export function getBossWaveSpec(wave: number): {
@@ -778,7 +789,7 @@ export function getBossWaveSpec(wave: number): {
   const targetScale = Number(
     (BOSS_TIER_SCALE[tier - 1] + extraSizeStacks * BOSS_SCALE_STEP).toFixed(2),
   )
-  const damageMult = Number((1.15 + bossIdx * 0.2).toFixed(3))
+  const damageMult = computeBossDamageMult(bossIdx)
   return {
     tier,
     hero,
@@ -1267,6 +1278,53 @@ export function evaluateLeaderboardCheckpoint(
   }
 }
 
+/** Formats the ranked/sandbox status subtitle in `LeaderboardModal`. */
+export function getLeaderboardSubtitleCopy(opts: {
+  readonly rankedEligible: boolean
+  readonly disqualifyReason?: string
+}): string {
+  if (opts.rankedEligible) {
+    return 'Ranked Run Active · Wave & kill progress checkpoints automatically'
+  }
+  return `Sandbox Run · Unranked (${opts.disqualifyReason ?? 'dev'}) — /restarttd for Ranked`
+}
+
+/**
+ * Formats fallback copy for `LeaderboardModal` when `readBoard` returns `undefined`
+ * (e.g. while a Hyperline mod is still in Draft state, or in `--arg dev` local mode),
+ * never mislabeling hosted Hyperline servers as `"Local Dev Server"`.
+ */
+export function getLeaderboardUnavailableCopy(opts: {
+  readonly isLocalDev: boolean
+  readonly currentWave: number
+  readonly currentKills: number
+  readonly sessionBest?: { readonly wave: number; readonly kills: number }
+}): {
+  readonly title: string
+  readonly detail: string
+  readonly statsLine: string
+} {
+  const safeWave = Math.max(1, Math.floor(opts.currentWave))
+  const safeKills = Math.max(0, Math.floor(opts.currentKills))
+  const currentPart = `Current Run: Wave ${safeWave} (${safeKills} Creep Last-Hits)`
+  const statsLine = opts.sessionBest
+    ? `${currentPart} · Session Best: Wave ${Math.max(1, Math.floor(opts.sessionBest.wave))} (${Math.max(0, Math.floor(opts.sessionBest.kills))} Creep Last-Hits)`
+    : currentPart
+
+  if (opts.isLocalDev) {
+    return {
+      title: 'Local Dev Mode (--arg dev) — Global Standings Disabled',
+      detail: 'Ranked leaderboard submissions are disabled while local developer commands are active.',
+      statsLine,
+    }
+  }
+  return {
+    title: 'Global Standings Syncing — Live Session Progress Tracked',
+    detail: 'Global Hyperline leaderboards populate once the mod is published out of Draft. Your live run checkpoints continue automatically.',
+    statsLine,
+  }
+}
+
 export interface TdHandoffState {
   readonly version: 1
   readonly wave: number
@@ -1395,7 +1453,10 @@ export function evaluateEmptyServerShutdown(
   if (!state.hasSeenHuman) {
     return { nextState: state, shouldQuit: false }
   }
-  const emptySince = state.emptySinceSeconds ?? nowSeconds
+  const emptySince =
+    state.emptySinceSeconds === undefined || nowSeconds < state.emptySinceSeconds
+      ? nowSeconds
+      : state.emptySinceSeconds
   if (nowSeconds - emptySince >= delaySeconds) {
     return {
       nextState: {
@@ -1445,9 +1506,22 @@ export function formatMatchClock(seconds: number): string {
     : `${pad2(mins)}:${pad2(secs)}`
 }
 
+/** Detects when the Source 2 server match/map clock jumps backward (e.g. warm Hyperline server reset). */
+export function hasClockSteppedBackward(
+  prevSeconds: number,
+  nextSeconds: number,
+  toleranceSeconds = 0.05,
+): boolean {
+  return (
+    Number.isFinite(prevSeconds) &&
+    Number.isFinite(nextSeconds) &&
+    nextSeconds + toleranceSeconds < prevSeconds
+  )
+}
+
 /**
- * Gates Panorama HUD updates so modal/state changes render immediately, identical signatures
- * skip redundant work, and sustained combat updates never exceed ~2 Hz over the CEF title relay (#32).
+ * Gates Panorama HUD updates so modal/state changes render immediately, clock resets self-heal,
+ * identical signatures skip redundant work, and sustained combat updates never exceed ~2 Hz over the CEF title relay (#32).
  */
 export function shouldPushHudUpdate(opts: {
   readonly lastSig: string | undefined
@@ -1458,7 +1532,11 @@ export function shouldPushHudUpdate(opts: {
   readonly lastSentAtSeconds: number
   readonly minIntervalSeconds?: number
 }): boolean {
-  if (opts.lastSig === undefined || opts.lastModalSig !== opts.nextModalSig) {
+  if (
+    opts.lastSig === undefined ||
+    opts.lastModalSig !== opts.nextModalSig ||
+    opts.nowSeconds < opts.lastSentAtSeconds
+  ) {
     return true
   }
   if (opts.lastSig === opts.nextSig) {
@@ -1588,10 +1666,14 @@ export function evaluateDefenderRespawnDue(opts: {
     }
   }
   const delay = Math.max(0.5, opts.respawnDelaySeconds ?? HERO_RESPAWN_TIME_SECONDS)
-  const diedAt = opts.diedAtSeconds ?? opts.nowSeconds
+  const diedAt =
+    opts.diedAtSeconds === undefined || opts.nowSeconds < opts.diedAtSeconds
+      ? opts.nowSeconds
+      : opts.diedAtSeconds
   const due = opts.nowSeconds - diedAt >= delay
   const retryAllowed =
     opts.lastRespawnAttemptAt === undefined ||
+    opts.nowSeconds < opts.lastRespawnAttemptAt ||
     opts.nowSeconds - opts.lastRespawnAttemptAt >= 0.5
   if (due && retryAllowed) {
     return {
@@ -1760,4 +1842,452 @@ export function canPlayerRestartActiveMatch(params: {
     params.isLocalDevPlayer ||
     params.humanPlayerCount <= 1
   )
+}
+
+export interface BinaryEntityModifierTier {
+  readonly modifier: string
+  readonly value: number
+}
+
+/**
+ * Disabled Deadlock attack-speed items repurposed in `mod.json` into a 5-bit binary
+ * Fire Rate ladder (`7, 14, 28, 56, 112` -> `0..217%` BonusFireRate) for Structure
+ * Fortification (`+18%/lv` across 12 levels) and Hero Fire Rate / Omni Tomes.
+ */
+export const FIRE_RATE_ENTITY_MODIFIERS: readonly BinaryEntityModifierTier[] = [
+  { modifier: 'upgrade_small_attack_speed/modifier_intrinsic_base', value: 7 },
+  { modifier: 'upgrade_attack_speed_1/modifier_intrinsic_base', value: 14 },
+  { modifier: 'upgrade_attack_speed_2/modifier_intrinsic_base', value: 28 },
+  { modifier: 'upgrade_magic_missile/modifier_intrinsic_base', value: 56 },
+  { modifier: 'upgrade_glass_cannon2/modifier_glasscannonv2', value: 112 },
+] as const
+
+/**
+ * Disabled Deadlock clip-size items repurposed in `mod.json` into a 4-bit binary
+ * Ammo Clip ladder (`6, 12, 24, 48` -> `0..90%` BonusClipSizePercent) for Hero
+ * Weapon / Omni Tomes.
+ */
+export const CLIP_SIZE_ENTITY_MODIFIERS: readonly BinaryEntityModifierTier[] = [
+  { modifier: 'upgrade_clip_size_2/modifier_intrinsic_base', value: 6 },
+  { modifier: 'upgrade_clip_size_3/modifier_intrinsic_base', value: 12 },
+  { modifier: 'upgrade_weapon_instant_reload/modifier_intrinsic_base', value: 24 },
+  { modifier: 'upgrade_infinitemagazine/modifier_base', value: 48 },
+] as const
+
+/** Stock disabled item tuned in `mod.json` to `+12%` CooldownReduction for Lv.2+ structures. */
+export const STRUCTURE_CDR_ENTITY_MODIFIER =
+  'upgrade_timeless_emblem/modifier_intrinsic_base'
+
+/** Stock disabled item tuned in `mod.json` to `+16` Spirit Power for Hero Spirit/Omni Tomes. */
+export const HERO_SPIRIT_ENTITY_MODIFIER =
+  'upgrade_tech_cleave/modifier_intrinsic_base'
+
+/** Standalone `FILE_MODIFIERS` entry tuned in `mod.json` (`+65 u/s`) for Wave 6+ creeps & Wave 10+ Bosses. */
+export const ELITE_HASTE_ENTITY_MODIFIER =
+  'modifier_hero_testing_fast_movespeed'
+
+/** Stock `upgrade_colossus` intrinsic modifier tuned in `mod.json` (`1.38x` scale) for Bosses. */
+export const BOSS_COLOSSUS_ENTITY_MODIFIER =
+  'upgrade_colossus/modifier_colossus_active'
+
+/**
+ * Decomposes `targetValue` onto the closest quantized combination of `tiers`
+ * (using the smallest tier step as quantization unit and capping at the full sum),
+ * returning active modifier names in canonical ascending order.
+ */
+export function decomposeBinaryEntityModifiers(
+  targetValue: number,
+  tiers: readonly BinaryEntityModifierTier[],
+): string[] {
+  if (tiers.length === 0 || !Number.isFinite(targetValue) || targetValue <= 0) {
+    return []
+  }
+  const step = tiers[0].value
+  if (step <= 0) {
+    return []
+  }
+  let maxTotal = 0
+  for (const tier of tiers) {
+    maxTotal += tier.value
+  }
+  let remaining = Math.min(
+    maxTotal,
+    Math.max(0, Math.round(targetValue / step) * step),
+  )
+  if (remaining <= 0) {
+    return []
+  }
+  const picked = new Set<string>()
+  for (let i = tiers.length - 1; i >= 0; i--) {
+    const tier = tiers[i]
+    if (remaining >= tier.value) {
+      picked.add(tier.modifier)
+      remaining -= tier.value
+    }
+  }
+  return tiers.filter((t) => picked.has(t.modifier)).map((t) => t.modifier)
+}
+
+/**
+ * Returns the exact set of real C++ `holdEntityModifier` names active on a Team 2
+ * combat structure at `fortifyLevel` (`+18%/lv` Fire Rate and Lv.2+ `+12%` CDR).
+ * Returns `[]` at Lv.0 so early structures require zero modifier host calls.
+ */
+export function getStructureFortifyEntityModifiers(fortifyLevel: number): string[] {
+  const lv = Math.max(0, Math.floor(fortifyLevel))
+  if (lv <= 0) {
+    return []
+  }
+  const mods = decomposeBinaryEntityModifiers(
+    lv * STRUCTURE_FIRE_RATE_PCT_PER_LEVEL,
+    FIRE_RATE_ENTITY_MODIFIERS,
+  )
+  if (lv >= 2) {
+    mods.push(STRUCTURE_CDR_ENTITY_MODIFIER)
+  }
+  return mods
+}
+
+/**
+ * Returns the exact set of real C++ `holdEntityModifier` names active on a Defender's
+ * hero pawn from their Tome tally (Fire Rate, Clip Size, and Spirit Power).
+ */
+export function getHeroTomeEntityModifierPlan(
+  tally: Readonly<Record<string, number>>,
+): string[] {
+  const weapon = Math.max(0, tally.weapon ?? 0)
+  const firerate = Math.max(0, tally.firerate ?? 0)
+  const spirit = Math.max(0, tally.spirit ?? 0)
+  const omni = Math.max(0, tally.omni ?? 0)
+
+  const mods: string[] = [
+    ...decomposeBinaryEntityModifiers(
+      5 * firerate + 2.5 * omni,
+      FIRE_RATE_ENTITY_MODIFIERS,
+    ),
+    ...decomposeBinaryEntityModifiers(
+      6 * weapon + 3 * omni,
+      CLIP_SIZE_ENTITY_MODIFIERS,
+    ),
+  ]
+  if (spirit + omni > 0) {
+    mods.push(HERO_SPIRIT_ENTITY_MODIFIER)
+  }
+  return mods
+}
+
+/**
+ * Residual bullet-damage multiplier applied in `onDamage` once C++ Fire Rate entity
+ * modifiers are held natively (`1 + 10% weapon + 5% omni`), preventing Fire Rate Tomes
+ * from double-multiplying DPS.
+ */
+export function computeResidualWeaponDamageMult(
+  tally: Readonly<Record<string, number>>,
+): number {
+  const weapon = Math.max(0, tally.weapon ?? 0)
+  const omni = Math.max(0, tally.omni ?? 0)
+  return Number((1 + 0.1 * weapon + 0.05 * omni).toFixed(4))
+}
+
+/**
+ * Incrementally reconciles held entity modifiers on `entity` against `desiredMods`,
+ * issuing host calls ONLY for modifiers that changed state (`0` host calls when idle).
+ */
+export function syncEntityModifierSet(
+  entity: number,
+  desiredMods: readonly string[],
+  appliedByEntity: Map<number, Set<string>>,
+  holdFn: (entity: number, modifier: string, active?: boolean) => boolean,
+): boolean {
+  if (entity <= 0) {
+    return false
+  }
+  const prev = appliedByEntity.get(entity)
+  if (!prev && desiredMods.length === 0) {
+    return false
+  }
+  const next = new Set(desiredMods)
+  if (prev && prev.size === next.size) {
+    let unchanged = true
+    for (const mod of next) {
+      if (!prev.has(mod)) {
+        unchanged = false
+        break
+      }
+    }
+    if (unchanged) {
+      return false
+    }
+  }
+  if (prev) {
+    for (const mod of prev) {
+      if (!next.has(mod)) {
+        holdFn(entity, mod, false)
+      }
+    }
+  }
+  const recorded = new Set<string>()
+  for (const mod of next) {
+    if (prev?.has(mod) || holdFn(entity, mod, true)) {
+      recorded.add(mod)
+    }
+  }
+  if (recorded.size === 0) {
+    appliedByEntity.delete(entity)
+  } else {
+    appliedByEntity.set(entity, recorded)
+  }
+  return true
+}
+
+/**
+ * Delay after `CCitadelPlayerPawn.m_bHasShopOpen` clears before recreating the custom TD HUD,
+ * tightened to 80 ms so the HUD reappears crisply after the client's 100 ms `gShopOpen` poller
+ * while still separating `hide()` and `show()` across server frames.
+ */
+export const SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS = 0.08
+
+/**
+ * Start of a brief secondary `hideHud(['status'])` pulse after shop close so high-latency
+ * clients whose `gShopOpen` uncollapse landed slightly after `+0.08s` still receive a
+ * direct `CSGOHud` visibility+layout dirty wake-up without affecting cursor aiming or `levelUp`.
+ */
+export const SHOP_CLOSE_SECOND_PULSE_START_SECONDS = 0.28
+
+/**
+ * Secondary silent keyed-epoch remount after native Buy Menu close so every retained UI
+ * node is freshly constructed cleanly after Deadlock's transition animations settle.
+ */
+export const SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS = 0.38
+
+export interface NativeShopHudState {
+  readonly wasShopOpen: boolean
+  readonly hiddenForShop: boolean
+  readonly closedAtSeconds?: number
+  readonly initialRestoreDone: boolean
+  readonly secondPulseStarted: boolean
+  readonly settleResetDone: boolean
+  readonly hudEpoch: number
+}
+
+export const INITIAL_NATIVE_SHOP_HUD_STATE: NativeShopHudState = {
+  wasShopOpen: false,
+  hiddenForShop: false,
+  closedAtSeconds: undefined,
+  initialRestoreDone: true,
+  secondPulseStarted: true,
+  settleResetDone: true,
+  hudEpoch: 0,
+}
+
+export interface NativeShopHudDecision {
+  readonly nextState: NativeShopHudState
+  readonly suppressShow: boolean
+  readonly shouldHideNow: boolean
+  readonly closeTransientModals: boolean
+  readonly holdStockHudPulse: boolean
+  readonly resyncCursorNow: boolean
+  readonly bumpedEpoch: boolean
+}
+
+function makeSettledNativeShopState(hudEpoch: number): NativeShopHudState {
+  return {
+    wasShopOpen: false,
+    hiddenForShop: false,
+    closedAtSeconds: undefined,
+    initialRestoreDone: true,
+    secondPulseStarted: true,
+    settleResetDone: true,
+    hudEpoch,
+  }
+}
+
+function makeNativeShopDecision(
+  nextState: NativeShopHudState,
+  flags: Partial<Omit<NativeShopHudDecision, 'nextState'>> = {},
+): NativeShopHudDecision {
+  return {
+    nextState,
+    suppressShow: flags.suppressShow ?? false,
+    shouldHideNow: flags.shouldHideNow ?? false,
+    closeTransientModals: flags.closeTransientModals ?? false,
+    holdStockHudPulse: flags.holdStockHudPulse ?? false,
+    resyncCursorNow: flags.resyncCursorNow ?? false,
+    bumpedEpoch: flags.bumpedEpoch ?? false,
+  }
+}
+
+/**
+ * Returns `true` when `pollNativeShopStateEveryFrame` should wake `renderTdHud` on the
+ * current server frame for a Buy Menu edge or post-close recovery boundary.
+ */
+export function needsImmediateNativeShopWake(
+  prev: NativeShopHudState | undefined,
+  nativeShopOpen: boolean,
+  nowSeconds: number,
+): boolean {
+  const state = prev ?? INITIAL_NATIVE_SHOP_HUD_STATE
+  if (nativeShopOpen !== state.wasShopOpen) {
+    return true
+  }
+  if (nativeShopOpen) {
+    return false
+  }
+  if (!state.initialRestoreDone) {
+    if (
+      state.closedAtSeconds === undefined ||
+      hasClockSteppedBackward(state.closedAtSeconds, nowSeconds)
+    ) {
+      return true
+    }
+    return nowSeconds - state.closedAtSeconds >= SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS
+  }
+  if (!state.settleResetDone) {
+    if (
+      state.closedAtSeconds === undefined ||
+      hasClockSteppedBackward(state.closedAtSeconds, nowSeconds)
+    ) {
+      return true
+    }
+    const elapsed = nowSeconds - state.closedAtSeconds
+    if (elapsed >= SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS) {
+      return true
+    }
+    return !state.secondPulseStarted && elapsed >= SHOP_CLOSE_SECOND_PULSE_START_SECONDS
+  }
+  return false
+}
+
+/**
+ * Coordinates custom Panorama HUD hide/restore, `CSGOHud` `hideHud(['status'])` dirty
+ * pulses, instant `0ms` cursor aiming passthrough on close, and monotonic keyed-epoch
+ * remounts around Deadlock's native Buy Menu (`CCitadelPlayerPawn.m_bHasShopOpen`).
+ */
+export function evaluateNativeShopHudSync(
+  prev: NativeShopHudState | undefined,
+  nativeShopOpen: boolean,
+  nowSeconds: number,
+): NativeShopHudDecision {
+  const state = prev ?? INITIAL_NATIVE_SHOP_HUD_STATE
+
+  if (nativeShopOpen) {
+    if (!state.wasShopOpen) {
+      return makeNativeShopDecision(
+        {
+          wasShopOpen: true,
+          hiddenForShop: true,
+          closedAtSeconds: undefined,
+          initialRestoreDone: false,
+          secondPulseStarted: false,
+          settleResetDone: false,
+          hudEpoch: state.hudEpoch,
+        },
+        {
+          suppressShow: true,
+          shouldHideNow: true,
+          closeTransientModals: true,
+          holdStockHudPulse: true,
+          resyncCursorNow: true,
+        },
+      )
+    }
+    return makeNativeShopDecision(state, {
+      suppressShow: true,
+      holdStockHudPulse: true,
+    })
+  }
+
+  if (state.wasShopOpen) {
+    return makeNativeShopDecision(
+      {
+        wasShopOpen: false,
+        hiddenForShop: true,
+        closedAtSeconds: nowSeconds,
+        initialRestoreDone: false,
+        secondPulseStarted: false,
+        settleResetDone: false,
+        hudEpoch: state.hudEpoch,
+      },
+      {
+        suppressShow: true,
+        holdStockHudPulse: true,
+      },
+    )
+  }
+
+  if (!state.initialRestoreDone) {
+    if (
+      state.closedAtSeconds === undefined ||
+      hasClockSteppedBackward(state.closedAtSeconds, nowSeconds)
+    ) {
+      return makeNativeShopDecision(makeSettledNativeShopState(state.hudEpoch + 1), {
+        resyncCursorNow: true,
+        bumpedEpoch: true,
+      })
+    }
+    const elapsed = nowSeconds - state.closedAtSeconds
+    if (elapsed < SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS) {
+      return makeNativeShopDecision(state, {
+        suppressShow: true,
+        holdStockHudPulse: true,
+      })
+    }
+
+    const nextEpoch = state.hudEpoch + 1
+    if (elapsed >= SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS) {
+      return makeNativeShopDecision(makeSettledNativeShopState(nextEpoch), {
+        resyncCursorNow: true,
+        bumpedEpoch: true,
+      })
+    }
+    const pulseActive = elapsed >= SHOP_CLOSE_SECOND_PULSE_START_SECONDS
+    return makeNativeShopDecision(
+      {
+        wasShopOpen: false,
+        hiddenForShop: false,
+        closedAtSeconds: state.closedAtSeconds,
+        initialRestoreDone: true,
+        secondPulseStarted: pulseActive,
+        settleResetDone: false,
+        hudEpoch: nextEpoch,
+      },
+      {
+        holdStockHudPulse: pulseActive,
+        resyncCursorNow: true,
+        bumpedEpoch: true,
+      },
+    )
+  }
+
+  if (!state.settleResetDone) {
+    if (
+      state.closedAtSeconds === undefined ||
+      hasClockSteppedBackward(state.closedAtSeconds, nowSeconds) ||
+      nowSeconds - state.closedAtSeconds >= SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS
+    ) {
+      return makeNativeShopDecision(makeSettledNativeShopState(state.hudEpoch + 1), {
+        bumpedEpoch: true,
+      })
+    }
+    const elapsed = nowSeconds - state.closedAtSeconds
+    if (elapsed >= SHOP_CLOSE_SECOND_PULSE_START_SECONDS) {
+      const nextState = state.secondPulseStarted
+        ? state
+        : {
+            wasShopOpen: false,
+            hiddenForShop: false,
+            closedAtSeconds: state.closedAtSeconds,
+            initialRestoreDone: true,
+            secondPulseStarted: true,
+            settleResetDone: false,
+            hudEpoch: state.hudEpoch,
+          }
+      return makeNativeShopDecision(nextState, {
+        holdStockHudPulse: true,
+      })
+    }
+    return makeNativeShopDecision(state)
+  }
+
+  return makeNativeShopDecision(state)
 }

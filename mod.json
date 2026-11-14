@@ -1,7 +1,7 @@
 {
   "slug": "deadlock-td",
   "name": "Hidden King's Defense",
-  "version": "0.6.6",
+  "version": "0.7.4",
   "description": "Defend the Hidden King's Center Lane from Blue Guardian down to the Patron — featuring Colossus Raid Bosses, scaling trooper waves, last-hit Tomes, 1-of-3 Major Boons, Legendary Armory, All-Structure Fortification, and Ranked Leaderboards!",
   "repository": "https://github.com/Atharv24/deadlock-tower-defense",
   "tags": [
@@ -20,6 +20,92 @@
       "entry": "upgrade_colossus",
       "properties": {
         "ModelScaleGrowth": 1.38
+      }
+    },
+    {
+      "file": "FILE_MODIFIERS",
+      "entry": "modifier_hero_testing_fast_movespeed",
+      "fields": {
+        "CModifierVData.m_vecScriptValues[EModifierValue.MODIFIER_VALUE_MOVEMENT_SPEED_MAX]": 65,
+        "CModifierVData.m_vecScriptValues[EModifierValue.MODIFIER_VALUE_MOVEMENT_SPEED_BONUS_CAP_INCREASE]": 65
+      }
+    },
+    {
+      "entry": "upgrade_small_attack_speed",
+      "properties": {
+        "BonusFireRate": 7
+      }
+    },
+    {
+      "entry": "upgrade_attack_speed_1",
+      "properties": {
+        "BonusFireRate": 14
+      }
+    },
+    {
+      "entry": "upgrade_attack_speed_2",
+      "properties": {
+        "BonusFireRate": 28
+      }
+    },
+    {
+      "entry": "upgrade_magic_missile",
+      "properties": {
+        "BonusFireRate": 56,
+        "MaxHealthLossPercent": 0,
+        "BaseAttackDamagePercent": 0,
+        "BonusMoveSpeed": 0
+      }
+    },
+    {
+      "entry": "upgrade_glass_cannon2",
+      "properties": {
+        "BonusFireRate": 112,
+        "MaxHealthLossPercent": 0,
+        "BaseAttackDamagePercent": 0
+      }
+    },
+    {
+      "entry": "upgrade_clip_size_2",
+      "properties": {
+        "BonusClipSizePercent": 6
+      }
+    },
+    {
+      "entry": "upgrade_clip_size_3",
+      "properties": {
+        "BonusClipSizePercent": 12
+      }
+    },
+    {
+      "entry": "upgrade_weapon_instant_reload",
+      "properties": {
+        "BonusClipSizePercent": 24
+      }
+    },
+    {
+      "entry": "upgrade_infinitemagazine",
+      "properties": {
+        "BonusClipSizePercent": 48,
+        "BonusHealth": 0,
+        "BaseAttackDamagePercent": 0,
+        "BonusFireRate": 0
+      }
+    },
+    {
+      "entry": "upgrade_timeless_emblem",
+      "properties": {
+        "CooldownReduction": 12,
+        "ItemCooldownReduction": 0,
+        "TechRangeMultiplier": 0,
+        "TechRadiusMultiplier": 0,
+        "BonusAbilityDurationPercent": 0
+      }
+    },
+    {
+      "entry": "upgrade_tech_cleave",
+      "properties": {
+        "TechPower": 16
       }
     }
   ],

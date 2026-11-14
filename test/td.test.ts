@@ -22,13 +22,21 @@ import {
   BASE_WAVE_SOUL_REWARD,
   BOARD_CREEPS_SLAIN,
   BOARD_HIGHEST_WAVE,
+  BOSS_BASE_DAMAGE_MULT,
+  BOSS_BASE_MAX_HP,
+  BOSS_COLOSSUS_APPLIED_SCALE,
+  BOSS_COLOSSUS_ENTITY_MODIFIER,
+  BOSS_DAMAGE_MULT_PER_BOSS_WAVE,
   BOSS_KILL_SOUL_REWARD,
   canExecuteDevCommand,
   canPlayerRestartActiveMatch,
+  CLIP_SIZE_ENTITY_MODIFIERS,
+  computeBossDamageMult,
   computeBossTier,
   computeCreepScaleAuraStep,
   computeGuardianRepair,
   computeGuardianUpgradeCost,
+  computeResidualWeaponDamageMult,
   computeStructureDamageMult,
   computeTomeWaveMultiplier,
   computeVanillaEffectiveHpDamageScale,
@@ -39,8 +47,10 @@ import {
   computeWaveSoulReward,
   computeWaveSpawnIntervalSeconds,
   computeWaveTier,
+  decomposeBinaryEntityModifiers,
   deserializeTdHandoff,
   DEV_COMMAND_NAMES,
+  ELITE_HASTE_ENTITY_MODIFIER,
   EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
   type EmptyServerWatchState,
   evaluateAllStructuresRepair,
@@ -52,6 +62,8 @@ import {
   evaluateLeaderboardCheckpoint,
   evaluateLeaderboardSubmission,
   evaluateLegendaryPurchase,
+  evaluateNativeShopHudSync,
+  FIRE_RATE_ENTITY_MODIFIERS,
   formatItemDisplayTitle,
   formatMatchClock,
   formatScaledMajorBoonSubtitle,
@@ -61,7 +73,11 @@ import {
   getBossWaveSpec,
   getCreepScaleAuraModifier,
   getDefenderStageSpawnOrigin,
+  getHeroTomeEntityModifierPlan,
+  getLeaderboardSubtitleCopy,
+  getLeaderboardUnavailableCopy,
   getStructureFortifyAuraSpec,
+  getStructureFortifyEntityModifiers,
   getWaveCreepModifiers,
   getWaveNeutralSpawns,
   GUARDIAN_BASE_MAX_HP,
@@ -69,7 +85,10 @@ import {
   GUARDIAN_REPAIR_COST_SOULS,
   GUARDIAN_UPGRADE_BASE_COST_SOULS,
   GUARDIAN_UPGRADE_COST_STEP_SOULS,
+  hasClockSteppedBackward,
   HERO_RESPAWN_TIME_SECONDS,
+  HERO_SPIRIT_ENTITY_MODIFIER,
+  INITIAL_NATIVE_SHOP_HUD_STATE,
   isBossWave,
   isDefenderOutOfBoundsOrBelowMap,
   isExplodingZombieBaseMaxHp,
@@ -85,14 +104,20 @@ import {
   MAX_WAVE_SOUL_REWARD,
   MIN_SPAWN_INTERVAL_SECONDS,
   MINOR_TOME_POOL,
+  needsImmediateNativeShopWake,
   parseSlashCommandLine,
   parseTomeGrowthPerWave,
   pickThreeMajorBoons,
   selectUnscaledCreeps,
   serializeTdHandoff,
+  SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS,
+  SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS,
+  SHOP_CLOSE_SECOND_PULSE_START_SECONDS,
   shouldFreeHudCursor,
   shouldPushHudUpdate,
   SOUL_CACHE_BASE_SOULS,
+  STRUCTURE_CDR_ENTITY_MODIFIER,
+  syncEntityModifierSet,
   TD_SERVER_CVARS,
   type TdHandoffState,
   TOME_DROP_CHANCE,
@@ -158,6 +183,14 @@ describe('Tier 1 — Wave Scaling & Boss Wave Math', () => {
     assert.equal(spec15.targetScale, 1.65)
     assert.equal(spec15.bonusHp, 5500)
     assert.equal(spec15.damageMult, 1.55)
+    assert.equal(spec5.damageMult, BOSS_BASE_DAMAGE_MULT)
+    assert.equal(computeBossDamageMult(0), BOSS_BASE_DAMAGE_MULT)
+    assert.equal(
+      computeBossDamageMult(2),
+      Number((BOSS_BASE_DAMAGE_MULT + 2 * BOSS_DAMAGE_MULT_PER_BOSS_WAVE).toFixed(3)),
+    )
+    assert.equal(BOSS_BASE_MAX_HP, 1000)
+    assert.equal(BOSS_COLOSSUS_APPLIED_SCALE, 1.38)
     assert.equal(spec25.targetScale, 1.95)
     assert.equal(spec30.endlessBoostStacks, 1)
     assert.equal(spec30.extraSizeStacks, 1)
@@ -1146,6 +1179,8 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   })
 
   const appliedModifiers: string[] = []
+  const entityModifiers = new Map<number, Set<string>>()
+  const shrineModifierErrors: string[] = []
   const heldPlayerModifiers: Array<{ slot: number; mod: string; active: boolean }> = []
   let activeMockAuraScale = 1.0
   const activeBossBots: MockPlayer[] = []
@@ -1443,11 +1478,33 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
         ...a,
       }))
     }
-    setAbility(opts: { ability: string; upgrades?: number }) {
+    setAbility(opts: { ability: string; upgrades?: number; cooldownEnd?: number }) {
       const found = this.abilityList.find((a) => a.name === opts.ability)
-      if (found && opts.upgrades !== undefined) {
-        found.upgrades = opts.upgrades
+      if (found) {
+        if (opts.upgrades !== undefined) {
+          found.upgrades = opts.upgrades
+        }
+        if (opts.cooldownEnd !== undefined) {
+          found.cooldownEnd = opts.cooldownEnd
+        }
       }
+      return true
+    }
+    connection() {
+      if (this === defenderPlayer) {
+        return {
+          player: defenderPlayer,
+          name: 'Defender',
+          bot: false,
+          ready: true,
+          steamId: 1n,
+          generation: 1,
+          roles: [],
+        }
+      }
+      return mockBotPlayers.find((b) => b.player === this)
+    }
+    seat(_seating?: unknown) {
       return true
     }
     refreshAbility(ability: string) {
@@ -1794,6 +1851,50 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       return true;
     };
     export const removeEntities = () => 0;
+    export const holdEntityModifier = (entity, modifier, active = true) => {
+      if (entity <= 0) return false;
+      if (modifier.startsWith('td_')) {
+        globalThis.__mockModlock.failedCustomModifiers.push(modifier);
+        return false;
+      }
+      if (entity === 704 || entity === 705) {
+        globalThis.__mockModlock.shrineModifierErrors.push('holdEntityModifier called on Shrine entity ' + entity);
+        return false;
+      }
+      let set = globalThis.__mockModlock.entityModifiers.get(entity);
+      if (!set) {
+        set = new Set();
+        globalThis.__mockModlock.entityModifiers.set(entity, set);
+      }
+      if (active === false) {
+        set.delete(modifier);
+      } else {
+        set.add(modifier);
+        globalThis.__mockModlock.appliedModifiers.push(modifier);
+      }
+      return true;
+    };
+    export const giveEntityModifier = (entity, modifier, _seconds) => {
+      return holdEntityModifier(entity, modifier, true);
+    };
+    export const modifiers = (entity) => {
+      const set = globalThis.__mockModlock.entityModifiers.get(entity);
+      if (!set) return [];
+      return [...set].map((name) => ({
+        name,
+        className: 'CCitadelModifier',
+        caster: 0,
+        ability: 0,
+        age: 0,
+        stacks: 1,
+        maxStacks: 1,
+        team: 2,
+        disabled: false,
+      }));
+    };
+    export const onKill = () => {};
+    export const onAbilityCast = () => {};
+    export const onSpawn = () => {};
     export const holdModifierState = (entity, state, active) => {
       globalThis.__mockModlock.heldModifierStates.push({ entity, state, active: active !== false });
       return true;
@@ -2008,6 +2109,10 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     pawnInShopStore,
     mockBoardPages,
     mockBotPlayers,
+    entityModifiers,
+    shrineModifierErrors,
+    appliedModifiers,
+    failedCustomModifiers,
     entityScanStats: { findByClass: 0, findByName: 0 },
   }
 
@@ -2045,6 +2150,8 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
 
   it('drives GuardianManager, WaveManager, TomeManager, and TdProbe through all Probe steps (Boss Colossus scaling, Boss combat AI, Tome scaling, and Multi-Stage Base Progression) to PASS', () => {
     appliedModifiers.length = 0
+    entityModifiers.clear()
+    shrineModifierErrors.length = 0
     const guardian = new GuardianManager()
     const tomes = new TomeManager()
     const waves = new WaveManager((w) => tomes.offerMajorBoonForWave(w))
@@ -3019,6 +3126,189 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       .map((m) => m.value)
     assert.deepEqual(clearedValues, [1, 2])
   })
+
+  it('attaches Guardian/Walker/Boss/Hero/Wave6+ entity modifiers, skips Shrines, trims cooldowns immediately on onAbilityCast, and deduplicates onKill', () => {
+    npcStore.clear()
+    trooperIds.clear()
+    entityModifiers.clear()
+    shrineModifierErrors.length = 0
+    appliedModifiers.length = 0
+    activeBossBots.length = 0
+
+    // Restore base Team 2 structures (700=Guardian, 701=Walker, 702/703=Base Guardians, 704/705=Shrines, 706=Patron)
+    npcStore.set(700, { health: 5500, maxHealth: 5500, team: 2, position: { x: 0, y: -1580, z: 384 } })
+    npcStore.set(701, { health: 9000, maxHealth: 9000, team: 2, position: { x: 0, y: -4200, z: 384 } })
+    npcStore.set(702, { health: 4000, maxHealth: 4000, team: 2, position: { x: -240, y: -6500, z: 384 } })
+    npcStore.set(703, { health: 4000, maxHealth: 4000, team: 2, position: { x: 240, y: -6500, z: 384 } })
+    npcStore.set(704, { health: 8000, maxHealth: 8000, team: 2, position: { x: 900, y: -7400, z: 384 } })
+    npcStore.set(705, { health: 8000, maxHealth: 8000, team: 2, position: { x: -900, y: -7400, z: 384 } })
+    npcStore.set(706, { health: 12000, maxHealth: 12000, team: 2, position: { x: 0, y: -8800, z: 384 } })
+
+    const guardian = new GuardianManager()
+    const tomes = new TomeManager()
+    const waves = new WaveManager()
+    guardian.reset()
+    tomes.reset()
+    waves.reset(0)
+
+    // Lv.0 requires zero structure fortify entity modifiers
+    assert.equal(entityModifiers.has(700), false)
+    assert.equal(entityModifiers.has(701), false)
+
+    defenderPlayer.souls = 5000
+    assert.equal(guardian.upgradeByPlayer(defenderPlayer as never), true)
+    assert.equal(guardian.upgradeByPlayer(defenderPlayer as never), true)
+    guardian.poll(5, 10)
+
+    const gMods = entityModifiers.get(700)
+    const wMods = entityModifiers.get(701)
+    assert.ok(gMods && gMods.has(STRUCTURE_CDR_ENTITY_MODIFIER))
+    assert.ok(wMods && wMods.has(STRUCTURE_CDR_ENTITY_MODIFIER))
+    assert.equal(shrineModifierErrors.length, 0)
+    assert.equal(entityModifiers.has(704), false)
+    assert.equal(entityModifiers.has(705), false)
+
+    // Hero Tome modifiers + immediate onAbilityCast cooldown trim + onKill deduplication
+    defenderPlayer.abilityList = [
+      {
+        name: 'citadel_ability_primary',
+        slot: 0,
+        entity: 400,
+        upgrades: 1,
+        charges: 0,
+        cooldownStart: 10,
+        cooldownEnd: 30,
+        id: 1,
+        state: 0,
+        rechargeStart: 0,
+        rechargeEnd: 0,
+        imbues: [],
+      },
+    ]
+    tomes.applyMinorTome(defenderPlayer as never, MINOR_TOME_POOL[1], 1) // Weapon -> clip_size_2
+    tomes.applyMinorTome(defenderPlayer as never, MINOR_TOME_POOL[4], 1) // Cooldown -> 3% CDR
+    assert.ok(
+      entityModifiers.get(defenderPlayer.pawnEntity)?.has(CLIP_SIZE_ENTITY_MODIFIERS[0].modifier),
+    )
+
+    tomes.onAbilityCast(
+      {
+        caster: defenderPlayer.pawnEntity,
+        player: defenderPlayer as never,
+        ability: 400,
+        name: 'citadel_ability_primary',
+        slot: 0,
+        target: 0,
+      },
+      10.1,
+    )
+    assert.ok(Math.abs((defenderPlayer.abilityList[0].cooldownEnd ?? 30) - 29.4) < 0.01)
+
+    // Wave 6 creep receives ELITE_HASTE_ENTITY_MODIFIER; onKill deduplicates with onDamaged
+    waves.wave = 6
+    npcStore.set(850, { health: 240, maxHealth: 240, team: 3, position: { x: 0, y: -1750, z: 384 } })
+    waves.scaleNewlySpawnedCreeps()
+    assert.ok(entityModifiers.get(850)?.has(ELITE_HASTE_ENTITY_MODIFIER))
+
+    const kill1 = tomes.onKill(
+      {
+        victim: 850,
+        victimPlayer: { slot: -1 } as never,
+        attacker: defenderPlayer.pawnEntity,
+        attackerPlayer: defenderPlayer as never,
+        ability: 0,
+      },
+      new Set([850]),
+      guardian,
+      0.01,
+      0.01,
+      6,
+    )
+    assert.equal(kill1.isPlayerKill, true)
+    const killDup = tomes.onKill(
+      {
+        victim: 850,
+        victimPlayer: { slot: -1 } as never,
+        attacker: defenderPlayer.pawnEntity,
+        attackerPlayer: defenderPlayer as never,
+        ability: 0,
+      },
+      new Set([850]),
+      guardian,
+      0.01,
+      0.01,
+      6,
+    )
+    assert.equal(killDup.reason, 'duplicate_kill')
+    assert.equal(killDup.granted, false)
+    assert.equal(tomes.getKills(defenderPlayer.slot), 1)
+    assert.equal(typeof defenderPlayer.connection, 'function')
+    assert.equal(defenderPlayer.connection()?.bot, false)
+
+    // Wave 10 Boss gets both Colossus and Haste entity modifiers + onKill fallback retires it
+    waves.wave = 9
+    waves.spawnNextWave(20, true)
+    waves.tickActiveBosses(20.1, guardian)
+    const boss10 = waves.activeBosses.find((b) => b.wave === 10)
+    assert.ok(boss10 && boss10.configuredPawnEntity > 0)
+    assert.ok(entityModifiers.get(boss10.configuredPawnEntity)?.has(BOSS_COLOSSUS_ENTITY_MODIFIER))
+    assert.ok(entityModifiers.get(boss10.configuredPawnEntity)?.has(ELITE_HASTE_ENTITY_MODIFIER))
+
+    waves.handleEntityKilled({
+      victim: boss10.configuredPawnEntity,
+      victimPlayer: boss10.bot,
+      attacker: defenderPlayer.pawnEntity,
+      attackerPlayer: defenderPlayer as never,
+      ability: 0,
+    })
+    assert.equal(waves.activeBosses.length, 0)
+  })
+
+  it('reconciles WaveManager, TomeManager, and LeaderboardManager caches across server clock backsteps (v0.7.1)', () => {
+    const waves = new WaveManager()
+    const tomes = new TomeManager()
+    const lb = new LeaderboardManager()
+
+    // 1. WaveManager: warm server clock at 200s resets backward to 0.5s
+    waves.reset(200)
+    waves.nextWaveTime = 204
+    waves.armedZombies.set(999, 201.5)
+    waves.handleClockBackstep(200, 0.5)
+    assert.ok(waves.nextWaveTime >= 1.5 && waves.nextWaveTime <= 16.5)
+    assert.ok((waves.armedZombies.get(999) ?? 0) >= 0.5)
+
+    // 2. TomeManager: setting cache populated at t=200s refreshes immediately when clock drops to 0.5s
+    mockSettings.set('tome_scaling', '0.10')
+    assert.equal(tomes.getGrowthRate(200), 0.1)
+    mockSettings.set('tome_scaling', '0.15')
+    assert.equal(tomes.getGrowthRate(200.5), 0.1) // still within 2s forward window
+    assert.equal(tomes.getGrowthRate(0.5), 0.15) // backstep invalidates cache immediately
+    tomes.invalidateSettingCache()
+    mockSettings.set('tome_scaling', '0.06')
+    assert.equal(tomes.getGrowthRate(0.6), 0.06)
+
+    // 3. LeaderboardManager: snapshot cached at t=200s refreshes on clock drop to 0.5s
+    mockBoardPages.clear()
+    mockBoardPages.set(`${BOARD_HIGHEST_WAVE}:allTime`, {
+      rows: [{ rank: 1, name: 'Test', value: 12, tiebreak: -90, count: 1 }],
+      total: 1,
+      loading: false,
+      player: undefined,
+    })
+    assert.equal(lb.getBoardSnapshot(defenderPlayer as never, 'allTime', 200)?.rows.length, 1)
+    mockBoardPages.set(`${BOARD_HIGHEST_WAVE}:allTime`, {
+      rows: [
+        { rank: 1, name: 'Test', value: 12, tiebreak: -90, count: 1 },
+        { rank: 2, name: 'Second', value: 8, tiebreak: -50, count: 1 },
+      ],
+      total: 2,
+      loading: false,
+      player: undefined,
+    })
+    assert.equal(lb.getBoardSnapshot(defenderPlayer as never, 'allTime', 200.5)?.rows.length, 1)
+    assert.equal(lb.getBoardSnapshot(defenderPlayer as never, 'allTime', 0.5)?.rows.length, 2)
+    mockBoardPages.clear()
+  })
 })
 
 describe('Tier 5 — HUD Stability CVars & Legendary Armory', () => {
@@ -3478,4 +3768,381 @@ describe('Tier 6 — Playtest Fixes: 5s Respawn, Below-Map Recovery, 12 Slots & 
     )
   })
 })
+
+describe('Tier 3 — Modlock v0.1.83 Entity Modifiers, onKill & onAbilityCast', () => {
+  it('decomposes structure fortify and hero Tome bonuses onto binary C++ entity modifier plans without double-multiplying fire rate', () => {
+    assert.deepEqual(getStructureFortifyEntityModifiers(0), [])
+    assert.deepEqual(getStructureFortifyEntityModifiers(1), [
+      FIRE_RATE_ENTITY_MODIFIERS[0].modifier,
+      FIRE_RATE_ENTITY_MODIFIERS[1].modifier,
+    ])
+    const lv2 = getStructureFortifyEntityModifiers(2)
+    assert.ok(lv2.includes(STRUCTURE_CDR_ENTITY_MODIFIER))
+    assert.equal(
+      getStructureFortifyEntityModifiers(12).length,
+      FIRE_RATE_ENTITY_MODIFIERS.length + 1,
+    )
+    assert.deepEqual(decomposeBinaryEntityModifiers(200, CLIP_SIZE_ENTITY_MODIFIERS), [
+      ...CLIP_SIZE_ENTITY_MODIFIERS.map((t) => t.modifier),
+    ])
+
+    const heroPlan = getHeroTomeEntityModifierPlan({
+      weapon: 1,
+      firerate: 1,
+      spirit: 1,
+    })
+    assert.deepEqual(heroPlan, [
+      FIRE_RATE_ENTITY_MODIFIERS[0].modifier,
+      CLIP_SIZE_ENTITY_MODIFIERS[0].modifier,
+      HERO_SPIRIT_ENTITY_MODIFIER,
+    ])
+
+    assert.equal(computeResidualWeaponDamageMult({ weapon: 3, firerate: 4, omni: 0 }), 1.3)
+    assert.equal(computeResidualWeaponDamageMult({ weapon: 2, firerate: 5, omni: 2 }), 1.3)
+
+    // Differential syncEntityModifierSet issues 0 calls at empty/unchanged state and toggles cleanly
+    const calls: Array<{ entity: number; mod: string; active: boolean }> = []
+    const store = new Map<number, Set<string>>()
+    const hold = (entity: number, mod: string, active = true) => {
+      calls.push({ entity, mod, active })
+      return true
+    }
+    assert.equal(syncEntityModifierSet(10, [], store, hold), false)
+    assert.equal(calls.length, 0)
+    assert.equal(
+      syncEntityModifierSet(10, ['m_a', 'm_b'], store, hold),
+      true,
+    )
+    assert.equal(calls.length, 2)
+    assert.equal(
+      syncEntityModifierSet(10, ['m_a', 'm_b'], store, hold),
+      false,
+    )
+    assert.equal(calls.length, 2)
+    assert.equal(
+      syncEntityModifierSet(10, ['m_a', 'm_c'], store, hold),
+      true,
+    )
+    assert.deepEqual(calls.slice(2), [
+      { entity: 10, mod: 'm_b', active: false },
+      { entity: 10, mod: 'm_c', active: true },
+    ])
+  })
+})
+
+describe('Hyperline Dedicated Server Clock Backsteps & Leaderboard Copy (v0.7.1)', () => {
+  it('detects backward server clock jumps and self-heals HUD push gating, respawn timers, and shutdown watches', () => {
+    assert.equal(hasClockSteppedBackward(180.0, 0.015), true)
+    assert.equal(hasClockSteppedBackward(10.0, 10.0), false)
+    assert.equal(hasClockSteppedBackward(10.0, 9.98), false)
+    assert.equal(hasClockSteppedBackward(10.0, 9.5), true)
+
+    // Warm dedicated server reset: HUD previously stamped at t=180s, clock resets to t=0.015s
+    assert.equal(
+      shouldPushHudUpdate({
+        lastSig: '1;0;5;0',
+        nextSig: '1;0;5;0',
+        lastModalSig: 'm0',
+        nextModalSig: 'm0',
+        nowSeconds: 0.015,
+        lastSentAtSeconds: 180.0,
+      }),
+      true,
+    )
+
+    // Defender died at t=180s, then clock jumped back to t=1.0s -> reclamp instead of locking out respawn for 185s
+    const respawnReset = evaluateDefenderRespawnDue({
+      alive: false,
+      hasHero: true,
+      nowSeconds: 1.0,
+      diedAtSeconds: 180.0,
+      lastRespawnAttemptAt: 180.0,
+    })
+    assert.equal(respawnReset.nextDiedAtSeconds, 1.0)
+    assert.equal(respawnReset.shouldCallRespawn, false)
+    const respawnAfter5s = evaluateDefenderRespawnDue({
+      alive: false,
+      hasHero: true,
+      nowSeconds: 6.0,
+      diedAtSeconds: respawnReset.nextDiedAtSeconds,
+      lastRespawnAttemptAt: respawnReset.nextLastRespawnAttemptAt,
+    })
+    assert.equal(respawnAfter5s.shouldCallRespawn, true)
+
+    // Empty server shutdown timer stamped at 180s reclamps on clock drop to 0.5s, then quits 3s later
+    const emptyReset = evaluateEmptyServerShutdown(
+      { hasSeenHuman: true, emptySinceSeconds: 180.0, quitIssued: false },
+      0,
+      0.5,
+      false,
+    )
+    assert.equal(emptyReset.shouldQuit, false)
+    assert.equal(emptyReset.nextState.emptySinceSeconds, 0.5)
+    const emptyDue = evaluateEmptyServerShutdown(emptyReset.nextState, 0, 3.6, false)
+    assert.equal(emptyDue.shouldQuit, true)
+  })
+
+  it('formats accurate LeaderboardModal subtitles and unavailable/Draft fallback copy without mislabeling hosted servers', () => {
+    const rankedSubtitle = getLeaderboardSubtitleCopy({ rankedEligible: true })
+    assert.ok(rankedSubtitle.includes('Ranked Run Active'))
+    assert.equal(rankedSubtitle.includes('Defeat or Restart (Wave 2+)'), false)
+
+    const unrankedSubtitle = getLeaderboardSubtitleCopy({
+      rankedEligible: false,
+      disqualifyReason: '--arg dev',
+    })
+    assert.ok(unrankedSubtitle.includes('Unranked'))
+    assert.ok(unrankedSubtitle.includes('--arg dev'))
+
+    // Hosted Hyperline server (e.g. Draft mod where readBoard returns undefined) must NEVER claim "Local Dev Server"
+    const hostedFallback = getLeaderboardUnavailableCopy({
+      isLocalDev: false,
+      currentWave: 4,
+      currentKills: 37,
+      sessionBest: { wave: 6, kills: 72 },
+    })
+    assert.equal(hostedFallback.title.includes('Local Dev'), false)
+    assert.equal(hostedFallback.detail.includes('Local Dev'), false)
+    assert.ok(hostedFallback.statsLine.includes('Current Run: Wave 4 (37 Creep Last-Hits)'))
+    assert.ok(hostedFallback.statsLine.includes('Session Best: Wave 6 (72 Creep Last-Hits)'))
+
+    // True local dev mode (--arg dev) clearly says Local Dev Mode and shows Current Run
+    const localDevFallback = getLeaderboardUnavailableCopy({
+      isLocalDev: true,
+      currentWave: 1,
+      currentKills: 0,
+    })
+    assert.ok(localDevFallback.title.includes('Local Dev Mode (--arg dev)'))
+    assert.ok(localDevFallback.statsLine.includes('Current Run: Wave 1 (0 Creep Last-Hits)'))
+    assert.equal(localDevFallback.statsLine.includes('Session Best'), false)
+  })
+})
+
+describe('Native Buy Menu Panorama HUD Collapse & Restore Sync (v0.7.4)', () => {
+  it('stays completely idle with zero wake-ups when native Buy Menu has not been opened', () => {
+    assert.equal(needsImmediateNativeShopWake(undefined, false, 5.0), false)
+    const idle1 = evaluateNativeShopHudSync(undefined, false, 5.0)
+    assert.deepEqual(idle1.nextState, INITIAL_NATIVE_SHOP_HUD_STATE)
+    assert.equal(idle1.suppressShow, false)
+    assert.equal(idle1.shouldHideNow, false)
+    assert.equal(idle1.closeTransientModals, false)
+    assert.equal(idle1.holdStockHudPulse, false)
+    assert.equal(idle1.resyncCursorNow, false)
+    assert.equal(idle1.bumpedEpoch, false)
+    assert.equal(idle1.nextState.hudEpoch, 0)
+
+    assert.equal(needsImmediateNativeShopWake(idle1.nextState, false, 10.0), false)
+    const idle2 = evaluateNativeShopHudSync(idle1.nextState, false, 10.0)
+    assert.deepEqual(idle2, idle1)
+  })
+
+  it('orchestrates hide, stock HUD pulse, 80ms fast restore with 0ms cursor lock, secondary pulse, and keyed epoch settle', () => {
+    // Rising edge: opening Buy Menu hides HUD, closes transient modals, holds stock HUD pulse
+    assert.equal(needsImmediateNativeShopWake(undefined, true, 8.0), true)
+    const opened = evaluateNativeShopHudSync(undefined, true, 8.0)
+    assert.equal(opened.suppressShow, true)
+    assert.equal(opened.shouldHideNow, true)
+    assert.equal(opened.closeTransientModals, true)
+    assert.equal(opened.holdStockHudPulse, true)
+    assert.equal(opened.resyncCursorNow, true)
+    assert.equal(opened.bumpedEpoch, false)
+    assert.equal(opened.nextState.wasShopOpen, true)
+    assert.equal(opened.nextState.hudEpoch, 0)
+
+    // Sustained shop open keeps suppressing show() diffs and holding stock HUD pulse without waking every frame
+    assert.equal(needsImmediateNativeShopWake(opened.nextState, true, 9.25), false)
+    const held = evaluateNativeShopHudSync(opened.nextState, true, 9.25)
+    assert.equal(held.suppressShow, true)
+    assert.equal(held.shouldHideNow, false)
+    assert.equal(held.closeTransientModals, false)
+    assert.equal(held.holdStockHudPulse, true)
+    assert.equal(held.bumpedEpoch, false)
+
+    // Falling edge at t=10.0: waits only 80ms before restoring HUD (zero artificial cursor lock!)
+    assert.equal(needsImmediateNativeShopWake(held.nextState, false, 10.0), true)
+    const justClosed = evaluateNativeShopHudSync(held.nextState, false, 10.0)
+    assert.equal(justClosed.suppressShow, true)
+    assert.equal(justClosed.shouldHideNow, false)
+    assert.equal(justClosed.holdStockHudPulse, true)
+    assert.equal(justClosed.nextState.closedAtSeconds, 10.0)
+
+    const beforeRestore = 10.0 + SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS - 0.02
+    assert.equal(
+      needsImmediateNativeShopWake(justClosed.nextState, false, beforeRestore),
+      false,
+    )
+    const stillWaiting = evaluateNativeShopHudSync(
+      justClosed.nextState,
+      false,
+      beforeRestore,
+    )
+    assert.equal(stillWaiting.suppressShow, true)
+    assert.equal(stillWaiting.holdStockHudPulse, true)
+    assert.equal(stillWaiting.bumpedEpoch, false)
+
+    // Past +0.08s restore delay: lifts stock HUD pulse, signals cursor modal resync if needed, bumps epoch -> 1
+    const restoreTime = 10.0 + SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS + 0.02
+    assert.equal(
+      needsImmediateNativeShopWake(stillWaiting.nextState, false, restoreTime),
+      true,
+    )
+    const restored = evaluateNativeShopHudSync(
+      stillWaiting.nextState,
+      false,
+      restoreTime,
+    )
+    assert.equal(restored.suppressShow, false)
+    assert.equal(restored.shouldHideNow, false)
+    assert.equal(restored.holdStockHudPulse, false)
+    assert.equal(restored.resyncCursorNow, true)
+    assert.equal(restored.bumpedEpoch, true)
+    assert.equal(restored.nextState.initialRestoreDone, true)
+    assert.equal(restored.nextState.secondPulseStarted, false)
+    assert.equal(restored.nextState.settleResetDone, false)
+    assert.equal(restored.nextState.hudEpoch, 1)
+
+    // Between +0.08s and +0.28s: normal rendering, no extra wake-up
+    const midWindowTime = 10.0 + SHOP_CLOSE_SECOND_PULSE_START_SECONDS - 0.05
+    assert.equal(
+      needsImmediateNativeShopWake(restored.nextState, false, midWindowTime),
+      false,
+    )
+    const between = evaluateNativeShopHudSync(
+      restored.nextState,
+      false,
+      midWindowTime,
+    )
+    assert.equal(between.suppressShow, false)
+    assert.equal(between.holdStockHudPulse, false)
+    assert.equal(between.bumpedEpoch, false)
+
+    // At +0.28s: starts brief secondary stock HUD pulse while keeping custom HUD visible
+    const secondPulseTime = 10.0 + SHOP_CLOSE_SECOND_PULSE_START_SECONDS + 0.02
+    assert.equal(
+      needsImmediateNativeShopWake(between.nextState, false, secondPulseTime),
+      true,
+    )
+    const secondPulse = evaluateNativeShopHudSync(
+      between.nextState,
+      false,
+      secondPulseTime,
+    )
+    assert.equal(secondPulse.suppressShow, false)
+    assert.equal(secondPulse.holdStockHudPulse, true)
+    assert.equal(secondPulse.bumpedEpoch, false)
+    assert.equal(secondPulse.nextState.secondPulseStarted, true)
+    assert.equal(secondPulse.nextState.settleResetDone, false)
+
+    assert.equal(
+      needsImmediateNativeShopWake(
+        secondPulse.nextState,
+        false,
+        10.0 + SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS - 0.02,
+      ),
+      false,
+    )
+
+    // Past +0.38s settle threshold: releases stock HUD pulse and bumps epoch -> 2, preserving monotonic hudEpoch
+    const settleTime = 10.0 + SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS + 0.02
+    assert.equal(
+      needsImmediateNativeShopWake(secondPulse.nextState, false, settleTime),
+      true,
+    )
+    const settled = evaluateNativeShopHudSync(
+      secondPulse.nextState,
+      false,
+      settleTime,
+    )
+    assert.equal(settled.suppressShow, false)
+    assert.equal(settled.holdStockHudPulse, false)
+    assert.equal(settled.bumpedEpoch, true)
+    assert.equal(settled.resyncCursorNow, false)
+    assert.equal(settled.nextState.settleResetDone, true)
+    assert.equal(settled.nextState.hudEpoch, 2)
+
+    // Subsequent idle frames remain quiet with hudEpoch === 2 preserved
+    assert.equal(needsImmediateNativeShopWake(settled.nextState, false, 12.0), false)
+    const afterSettle = evaluateNativeShopHudSync(settled.nextState, false, 12.0)
+    assert.equal(afterSettle.suppressShow, false)
+    assert.equal(afterSettle.holdStockHudPulse, false)
+    assert.equal(afterSettle.bumpedEpoch, false)
+    assert.equal(afterSettle.nextState.hudEpoch, 2)
+  })
+
+  it('keeps hudEpoch strictly monotonic across rapid Buy Menu reopens and server clock backsteps', () => {
+    const open1 = evaluateNativeShopHudSync(undefined, true, 20.0)
+    const close1 = evaluateNativeShopHudSync(open1.nextState, false, 20.5)
+
+    // Rapid reopen before +0.08s restore delay
+    const reopenBeforeRestore = evaluateNativeShopHudSync(
+      close1.nextState,
+      true,
+      20.53,
+    )
+    assert.equal(reopenBeforeRestore.suppressShow, true)
+    assert.equal(reopenBeforeRestore.shouldHideNow, true)
+    assert.equal(reopenBeforeRestore.holdStockHudPulse, true)
+    assert.equal(reopenBeforeRestore.nextState.closedAtSeconds, undefined)
+    assert.equal(reopenBeforeRestore.nextState.hudEpoch, 0)
+
+    // Complete restore (epoch -> 1), then reopen before +0.38s settle
+    const close2 = evaluateNativeShopHudSync(
+      reopenBeforeRestore.nextState,
+      false,
+      22.0,
+    )
+    const restored2 = evaluateNativeShopHudSync(
+      close2.nextState,
+      false,
+      22.0 + SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS + 0.02,
+    )
+    assert.equal(restored2.bumpedEpoch, true)
+    assert.equal(restored2.nextState.hudEpoch, 1)
+
+    const reopenBeforeSettle = evaluateNativeShopHudSync(
+      restored2.nextState,
+      true,
+      22.2,
+    )
+    assert.equal(reopenBeforeSettle.suppressShow, true)
+    assert.equal(reopenBeforeSettle.shouldHideNow, true)
+    assert.equal(reopenBeforeSettle.holdStockHudPulse, true)
+    assert.equal(reopenBeforeSettle.nextState.hudEpoch, 1)
+
+    // Server clock backstep while waiting in post-close restore immediately restores cleanly & increments epoch (1 -> 2)
+    const close3 = evaluateNativeShopHudSync(
+      reopenBeforeSettle.nextState,
+      false,
+      180.0,
+    )
+    assert.equal(close3.suppressShow, true)
+    assert.equal(needsImmediateNativeShopWake(close3.nextState, false, 0.2), true)
+    const clockReset = evaluateNativeShopHudSync(close3.nextState, false, 0.2)
+    assert.equal(clockReset.suppressShow, false)
+    assert.equal(clockReset.holdStockHudPulse, false)
+    assert.equal(clockReset.bumpedEpoch, true)
+    assert.equal(clockReset.resyncCursorNow, true)
+    assert.equal(clockReset.nextState.settleResetDone, true)
+    assert.equal(clockReset.nextState.hudEpoch, 2)
+
+    // Subsequent open + full close cycle increments from 2 -> 3 -> 4 (never resets back to 0)
+    const openNext = evaluateNativeShopHudSync(clockReset.nextState, true, 5.0)
+    const closeNext = evaluateNativeShopHudSync(openNext.nextState, false, 5.5)
+    const restoreNext = evaluateNativeShopHudSync(
+      closeNext.nextState,
+      false,
+      5.5 + SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS + 0.02,
+    )
+    assert.equal(restoreNext.nextState.hudEpoch, 3)
+    const settleNext = evaluateNativeShopHudSync(
+      restoreNext.nextState,
+      false,
+      5.5 + SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS + 0.02,
+    )
+    assert.equal(settleNext.nextState.hudEpoch, 4)
+  })
+})
+
+
+
 

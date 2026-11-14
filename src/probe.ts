@@ -14,6 +14,7 @@ import {
   findEntities,
   killEntity,
   log,
+  modifiers,
   Npc,
   type Player,
   players,
@@ -23,10 +24,23 @@ import {
 } from 'modlock'
 
 import {
+  BOSS_COLOSSUS_ENTITY_MODIFIER,
   computeWaveCreepHp,
+  ELITE_HASTE_ENTITY_MODIFIER,
+  getStructureFortifyEntityModifiers,
   PLAYER_SPAWN_ANGLES,
   PLAYER_SPAWN_ORIGIN,
 } from './config'
+
+function hasActiveEntityModifier(entity: number, expected: string): boolean {
+  if (entity <= 0) {
+    return false
+  }
+  const shortName = expected.split('/').pop() ?? expected
+  return modifiers(entity).some(
+    (m) => !m.disabled && (m.name === expected || m.name === shortName),
+  )
+}
 import type { GuardianManager } from './guardian'
 import type { TomeManager } from './tomes'
 import type { WaveManager } from './wave'
@@ -400,6 +414,23 @@ export class TdProbe {
       return `All-Structure Fortify did not scale Max HP across every tier: G=${gMaxBefore}->${guardian.maxHealth}, W=${wMaxBefore}->${guardian.walkerMaxHealth}, BG=${bgMaxBefore}->${guardian.baseGuardiansMaxHealth}, S=${sMaxBefore}->${guardian.shrinesMaxHealth}, P=${pMaxBefore}->${guardian.patronMaxHealth}`
     }
 
+    const expectedFortifyMods = getStructureFortifyEntityModifiers(guardian.upgradeLevel)
+    if (expectedFortifyMods.length === 0) {
+      return `Expected non-empty structure fortify modifiers at level ${guardian.upgradeLevel}`
+    }
+    for (const [label, structEnt] of [
+      ['Guardian', guardian.entity],
+      ['Walker', guardian.walkerEntity],
+    ] as const) {
+      if (structEnt <= 0) continue
+      const missing = expectedFortifyMods.find(
+        (mod) => !hasActiveEntityModifier(structEnt, mod),
+      )
+      if (missing) {
+        return `${label} entity ${structEnt} missing fortify modifier ${missing}`
+      }
+    }
+
     // Verify fortified structure outgoing damage multiplier applies to Walker / Guardian / Patron hits!
     const walkerDmgMod = waves.modifyIncomingDamage(
       {
@@ -560,7 +591,14 @@ export class TdProbe {
     if (typeof scale10 === 'number' && scale10 < 1.12) {
       return `Expected Boss Colossus scale >= 1.12, got ${scale10}`
     }
-    // Verify Tome outgoing damage scaling for Team 2 Defender!
+    const b10Ent = b10.pawnEntity || b10.configuredPawnEntity
+    if (!hasActiveEntityModifier(b10Ent, BOSS_COLOSSUS_ENTITY_MODIFIER)) {
+      return `Wave 10 Boss entity ${b10Ent} missing ${BOSS_COLOSSUS_ENTITY_MODIFIER}`
+    }
+    if (!hasActiveEntityModifier(b10Ent, ELITE_HASTE_ENTITY_MODIFIER)) {
+      return `Wave 10 Boss entity ${b10Ent} missing ${ELITE_HASTE_ENTITY_MODIFIER}`
+    }
+    // Verify Tome outgoing damage scaling & C++ entity modifiers for Team 2 Defender!
     if (this.defender) {
       tomes.applyMinorTome(this.defender, {
         id: 'weapon',
@@ -572,6 +610,12 @@ export class TdProbe {
         color: '#fb923c',
       })
       const defEnt = this.defender.pawn()?.entity ?? 0
+      if (
+        defEnt <= 0 ||
+        !hasActiveEntityModifier(defEnt, 'upgrade_clip_size_2/modifier_intrinsic_base')
+      ) {
+        return `Defender entity ${defEnt} missing upgrade_clip_size_2/modifier_intrinsic_base after Weapon Tome`
+      }
       const boosted = waves.modifyIncomingDamage(
         {
           victim: this.testCreepEntity || 999,
