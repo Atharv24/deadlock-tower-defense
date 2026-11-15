@@ -122,18 +122,20 @@ export function purgeFriendlyAndSideLaneTroopers(
   let removed = 0
   for (const tr of findEntities('npc_trooper')) {
     const npc = new Npc(tr).read()
+    if (npc && npc.health <= 0) {
+      continue
+    }
     const team =
       npc?.team ??
       (readField(tr, 'CBaseEntity', 'm_iTeamNum', 'uint8') as number | undefined)
-    const lifeState = readField(tr, 'CBaseEntity', 'm_lifeState', 'uint8')
-    if (typeof lifeState === 'number' && lifeState !== 0) {
-      continue
-    }
     if (team === defenderTeam) {
-      if (!new Npc(tr).remove()) {
-        killEntity({ victim: tr })
+      const lifeState = readField(tr, 'CBaseEntity', 'm_lifeState', 'uint8')
+      if (typeof lifeState !== 'number' || lifeState === 0) {
+        if (!new Npc(tr).remove()) {
+          killEntity({ victim: tr })
+        }
+        removed += 1
       }
-      removed += 1
       continue
     }
     if (
@@ -142,8 +144,11 @@ export function purgeFriendlyAndSideLaneTroopers(
       npc.maxHealth > 1 &&
       Math.abs(npc.position.x) > 2800
     ) {
-      killEntity({ victim: tr })
-      removed += 1
+      const lifeState = readField(tr, 'CBaseEntity', 'm_lifeState', 'uint8')
+      if (typeof lifeState !== 'number' || lifeState === 0) {
+        killEntity({ victim: tr })
+        removed += 1
+      }
     }
   }
   return removed

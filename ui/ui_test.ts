@@ -9,7 +9,10 @@ import {
   SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS,
   SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS,
   SHOP_CLOSE_SECOND_PULSE_START_SECONDS,
+  SHOP_POLL_ACTIVE_INTERVAL_SECONDS,
+  SHOP_POLL_IDLE_INTERVAL_SECONDS,
   shouldFreeHudCursor,
+  shouldPollNativeShopState,
   shouldPushHudUpdate,
 } from '@ui'
 
@@ -417,5 +420,56 @@ describe('Native Buy Menu Panorama HUD Collapse & Restore Sync (v0.7.4)', () => 
       5.5 + SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS + 0.02,
     )
     assert.equal(settleNext.nextState.hudEpoch, 4)
+  })
+
+  it('throttles native Buy Menu polling between idle and active transition cadences', () => {
+    assert.equal(
+      shouldPollNativeShopState({
+        nowSeconds: 0.015,
+        lastPollAtSeconds: -999,
+        hasActiveTransition: false,
+      }),
+      true,
+    )
+    assert.equal(
+      shouldPollNativeShopState({
+        nowSeconds: 10.0 + SHOP_POLL_IDLE_INTERVAL_SECONDS - 0.01,
+        lastPollAtSeconds: 10.0,
+        hasActiveTransition: false,
+      }),
+      false,
+    )
+    assert.equal(
+      shouldPollNativeShopState({
+        nowSeconds: 10.0 + SHOP_POLL_IDLE_INTERVAL_SECONDS,
+        lastPollAtSeconds: 10.0,
+        hasActiveTransition: false,
+      }),
+      true,
+    )
+    assert.equal(
+      shouldPollNativeShopState({
+        nowSeconds: 10.0 + SHOP_POLL_ACTIVE_INTERVAL_SECONDS - 0.005,
+        lastPollAtSeconds: 10.0,
+        hasActiveTransition: true,
+      }),
+      false,
+    )
+    assert.equal(
+      shouldPollNativeShopState({
+        nowSeconds: 10.0 + SHOP_POLL_ACTIVE_INTERVAL_SECONDS,
+        lastPollAtSeconds: 10.0,
+        hasActiveTransition: true,
+      }),
+      true,
+    )
+    assert.equal(
+      shouldPollNativeShopState({
+        nowSeconds: 0.2,
+        lastPollAtSeconds: 120.0,
+        hasActiveTransition: false,
+      }),
+      true,
+    )
   })
 })

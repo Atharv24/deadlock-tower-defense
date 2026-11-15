@@ -5,8 +5,8 @@
 import {
   type ChatEvent,
   command,
-  every,
   findHero,
+  frameClock,
   handedOff,
   handoff,
   holdModifierState,
@@ -78,7 +78,10 @@ import {
 } from './td_hud'
 import { TdProbe } from './probe'
 import { WaveManager } from './wave'
-import { runTimerSafely as runTimerGuard } from '@base/timer_guard'
+import {
+  FrameCadenceScheduler,
+  runTimerSafely as runTimerGuard,
+} from '@base/timer_guard'
 import { resolveSafeGroundOrigin } from '@engine/respawn'
 import { TomeManager } from '@components/roguelite'
 import { LeaderboardManager } from '@components/scores'
@@ -122,8 +125,8 @@ function runTimerSafely(name: string, fn: () => void): void {
 let probe: TdProbe | undefined
 let localDevMode = false
 let devCommandsRegistered = false
+let hasDeveloperConnection = false
 let nowSeconds = 0
-let lastHudPollAt = -1
 let skipInitialWorldReset = false
 let emptyServerWatch: EmptyServerWatchState = {
   hasSeenHuman: false,
@@ -136,6 +139,15 @@ const shopStateHeldEntities = new Set<number>()
 const diedAtBySlot = new Map<number, number>()
 const lastRespawnAttemptBySlot = new Map<number, number>()
 const postSpawnVerifyAtBySlot = new Map<number, number>()
+
+function refreshDeveloperConnectionState(excludeSlot?: number): void {
+  hasDeveloperConnection = players().some(
+    (c) =>
+      !c.bot &&
+      c.player.slot !== excludeSlot &&
+      c.roles.includes('developer'),
+  )
+}
 
 /** Reconciles server timers and Panorama HUD caches when a dedicated host clock resets backward. */
 function reconcileClockBackstep(prevNow: number, nextNow: number): void {
@@ -151,7 +163,7 @@ function reconcileClockBackstep(prevNow: number, nextNow: number): void {
       emptySinceSeconds: nextNow,
     }
   }
-  lastHudPollAt = -1
+  cadenceScheduler.reset(nextNow)
   waves.handleClockBackstep(prevNow, nextNow)
   tomes.invalidateSettingCache()
   leaderboard.clearBoardCache()
@@ -187,6 +199,7 @@ function placeDefenderAtFrontline(
  * recovers anyone spawned below the map mesh, and enables Buy Anywhere.
  */
 function syncDefenderPlacementAndShopAccess(): void {
+  waves.markDefenderCacheAuthoritative()
   for (const conn of players()) {
     if (conn.bot) {
       if (probe) {
@@ -197,7 +210,15 @@ function syncDefenderPlacementAndShopAccess(): void {
           botPawn.health > 0 &&
           botPawn.team === DEFENDER_TEAM
         ) {
+          waves.syncDefenderCombatEntry(
+            conn.player.slot,
+            botPawn.entity,
+            botPawn.hero,
+            Math.max(1, botPawn.effectiveMaxHealth ?? botPawn.maxHealth),
+          )
           waves.ensureDefenderShopAccess(botPawn.entity, botPawn.position)
+        } else {
+          waves.clearDefenderCombatSlot(conn.player.slot)
         }
       }
       continue
@@ -250,6 +271,17 @@ function syncDefenderPlacementAndShopAccess(): void {
       postSpawnVerifyAtBySlot.delete(p.slot)
       if (pawn) {
         shopStateHeldEntities.delete(pawn.entity)
+        waves.releaseDefenderPawnShop(pawn.entity)
+        if (pawn.team === DEFENDER_TEAM) {
+          waves.syncDefenderCombatEntry(
+            p.slot,
+            pawn.entity,
+            pawn.hero,
+            Math.max(1, pawn.effectiveMaxHealth ?? pawn.maxHealth),
+          )
+        } else {
+          waves.clearDefenderCombatSlot(p.slot)
+        }
         if (hasHero && respawnEval.nextDiedAtSeconds !== undefined) {
           const targetRespawnAt =
             respawnEval.nextDiedAtSeconds + HERO_RESPAWN_TIME_SECONDS
@@ -275,17 +307,26 @@ function syncDefenderPlacementAndShopAccess(): void {
             p.respawn()
           }
         }
+      } else {
+        waves.clearDefenderCombatSlot(p.slot)
       }
       continue
     }
 
     const pawnKey = `${pawn.entity}:${pawn.hero}`
     if (conn.ready && pawn.team === 3) {
+      waves.clearDefenderCombatSlot(p.slot)
       p.changeTeam(DEFENDER_TEAM)
       placeDefenderAtFrontline(p, pawnKey, true)
       continue
     }
     if (pawn.team === DEFENDER_TEAM) {
+      waves.syncDefenderCombatEntry(
+        p.slot,
+        pawn.entity,
+        pawn.hero,
+        Math.max(1, pawn.effectiveMaxHealth ?? pawn.maxHealth),
+      )
       if (conn.ready) {
         if (!shopStateHeldEntities.has(pawn.entity)) {
           holdModifierState(pawn.entity, 'MODIFIER_STATE_IN_SHOP', true)
@@ -309,12 +350,17 @@ function syncDefenderPlacementAndShopAccess(): void {
           tomes.syncHeroModifiers(p, pawn.entity)
         }
       }
+    } else {
+      waves.clearDefenderCombatSlot(p.slot)
     }
   }
 }
 
 /** Saves state across live Modlock hot-reloads (`modlock run`). */
 function persistHandoff(): void {
+  if (!localDevMode && !hasDeveloperConnection) {
+    return
+  }
   const { playerTomes, playerKills } = tomes.exportRecords()
   const lbCheckpoint = leaderboard.exportCheckpointState()
   handoff(
@@ -455,13 +501,14 @@ onStart((args) => {
 onWorld((mapName) => {
   log(`World loaded: ${mapName}`)
   waves.configureWorldForSingleLaneDefense(guardian)
+  refreshDeveloperConnectionState()
   if (skipInitialWorldReset) {
     skipInitialWorldReset = false
     requestImmediateHudSync()
     return
   }
   nowSeconds = 0
-  lastHudPollAt = -1
+  cadenceScheduler.reset(0)
   emptyServerWatch = {
     hasSeenHuman: false,
     emptySinceSeconds: undefined,
@@ -488,6 +535,9 @@ onWorld((mapName) => {
 
 onPlayerJoin((joined) => {
   if (!joined.connection.bot) {
+    if (joined.connection.roles.includes('developer')) {
+      hasDeveloperConnection = true
+    }
     waves.unlockAllPlayerFlexSlots()
     requestImmediateHudSync()
   }
@@ -513,6 +563,10 @@ onPlayerJoin((joined) => {
 })
 
 onPlayerLeave((left) => {
+  if (!left.connection.bot && left.disconnected) {
+    waves.clearDefenderCombatSlot(left.connection.player.slot)
+    refreshDeveloperConnectionState(left.connection.player.slot)
+  }
   if (!left.connection.bot && left.disconnected && guardian.matchState === 'active') {
     leaderboard.checkpointPlayer(
       left.connection.player,
@@ -585,6 +639,7 @@ onDamaged((hit) => {
     hit.healthBefore > 0 &&
     hit.healthLost >= hit.healthBefore &&
     hit.attacker > 0 &&
+    !tomes.rewardedCreeps.has(hit.victim) &&
     !guardian.isFriendlyStructureEntity(hit.attacker) &&
     waves.isEnemyRewardVictim(hit.victim)
   ) {
@@ -636,6 +691,7 @@ onKill((kill) => {
     }
     if (
       kill.attacker > 0 &&
+      !tomes.rewardedCreeps.has(kill.victim) &&
       !guardian.isFriendlyStructureEntity(kill.attacker) &&
       waves.isEnemyRewardVictim(kill.victim)
     ) {
@@ -652,144 +708,167 @@ onKill((kill) => {
   })
 })
 
-// Drive active Enemy Hero Bosses & vanilla steered Center Lane creeps at 10 Hz
-// (decoupled from HUD rendering so combat exceptions or spikes cannot disturb UI updates).
-every(0.1, () => {
-  runTimerSafely('combat-10hz', () => {
-    if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
-      waves.tickActiveBosses(nowSeconds, guardian)
-      waves.tickSteeredWaveCreeps(0.1, guardian)
-    }
-  })
-})
-
-// Fast 250ms pass for defender spawn placement, Buy Anywhere shop access (#31),
-// and Graves Zombie proximity checks (0 host calls when empty).
-every(0.25, () => {
-  runTimerSafely('world-4hz', () => {
-    syncDefenderPlacementAndShopAccess()
-    if (guardian.matchState === 'active') {
-      waves.purgeFriendlyAndSideLaneTroopers()
-    }
-    if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
-      waves.tickExplodingZombies(nowSeconds, guardian)
-    }
-  })
-})
-
-// 500ms pass to sync newly dismounted creep HP & elite entity modifiers.
-every(0.5, () => {
-  runTimerSafely('creep-scale-2hz', () => {
-    if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
-      waves.scaleNewlySpawnedCreeps(nowSeconds)
-    }
-  })
-})
-
-// 1-second tick for wave scheduling, Base Defense monitoring, and empty-server watch.
-every(1, () => {
-  runTimerSafely('wave-1hz', () => {
-    guardian.poll(waves.wave, nowSeconds)
-    if (guardian.matchState === 'defeat') {
-      leaderboard.checkpointAllPlayers(waves.wave, tomes)
-    }
-
-    let humanCount = 0
-    for (const conn of players()) {
-      if (!conn.bot) {
-        humanCount += 1
+// Phase-staggered scheduler runs at most one periodic task per 64 Hz frame inside onFrame()
+// so timer work never piles onto integer-second ticks and frameClock instruments each subsystem.
+const cadenceScheduler = new FrameCadenceScheduler([
+  {
+    name: 'combat-10hz',
+    intervalSeconds: 0.1,
+    phaseOffsetSeconds: 0,
+    run: () => {
+      if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
+        waves.tickActiveBosses(nowSeconds, guardian)
+        waves.tickSteeredWaveCreeps(0.1, guardian)
       }
-    }
-    if (guardian.matchState === 'active') {
-      tomes.tickVanillaCooldowns(nowSeconds)
-      tomes.tickVanillaRegen()
-    }
-
-    const prevEmptySince = emptyServerWatch.emptySinceSeconds
-    const shutdownEval = evaluateEmptyServerShutdown(
-      emptyServerWatch,
-      humanCount,
-      nowSeconds,
-      probe !== undefined,
-      EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
-      localDevMode,
-    )
-    emptyServerWatch = shutdownEval.nextState
-    if (
-      prevEmptySince === undefined &&
-      emptyServerWatch.emptySinceSeconds !== undefined &&
-      !shutdownEval.shouldQuit &&
-      !shutdownEval.shouldResetMatch
-    ) {
-      log(
-        localDevMode
-          ? `All human players disconnected — shutting down local dev server in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`
-          : `All human players disconnected — resetting match to idle in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`,
-      )
-    } else if (
-      prevEmptySince !== undefined &&
-      emptyServerWatch.emptySinceSeconds === undefined &&
-      !shutdownEval.shouldResetMatch
-    ) {
-      log(
-        localDevMode
-          ? 'Human player reconnected — cancelled empty-server shutdown timer'
-          : 'Human player reconnected — cancelled empty-server reset timer',
-      )
-    }
-    if (shutdownEval.shouldQuit) {
-      log(
-        'No human players remaining — ending match and shutting down local dev server (quit)',
-      )
-      serverCommand('quit')
-      return
-    }
-    if (shutdownEval.shouldResetMatch) {
-      log(
-        'No human players remaining — resetting match to Wave 0 idle state (keeping hosted server online)',
-      )
-      restartMatch()
-      leaderboard.resetSessionDiagnostics()
-      emptyServerWatch = {
-        hasSeenHuman: false,
-        emptySinceSeconds: undefined,
-        quitIssued: false,
+    },
+  },
+  {
+    name: 'world-4hz',
+    intervalSeconds: 0.25,
+    phaseOffsetSeconds: 0.031,
+    run: () => {
+      syncDefenderPlacementAndShopAccess()
+      if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
+        waves.tickExplodingZombies(nowSeconds, guardian)
       }
+    },
+  },
+  {
+    name: 'creep-scale-2hz',
+    intervalSeconds: 0.5,
+    phaseOffsetSeconds: 0.062,
+    run: () => {
+      if (guardian.matchState === 'active' && !waves.waitingForDefenderHero) {
+        waves.scaleNewlySpawnedCreeps(nowSeconds)
+      }
+    },
+  },
+  {
+    name: 'wave-1hz',
+    intervalSeconds: 1.0,
+    phaseOffsetSeconds: 0.125,
+    run: () => {
+      guardian.poll(waves.wave, nowSeconds)
+      if (guardian.matchState === 'defeat') {
+        leaderboard.checkpointAllPlayers(waves.wave, tomes)
+      }
+
+      let humanCount = 0
+      for (const conn of players()) {
+        if (!conn.bot) {
+          humanCount += 1
+        }
+      }
+      if (guardian.matchState === 'active') {
+        tomes.tickVanillaCooldowns(nowSeconds)
+        tomes.tickVanillaRegen()
+      }
+
+      const prevEmptySince = emptyServerWatch.emptySinceSeconds
+      const shutdownEval = evaluateEmptyServerShutdown(
+        emptyServerWatch,
+        humanCount,
+        nowSeconds,
+        probe !== undefined,
+        EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
+        localDevMode,
+      )
+      emptyServerWatch = shutdownEval.nextState
+      if (
+        prevEmptySince === undefined &&
+        emptyServerWatch.emptySinceSeconds !== undefined &&
+        !shutdownEval.shouldQuit &&
+        !shutdownEval.shouldResetMatch
+      ) {
+        log(
+          localDevMode
+            ? `All human players disconnected — shutting down local dev server in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`
+            : `All human players disconnected — resetting match to idle in ${EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS}s unless someone reconnects`,
+        )
+      } else if (
+        prevEmptySince !== undefined &&
+        emptyServerWatch.emptySinceSeconds === undefined &&
+        !shutdownEval.shouldResetMatch
+      ) {
+        log(
+          localDevMode
+            ? 'Human player reconnected — cancelled empty-server shutdown timer'
+            : 'Human player reconnected — cancelled empty-server reset timer',
+        )
+      }
+      if (shutdownEval.shouldQuit) {
+        log(
+          'No human players remaining — ending match and shutting down local dev server (quit)',
+        )
+        serverCommand('quit')
+        return
+      }
+      if (shutdownEval.shouldResetMatch) {
+        log(
+          'No human players remaining — resetting match to Wave 0 idle state (keeping hosted server online)',
+        )
+        restartMatch()
+        leaderboard.resetSessionDiagnostics()
+        emptyServerWatch = {
+          hasSeenHuman: false,
+          emptySinceSeconds: undefined,
+          quitIssued: false,
+        }
+        persistHandoff()
+        return
+      }
+
+      waves.tick(nowSeconds, guardian.matchState === 'active', guardian, {
+        skipSubticks: true,
+      })
+    },
+  },
+  {
+    name: 'hud-4hz',
+    intervalSeconds: 0.25,
+    phaseOffsetSeconds: 0.172,
+    run: () => {
+      renderTdHud(
+        nowSeconds,
+        waves,
+        guardian,
+        tomes,
+        leaderboard,
+        restartMatch,
+      )
+    },
+  },
+  {
+    name: 'handoff-10s',
+    intervalSeconds: 10.0,
+    phaseOffsetSeconds: 0.218,
+    enabled: () => localDevMode || hasDeveloperConnection,
+    run: () => {
       persistHandoff()
-      return
-    }
-
-    waves.tick(nowSeconds, guardian.matchState === 'active', guardian)
-  })
-})
-
-// Persist hot-reload state every 5 seconds (instead of on every kill/second).
-every(5, () => {
-  runTimerSafely('handoff-5s', () => {
-    persistHandoff()
-  })
-})
+    },
+  },
+])
 
 onFrame((frame) => {
+  frameClock.begin()
   if (hasClockSteppedBackward(nowSeconds, frame.timeSeconds)) {
     reconcileClockBackstep(nowSeconds, frame.timeSeconds)
   }
   nowSeconds = frame.timeSeconds
-  probe?.tick(nowSeconds, waves, guardian, tomes)
+  if (probe) {
+    probe.tick(nowSeconds, waves, guardian, tomes)
+    frameClock.lap('probe')
+  }
   try {
-    pollNativeShopStateEveryFrame(nowSeconds)
+    pollNativeShopStateEveryFrame(nowSeconds, waves.getKnownDefenderPawnBySlot())
   } catch (err) {
     log('shop-poll error:', String(err))
   }
-  const forceHud = consumeImmediateHudSync()
-  if (
-    forceHud ||
-    lastHudPollAt < 0 ||
-    nowSeconds < lastHudPollAt ||
-    nowSeconds - lastHudPollAt >= 0.25
-  ) {
-    lastHudPollAt = nowSeconds
-    runTimerSafely('hud-frame', () => {
+  frameClock.lap('shop-poll')
+
+  if (consumeImmediateHudSync()) {
+    cadenceScheduler.markRan('hud-4hz', nowSeconds)
+    runTimerSafely('hud-wake', () => {
       renderTdHud(
         nowSeconds,
         waves,
@@ -799,7 +878,14 @@ onFrame((frame) => {
         restartMatch,
       )
     })
+    frameClock.lap('hud-wake')
+  } else {
+    const ranTask = cadenceScheduler.runNextDue(nowSeconds, runTimerSafely)
+    if (ranTask) {
+      frameClock.lap(ranTask)
+    }
   }
+  frameClock.end(frame.tick)
 })
 
 // Register slash commands for BOTH All-Chat/console (`command()`) and Team Chat (`onChat` with `!line.all`).

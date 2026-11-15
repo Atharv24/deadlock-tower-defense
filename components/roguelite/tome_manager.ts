@@ -77,6 +77,10 @@ export class TomeManager {
   private readonly onCustomMajorBoon?: TomeManagerOptions['onCustomMajorBoon']
 
   readonly rewardedCreeps = new Set<number>()
+  private readonly rewardedCreepKillers = new Map<
+    number,
+    { readonly attacker: number; readonly slot: number }
+  >()
   readonly playerTomes = new Map<number, Record<string, number>>()
   readonly playerKills = new Map<number, number>()
   readonly pendingBoonChoices = new Map<
@@ -106,6 +110,7 @@ export class TomeManager {
   /** Resets Tome & Boon state for a new match or restart. */
   reset(): void {
     this.rewardedCreeps.clear()
+    this.rewardedCreepKillers.clear()
     this.playerTomes.clear()
     this.playerKills.clear()
     this.pendingBoonChoices.clear()
@@ -158,6 +163,7 @@ export class TomeManager {
     playerKills: Record<string, number>,
   ): void {
     this.rewardedCreeps.clear()
+    this.rewardedCreepKillers.clear()
     for (const h of rewardedCreeps) {
       this.rewardedCreeps.add(h)
     }
@@ -203,14 +209,20 @@ export class TomeManager {
     tomePickRoll = Math.random(),
     currentWave = 1,
   ): LastHitEvaluation {
-    const pawnToSlot = new Map<number, number>()
-    const slotToPlayer = new Map<number, Player>()
-    for (const conn of players()) {
-      const p = conn.player
-      const pawn = p.pawn()
-      if (pawn && pawn.team === this.defenderTeam) {
-        pawnToSlot.set(pawn.entity, p.slot)
-        slotToPlayer.set(p.slot, p)
+    if (hit.healthBefore <= 0 || hit.healthLost < hit.healthBefore) {
+      return {
+        isKill: false,
+        isPlayerKill: false,
+        granted: false,
+        reason: 'non_lethal',
+      }
+    }
+    if (!validCreepEntities.has(hit.victim)) {
+      return {
+        isKill: true,
+        isPlayerKill: false,
+        granted: false,
+        reason: 'not_creep',
       }
     }
 
@@ -233,6 +245,46 @@ export class TomeManager {
       }
     }
 
+    if (guardianSet.has(hit.attacker)) {
+      return {
+        isKill: true,
+        isPlayerKill: false,
+        granted: false,
+        reason: 'guardian_kill',
+      }
+    }
+    if (hit.attacker <= 0) {
+      return {
+        isKill: true,
+        isPlayerKill: false,
+        granted: false,
+        reason: 'non_player_attacker',
+      }
+    }
+    if (this.rewardedCreeps.has(hit.victim)) {
+      const prevKiller = this.rewardedCreepKillers.get(hit.victim)
+      if (prevKiller && prevKiller.attacker === hit.attacker) {
+        return {
+          isKill: true,
+          isPlayerKill: true,
+          granted: false,
+          playerSlot: prevKiller.slot,
+          reason: 'duplicate_kill',
+        }
+      }
+    }
+
+    const pawnToSlot = new Map<number, number>()
+    const slotToPlayer = new Map<number, Player>()
+    for (const conn of players()) {
+      const p = conn.player
+      const pawn = p.pawn()
+      if (pawn && pawn.team === this.defenderTeam) {
+        pawnToSlot.set(pawn.entity, p.slot)
+        slotToPlayer.set(p.slot, p)
+      }
+    }
+
     const result = evaluateCreepLastHit(
       hit,
       validCreepEntities,
@@ -250,10 +302,15 @@ export class TomeManager {
       result.playerSlot !== undefined &&
       result.reason !== 'duplicate_kill'
     ) {
+      this.rewardedCreepKillers.set(hit.victim, {
+        attacker: hit.attacker,
+        slot: result.playerSlot,
+      })
       while (this.rewardedCreeps.size > 512) {
         const oldest = this.rewardedCreeps.values().next().value
         if (oldest === undefined) break
         this.rewardedCreeps.delete(oldest)
+        this.rewardedCreepKillers.delete(oldest)
       }
       const prevKills = this.playerKills.get(result.playerSlot) ?? 0
       this.playerKills.set(result.playerSlot, prevKills + 1)

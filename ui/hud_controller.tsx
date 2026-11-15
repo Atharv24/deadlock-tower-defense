@@ -27,9 +27,24 @@ import {
 import {
   evaluateNativeShopHudSync,
   needsImmediateNativeShopWake,
+  shouldPollNativeShopState,
 } from './shop_sync'
 
-function readPlayerNativeShopOpen(player: Player): boolean {
+function readPlayerNativeShopOpen(
+  player: Player,
+  knownPawnEntity = 0,
+): boolean {
+  if (knownPawnEntity > 0) {
+    const cachedVal = readField(
+      knownPawnEntity,
+      'CCitadelPlayerPawn',
+      'm_bHasShopOpen',
+      'bool',
+    )
+    if (typeof cachedVal === 'boolean') {
+      return cachedVal
+    }
+  }
   const pawn = player.pawn()
   return (
     pawn !== undefined &&
@@ -89,6 +104,7 @@ export class HudController {
   readonly team: number
   readonly hudModeSettingKey: string
   readonly heroDeployTeamName: string
+  private lastShopPollAt = -999
 
   constructor(options?: HudControllerOptions) {
     this.state = options?.state ?? new HudStateStore()
@@ -98,16 +114,39 @@ export class HudController {
   }
 
   /**
-   * Checks human players every server frame so rapid Buy Menu (`m_bHasShopOpen`) edges
-   * and sub-250 ms post-close recovery boundaries wake HUD rendering on the exact frame.
+   * Checks human players on a throttled cadence (`~12.5 Hz` idle, `~33 Hz` while open
+   * or settling) so rapid Buy Menu (`m_bHasShopOpen`) edges wake HUD rendering promptly
+   * without scanning `player.pawn()` 64 times per second when idle.
    */
-  pollNativeShopStateEveryFrame(now: number): void {
+  pollNativeShopStateEveryFrame(
+    now: number,
+    knownPawnBySlot?: ReadonlyMap<number, number>,
+  ): void {
+    let hasActiveTransition = false
+    for (const shopState of this.state.nativeShopHudBySlot.values()) {
+      if (shopState.wasShopOpen || !shopState.settleResetDone) {
+        hasActiveTransition = true
+        break
+      }
+    }
+    if (
+      !shouldPollNativeShopState({
+        nowSeconds: now,
+        lastPollAtSeconds: this.lastShopPollAt,
+        hasActiveTransition,
+      })
+    ) {
+      return
+    }
+    this.lastShopPollAt = now
+
     for (const conn of players()) {
       if (!conn.ready || conn.bot) {
         continue
       }
       const slot = conn.player.slot
-      const open = readPlayerNativeShopOpen(conn.player)
+      const knownPawnEntity = knownPawnBySlot?.get(slot) ?? 0
+      const open = readPlayerNativeShopOpen(conn.player, knownPawnEntity)
       if (
         needsImmediateNativeShopWake(
           this.state.nativeShopHudBySlot.get(slot),
@@ -130,10 +169,12 @@ export class HudController {
   }
 
   resetTransientState(): void {
+    this.lastShopPollAt = -999
     this.state.resetTransientState()
   }
 
   resetForNewWorld(): void {
+    this.lastShopPollAt = -999
     this.state.resetForNewWorld()
   }
 
@@ -154,6 +195,7 @@ export class HudController {
   }
 
   handleClockBackstep(): void {
+    this.lastShopPollAt = -999
     this.state.handleClockBackstep()
   }
 
@@ -268,7 +310,8 @@ export class HudController {
           this.state.pendingHeroPickUntil.delete(player.slot)
         }
 
-        const nativeShopOpen = !conn.bot && readPlayerNativeShopOpen(player)
+        const nativeShopOpen =
+          !conn.bot && readPlayerNativeShopOpen(player, pawn?.entity ?? 0)
         const prevShopState = this.state.nativeShopHudBySlot.get(player.slot)
         const shopSync = evaluateNativeShopHudSync(
           prevShopState,

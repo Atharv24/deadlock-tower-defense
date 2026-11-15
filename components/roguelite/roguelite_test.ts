@@ -307,4 +307,64 @@ describe('Roguelite Component — Tome Math, Boons & TomeManager', () => {
     tomes.onAbilityCast({ player: defenderPlayer as never, ability: 'citadel_ability_primary', slot: 0 } as never, 10.0)
     assert.ok(abil.cooldownEnd < 30, 'Haste Tome should trim ability cooldownEnd')
   })
+
+  it('fast-rejects non-lethal hits, non-creeps, structure kills, and duplicate onKill calls with zero pawn() calls', () => {
+    const tomes = new TomeManager({
+      minorTomePool: TEST_MINOR_POOL,
+      majorBoonPool: TEST_BOON_POOL,
+    })
+    const validCreeps = new Set([501])
+    const friendly = { entity: 700, isFriendlyStructureEntity: (e: number) => e === 700 }
+
+    mockHost.resetHostCallStats()
+    assert.equal(
+      tomes.onDamaged(
+        { victim: 501, attacker: 10, ability: 0, healthBefore: 100, healthLost: 20, dealt: 20 },
+        validCreeps,
+        friendly,
+      ).reason,
+      'non_lethal',
+    )
+    assert.equal(
+      tomes.onDamaged(
+        { victim: 999, attacker: 10, ability: 0, healthBefore: 100, healthLost: 100, dealt: 100 },
+        validCreeps,
+        friendly,
+      ).reason,
+      'not_creep',
+    )
+    assert.equal(
+      tomes.onDamaged(
+        { victim: 501, attacker: 700, ability: 0, healthBefore: 100, healthLost: 100, dealt: 100 },
+        validCreeps,
+        friendly,
+      ).reason,
+      'guardian_kill',
+    )
+    assert.equal(mockHost.hostCallStats.pawn, 0)
+
+    // Real lethal kill populates rewardedCreepKillers, then duplicate onKill skips pawn() calls
+    const first = tomes.onDamaged(
+      { victim: 501, attacker: 10, ability: 0, healthBefore: 100, healthLost: 100, dealt: 100 },
+      validCreeps,
+      friendly,
+      0.5,
+      0.0,
+      1,
+    )
+    assert.equal(first.isPlayerKill, true)
+    assert.equal(mockHost.hostCallStats.pawn, 1)
+
+    mockHost.resetHostCallStats()
+    const dup = tomes.onKill(
+      { victim: 501, victimPlayer: { slot: -1 } as never, attacker: 10, attackerPlayer: mockHost.defenderPlayer as never, ability: 0 },
+      validCreeps,
+      friendly,
+      0.01,
+      0.0,
+      1,
+    )
+    assert.equal(dup.reason, 'duplicate_kill')
+    assert.equal(mockHost.hostCallStats.pawn, 0)
+  })
 })

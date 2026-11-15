@@ -12,7 +12,7 @@ import {
 export const ARENA_SHOP_TRIGGER_ORIGIN: Vector = { x: 0, y: -4800, z: 600 }
 export const ARENA_SHOP_TRIGGER_RADIUS = 16000
 export const PERSONAL_SHOP_TRIGGER_RADIUS = 256
-// Bit 0 (clients) | Bit 1 (NPCs) | Bit 6 (allow all pawns incl. bots) | Bit 28 (kinematic moveable VPhysics trigger)
+// Bit 0 (clients) | Bit 1 (NPCs/bot pawns) | Bit 6 (allow all pawns incl. bots) | Bit 28 (kinematic moveable VPhysics trigger)
 export const SHOP_TRIGGER_SPAWNFLAGS = 0x10000043
 
 interface PersonalShopTrigger {
@@ -46,6 +46,23 @@ export class ShopZoneController {
       removeEntity(entry.triggerEnt)
     }
     this.personalShopTriggers.clear()
+  }
+
+  /** Removes any personal shop trigger attached to a dead or disconnected pawn. */
+  releasePawn(pawnEntity: number): void {
+    const entry = this.personalShopTriggers.get(pawnEntity)
+    if (!entry) {
+      return
+    }
+    removeEntity(entry.triggerEnt)
+    this.personalShopTriggers.delete(pawnEntity)
+  }
+
+  private isTriggerEntityValid(triggerEnt: number): boolean {
+    return (
+      triggerEnt > 0 &&
+      readField(triggerEnt, 'CBaseEntity', 'm_iTeamNum', 'uint8') !== undefined
+    )
   }
 
   private configureShopTrigger(triggerEnt: number): void {
@@ -110,13 +127,41 @@ export class ShopZoneController {
       return false
     }
 
-    if (this.shopTriggerEntity <= 0 || !entityPosition(this.shopTriggerEntity)) {
+    let justCreatedArenaTrigger = false
+    if (this.shopTriggerEntity <= 0) {
       const created = this.spawnShopSphereTrigger(
         ARENA_SHOP_TRIGGER_ORIGIN,
         ARENA_SHOP_TRIGGER_RADIUS,
       )
       if (created > 0) {
         this.shopTriggerEntity = created
+        justCreatedArenaTrigger = true
+      }
+    }
+
+    const inShopNow =
+      readField(pawnEntity, 'CCitadelPlayerPawn', 'm_bInItemShopZone', 'bool') ===
+      true
+    if (inShopNow) {
+      return true
+    }
+
+    if (
+      !justCreatedArenaTrigger &&
+      !this.isTriggerEntityValid(this.shopTriggerEntity)
+    ) {
+      const created = this.spawnShopSphereTrigger(
+        ARENA_SHOP_TRIGGER_ORIGIN,
+        ARENA_SHOP_TRIGGER_RADIUS,
+      )
+      if (created > 0) {
+        this.shopTriggerEntity = created
+        if (
+          readField(pawnEntity, 'CCitadelPlayerPawn', 'm_bInItemShopZone', 'bool') ===
+          true
+        ) {
+          return true
+        }
       }
     }
 
@@ -129,64 +174,40 @@ export class ShopZoneController {
     }
 
     const pos = pawnPosition ?? entityPosition(pawnEntity)?.position
-    const inShopNow =
-      readField(pawnEntity, 'CCitadelPlayerPawn', 'm_bInItemShopZone', 'bool') ===
-      true
-
     if (pos) {
       let personal = this.personalShopTriggers.get(pawnEntity)
-      if (personal && !entityPosition(personal.triggerEnt)) {
+      if (personal && !this.isTriggerEntityValid(personal.triggerEnt)) {
         this.personalShopTriggers.delete(pawnEntity)
         personal = undefined
       }
 
-      const driftX = personal
-        ? Math.abs(pos.x - personal.lastPawnPos.x)
-        : Infinity
-      const driftY = personal
-        ? Math.abs(pos.y - personal.lastPawnPos.y)
-        : Infinity
-      const driftZ = personal
-        ? Math.abs(pos.z - personal.lastPawnPos.z)
-        : Infinity
-      const needsReposition =
-        !inShopNow ||
-        !personal ||
-        driftX > 70 ||
-        driftY > 70 ||
-        driftZ > 32
-
-      if (needsReposition) {
-        const zOffset = !inShopNow && personal?.nudgeToggle ? 420 : 36
-        const targetOrigin: Vector = {
-          x: pos.x,
-          y: pos.y,
-          z: pos.z + zOffset,
-        }
-        if (!personal) {
-          const pEnt = this.spawnShopSphereTrigger(
-            targetOrigin,
-            PERSONAL_SHOP_TRIGGER_RADIUS,
-          )
-          if (pEnt > 0) {
-            this.personalShopTriggers.set(pawnEntity, {
-              triggerEnt: pEnt,
-              lastPawnPos: { ...pos },
-              nudgeToggle: true,
-            })
-          }
-        } else {
-          if (!inShopNow) {
-            this.configureShopTrigger(personal.triggerEnt)
-          }
-          moveEntity(personal.triggerEnt, targetOrigin, {
-            pitch: 0,
-            yaw: 0,
-            roll: 0,
+      const zOffset = personal?.nudgeToggle ? 420 : 36
+      const targetOrigin: Vector = {
+        x: pos.x,
+        y: pos.y,
+        z: pos.z + zOffset,
+      }
+      if (!personal) {
+        const pEnt = this.spawnShopSphereTrigger(
+          targetOrigin,
+          PERSONAL_SHOP_TRIGGER_RADIUS,
+        )
+        if (pEnt > 0) {
+          this.personalShopTriggers.set(pawnEntity, {
+            triggerEnt: pEnt,
+            lastPawnPos: { ...pos },
+            nudgeToggle: true,
           })
-          personal.lastPawnPos = { ...pos }
-          personal.nudgeToggle = !personal.nudgeToggle
         }
+      } else {
+        this.configureShopTrigger(personal.triggerEnt)
+        moveEntity(personal.triggerEnt, targetOrigin, {
+          pitch: 0,
+          yaw: 0,
+          roll: 0,
+        })
+        personal.lastPawnPos = { ...pos }
+        personal.nudgeToggle = !personal.nudgeToggle
       }
     }
 

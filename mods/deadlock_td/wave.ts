@@ -115,8 +115,16 @@ export interface ActiveBoss {
   currentHp: number
   currentMaxHp: number
   vanillaMaxHpTarget: number
+  engineMaxHp: number
   appliedScale: number
   initialHealDone: boolean
+}
+
+export interface DefenderCombatEntry {
+  readonly slot: number
+  readonly pawnEntity: number
+  readonly hero: number
+  readonly baseMaxHp: number
 }
 
 interface SteeredWaveCreep {
@@ -149,6 +157,12 @@ export class WaveManager {
     readonly patrons: { readonly entity: number; readonly pos: Vector }[]
   }
   private restoreIntervalAt = 0
+  private lastSyncedSquadSize = -1
+  private lastSyncedGoldReward = -1
+  private lastSyncedWaveInterval = -1
+  private defenderCacheAuthoritative = false
+  private readonly defenderCombatByEntity = new Map<number, DefenderCombatEntry>()
+  private readonly defenderPawnBySlot = new Map<number, number>()
   private readonly shopZones = new ShopZoneController(DEFENDER_TEAM)
   private readonly onMilestoneWaveCallback?: (wave: number) => void
   private readonly onWaveStartedCallback?: (wave: number) => void
@@ -172,6 +186,9 @@ export class WaveManager {
     if (this.devCheatsEnabled) {
       serverCommand('sv_cheats 1')
     }
+    this.lastSyncedSquadSize = -1
+    this.lastSyncedGoldReward = -1
+    this.lastSyncedWaveInterval = -1
   }
 
   /**
@@ -213,6 +230,77 @@ export class WaveManager {
     return this.shopZones.ensureShopAccess(pawnEntity, pawnPosition)
   }
 
+  releaseDefenderPawnShop(pawnEntity: number): void {
+    this.shopZones.releasePawn(pawnEntity)
+  }
+
+  markDefenderCacheAuthoritative(): void {
+    this.defenderCacheAuthoritative = true
+  }
+
+  syncDefenderCombatEntry(
+    slot: number,
+    pawnEntity: number,
+    hero = 0,
+    baseMaxHp = 0,
+  ): void {
+    this.defenderCacheAuthoritative = true
+    const prevEntity = this.defenderPawnBySlot.get(slot)
+    if (prevEntity !== undefined && prevEntity !== pawnEntity && prevEntity > 0) {
+      this.defenderCombatByEntity.delete(prevEntity)
+      this.shopZones.releasePawn(prevEntity)
+    }
+    if (pawnEntity > 0) {
+      this.defenderPawnBySlot.set(slot, pawnEntity)
+      if (hero > 0) {
+        this.defenderCombatByEntity.set(pawnEntity, {
+          slot,
+          pawnEntity,
+          hero,
+          baseMaxHp: Math.max(1, baseMaxHp),
+        })
+      } else {
+        this.defenderCombatByEntity.delete(pawnEntity)
+      }
+    } else {
+      this.defenderPawnBySlot.delete(slot)
+    }
+  }
+
+  clearDefenderCombatSlot(slot: number): void {
+    const prevEntity = this.defenderPawnBySlot.get(slot)
+    if (prevEntity !== undefined && prevEntity > 0) {
+      this.defenderCombatByEntity.delete(prevEntity)
+      this.shopZones.releasePawn(prevEntity)
+    }
+    this.defenderPawnBySlot.delete(slot)
+  }
+
+  getKnownDefenderPawnBySlot(): ReadonlyMap<number, number> {
+    return this.defenderPawnBySlot
+  }
+
+  private resolveDefenderForEntity(entity: number): DefenderCombatEntry | undefined {
+    if (entity <= 0) {
+      return undefined
+    }
+    if (this.defenderCacheAuthoritative) {
+      return this.defenderCombatByEntity.get(entity)
+    }
+    for (const conn of players()) {
+      const pawn = conn.player.pawn()
+      if (pawn && pawn.entity === entity && pawn.team === DEFENDER_TEAM) {
+        return {
+          slot: conn.player.slot,
+          pawnEntity: pawn.entity,
+          hero: pawn.hero,
+          baseMaxHp: Math.max(1, pawn.effectiveMaxHealth ?? pawn.maxHealth),
+        }
+      }
+    }
+    return undefined
+  }
+
   /** Resets wave state for a new world or /restarttd. */
   reset(now: number): void {
     this.cleanupBosses()
@@ -227,8 +315,14 @@ export class WaveManager {
     this.detonatedZombies.clear()
     this.spawnedWaveNeutrals.length = 0
     this.steeredWaveCreeps.clear()
+    this.defenderCacheAuthoritative = false
+    this.defenderCombatByEntity.clear()
+    this.defenderPawnBySlot.clear()
     this.cachedBuildingTargets = undefined
     this.restoreIntervalAt = 0
+    this.lastSyncedSquadSize = -1
+    this.lastSyncedGoldReward = -1
+    this.lastSyncedWaveInterval = -1
     this.shopZones.cleanup()
     this.applyServerConfig()
   }
@@ -261,8 +355,14 @@ export class WaveManager {
     this.detonatedZombies.clear()
     this.spawnedWaveNeutrals.length = 0
     this.steeredWaveCreeps.clear()
+    this.defenderCacheAuthoritative = false
+    this.defenderCombatByEntity.clear()
+    this.defenderPawnBySlot.clear()
     this.cachedBuildingTargets = undefined
     this.restoreIntervalAt = 0
+    this.lastSyncedSquadSize = -1
+    this.lastSyncedGoldReward = -1
+    this.lastSyncedWaveInterval = -1
 
     const effectiveWave = Math.max(1, wave)
     for (const handle of scaledCreeps) {
@@ -315,7 +415,12 @@ export class WaveManager {
   }
 
   /** Advances wave timer, restores zipline interval after /skipwave, scales creeps, and ticks Bosses. */
-  tick(now: number, matchActive: boolean, guardian?: GuardianManager): void {
+  tick(
+    now: number,
+    matchActive: boolean,
+    guardian?: GuardianManager,
+    options?: { readonly skipSubticks?: boolean },
+  ): void {
     if (!matchActive) {
       return
     }
@@ -352,8 +457,10 @@ export class WaveManager {
       this.spawnNextWave(now, this.wave === 0)
     }
 
-    this.scaleNewlySpawnedCreeps(now)
-    this.tickActiveBosses(now, guardian)
+    if (!options?.skipSubticks) {
+      this.scaleNewlySpawnedCreeps(now)
+      this.tickActiveBosses(now, guardian)
+    }
   }
 
   /** Spawns/advances the next wave (used by timer, /skipwave, and Probe). */
@@ -383,8 +490,14 @@ export class WaveManager {
 
     // Keep squad size fixed at 4 (matching the 4 zipline seats so 0 skybase creeps strand)
     // and scale wave numbers by tightening the zipline spawn cadence (20s -> 7s).
-    serverCommand(`citadel_trooper_squad_size ${ZIPLINE_SQUAD_SIZE}`)
-    serverCommand(`citadel_trooper_gold_reward ${soulReward}`)
+    if (this.lastSyncedSquadSize !== ZIPLINE_SQUAD_SIZE) {
+      serverCommand(`citadel_trooper_squad_size ${ZIPLINE_SQUAD_SIZE}`)
+      this.lastSyncedSquadSize = ZIPLINE_SQUAD_SIZE
+    }
+    if (this.lastSyncedGoldReward !== soulReward) {
+      serverCommand(`citadel_trooper_gold_reward ${soulReward}`)
+      this.lastSyncedGoldReward = soulReward
+    }
 
     if (forceImmediateZipline) {
       this.syncEngineWaveInterval(1)
@@ -629,22 +742,21 @@ export class WaveManager {
         if (spec) {
           totalMult *= spec.damageMult
         } else {
+          let matchedBossAttacker = false
           for (const boss of this.activeBosses) {
             if (boss.pawnEntity > 0 && boss.pawnEntity === hit.attacker) {
               totalMult *= boss.damageMult
+              matchedBossAttacker = true
               break
             }
           }
-          if (tomes && tomes.playerTomes.size > 0) {
-            for (const conn of players()) {
-              const pawn = conn.player.pawn()
-              if (pawn && pawn.entity === hit.attacker && pawn.team === DEFENDER_TEAM) {
-                const slot = conn.player.slot
-                const bonuses = tomes.getVanillaBonuses(slot)
-                const weaponMult = computeResidualWeaponDamageMult(tomes.getTally(slot))
-                totalMult *= hit.ability > 0 ? bonuses.abilityDamageMult : weaponMult
-                break
-              }
+          if (!matchedBossAttacker && tomes && tomes.playerTomes.size > 0) {
+            const defenderAttacker = this.resolveDefenderForEntity(hit.attacker)
+            if (defenderAttacker) {
+              const slot = defenderAttacker.slot
+              const bonuses = tomes.getVanillaBonuses(slot)
+              const weaponMult = computeResidualWeaponDamageMult(tomes.getTally(slot))
+              totalMult *= hit.ability > 0 ? bonuses.abilityDamageMult : weaponMult
             }
           }
         }
@@ -652,30 +764,43 @@ export class WaveManager {
     }
 
     if (hit.victim > 0) {
-      for (const boss of this.activeBosses) {
-        if (
-          boss.pawnEntity > 0 &&
-          boss.pawnEntity === hit.victim &&
-          boss.vanillaMaxHpTarget > 0
-        ) {
-          const pawn = boss.bot.pawn()
-          const engineMax = Math.max(1, pawn?.effectiveMaxHealth ?? pawn?.maxHealth ?? 1000)
-          if (boss.vanillaMaxHpTarget > engineMax) {
-            totalMult *= engineMax / boss.vanillaMaxHpTarget
-          }
-          break
-        }
-      }
-      if (tomes && tomes.playerTomes.size > 0) {
-        for (const conn of players()) {
-          const pawn = conn.player.pawn()
-          if (pawn && pawn.entity === hit.victim && pawn.team === DEFENDER_TEAM) {
-            const bonuses = tomes.getVanillaBonuses(conn.player.slot)
-            if (bonuses.bonusMaxHp > 0) {
-              const baseMax = Math.max(1, pawn.effectiveMaxHealth ?? pawn.maxHealth)
-              totalMult *= computeVanillaEffectiveHpDamageScale(baseMax, bonuses.bonusMaxHp)
+      const victimIsCreepOrStructure =
+        this.creepSpecs.has(hit.victim) ||
+        this.scaledCreeps.has(hit.victim) ||
+        Boolean(guardian?.isFriendlyStructureEntity(hit.victim))
+      if (!victimIsCreepOrStructure) {
+        let matchedBossVictim = false
+        for (const boss of this.activeBosses) {
+          if (
+            boss.pawnEntity > 0 &&
+            boss.pawnEntity === hit.victim &&
+            boss.vanillaMaxHpTarget > 0
+          ) {
+            matchedBossVictim = true
+            let engineMax = boss.engineMaxHp
+            if (engineMax <= 0) {
+              const pawn = boss.bot.pawn()
+              engineMax = Math.max(1, pawn?.effectiveMaxHealth ?? pawn?.maxHealth ?? 1000)
+              if (pawn) {
+                boss.engineMaxHp = engineMax
+              }
+            }
+            if (boss.vanillaMaxHpTarget > engineMax) {
+              totalMult *= engineMax / boss.vanillaMaxHpTarget
             }
             break
+          }
+        }
+        if (!matchedBossVictim && tomes && tomes.playerTomes.size > 0) {
+          const defenderVictim = this.resolveDefenderForEntity(hit.victim)
+          if (defenderVictim) {
+            const bonuses = tomes.getVanillaBonuses(defenderVictim.slot)
+            if (bonuses.bonusMaxHp > 0) {
+              totalMult *= computeVanillaEffectiveHpDamageScale(
+                defenderVictim.baseMaxHp,
+                bonuses.bonusMaxHp,
+              )
+            }
           }
         }
       }
@@ -747,11 +872,8 @@ export class WaveManager {
     if (hit.attacker <= 0) {
       return
     }
-    const isDefenderHero = players().some((c) => {
-      const p = c.player.pawn()
-      return Boolean(p && p.entity === hit.attacker && p.team === DEFENDER_TEAM && p.hero > 0)
-    })
-    if (isDefenderHero) {
+    const attacker = this.resolveDefenderForEntity(hit.attacker)
+    if (attacker && attacker.hero > 0) {
       boss.ai.provokedHeroEntity = hit.attacker
       boss.ai.provokedUntil = now + 8.0
     }
@@ -978,6 +1100,12 @@ export class WaveManager {
         if (npc.health <= 0) {
           continue
         }
+        if (npc.maxHealth <= 1) {
+          continue
+        }
+        if (npc.position.y > 3500 || npc.position.z > 650) {
+          continue
+        }
         const lifeState = readField(ent, 'CBaseEntity', 'm_lifeState', 'uint8')
         if (typeof lifeState === 'number' && lifeState !== 0) {
           continue
@@ -988,14 +1116,8 @@ export class WaveManager {
           }
           continue
         }
-        if (npc.maxHealth <= 1) {
-          continue
-        }
         if (Math.abs(npc.position.x) > 2800) {
           killEntity({ victim: ent })
-          continue
-        }
-        if (npc.position.y > 3500 || npc.position.z > 650) {
           continue
         }
         out.push({
@@ -1123,6 +1245,7 @@ export class WaveManager {
       currentHp: 0,
       currentMaxHp: 0,
       vanillaMaxHpTarget: 0,
+      engineMaxHp: 0,
       appliedScale: spec.targetScale,
       initialHealDone: false,
     })
@@ -1215,6 +1338,7 @@ export class WaveManager {
         currentHp: pawn.health,
         currentMaxHp: estMaxHp,
         vanillaMaxHpTarget: estMaxHp,
+        engineMaxHp: estMaxHp,
         appliedScale: BOSS_COLOSSUS_APPLIED_SCALE,
         initialHealDone: true,
       })
@@ -1329,6 +1453,7 @@ export class WaveManager {
             1,
             activePawn.effectiveMaxHealth ?? activePawn.maxHealth,
           )
+          boss.engineMaxHp = engineMax
           const effectiveTotalMax = Math.max(engineMax, boss.vanillaMaxHpTarget)
           const hpFraction = Math.max(0, Math.min(1, activePawn.health / engineMax))
           boss.currentMaxHp = Math.round(effectiveTotalMax)
@@ -1356,6 +1481,7 @@ export class WaveManager {
           )
           boss.currentHp = Math.max(0, Math.round(activePawn.health))
           boss.currentMaxHp = Math.round(trueMaxHp)
+          boss.engineMaxHp = Math.max(1, boss.currentMaxHp)
           if (activePawn.maxHealth < boss.currentMaxHp) {
             writeField(
               activePawn.entity,
@@ -1517,6 +1643,10 @@ export class WaveManager {
   }
 
   private syncEngineWaveInterval(seconds: number): void {
+    if (this.lastSyncedWaveInterval === seconds) {
+      return
+    }
+    this.lastSyncedWaveInterval = seconds
     serverCommand(`citadel_trooper_spawn_interval_early ${seconds}`)
     serverCommand(`citadel_trooper_spawn_interval_late ${seconds}`)
     serverCommand(`citadel_trooper_spawn_interval_very_late ${seconds}`)

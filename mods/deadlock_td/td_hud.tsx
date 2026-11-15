@@ -41,8 +41,11 @@ const tdHud = new HudController({
   heroDeployTeamName: 'The Hidden King',
 })
 
-export function pollNativeShopStateEveryFrame(now: number): void {
-  tdHud.pollNativeShopStateEveryFrame(now)
+export function pollNativeShopStateEveryFrame(
+  now: number,
+  knownPawnBySlot?: ReadonlyMap<number, number>,
+): void {
+  tdHud.pollNativeShopStateEveryFrame(now, knownPawnBySlot)
 }
 
 export function requestImmediateHudSync(): void {

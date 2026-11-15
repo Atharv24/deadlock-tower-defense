@@ -881,6 +881,8 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     MockPlayer,
     defenderPlayer,
     entityScanStats,
+    hostCallStats,
+    resetHostCallStats,
   } = mockHost
 
   beforeEach(() => {
@@ -2168,6 +2170,192 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.equal(restoredLb.sessionBestBySlot.size, 0)
 
     mockHost.reportScoreResult = true
+  })
+
+  it('eliminates per-hit Pawn scans, skybase m_lifeState reads, structure position/class re-queries, and duplicate wave CVars (v0.7.7)', () => {
+    npcStore.clear()
+    trooperIds.clear()
+    lifeStateStore.clear()
+    executedServerCommands.length = 0
+    seedMockTeam2Structures()
+
+    const guardian = new GuardianManager()
+    const tomes = new TomeManager({
+      minorTomePool: MINOR_TOME_POOL,
+      majorBoonPool: MAJOR_BOON_POOL,
+    })
+    const waves = new WaveManager()
+    guardian.reset()
+    tomes.reset()
+    waves.reset(0)
+
+    defenderPlayer.hero = 1
+    defenderPlayer.team = 2
+    defenderPlayer.pawnEntity = 10
+    defenderPlayer.health = 1000
+    defenderPlayer.maxHealth = 1000
+    tomes.applyMinorTome(defenderPlayer as never, MINOR_TOME_POOL[1], 1)
+    waves.syncDefenderCombatEntry(
+      defenderPlayer.slot,
+      defenderPlayer.pawnEntity,
+      defenderPlayer.hero,
+      1000,
+    )
+
+    waves.wave = 9
+    waves.spawnNextWave(50)
+    const boss = waves.activeBosses[0]
+    const botMock = boss.bot as unknown as InstanceType<typeof MockPlayer>
+    botMock.team = 3
+    botMock.hero = 2
+    botMock.pawnEntity = 999
+    botMock.health = 700
+    botMock.maxHealth = 700
+    npcStore.set(999, {
+      health: 700,
+      maxHealth: 700,
+      team: 3,
+      position: { x: -55, y: 1200, z: 390 },
+    })
+    botMock.abilityList = [
+      { name: 'citadel_ability_bull_charge', slot: 0, cooldownEnd: 25 },
+    ]
+    waves.tickActiveBosses(51, guardian)
+    assert.ok(boss.engineMaxHp > 0)
+
+    npcStore.set(860, {
+      health: 220,
+      maxHealth: 220,
+      team: 3,
+      position: { x: 0, y: -500, z: 384 },
+    })
+    waves.creepSpecs.set(860, {
+      wave: 10,
+      targetHp: 280,
+      targetScale: 1.0,
+      damageMult: 1.4,
+      isExplodingZombie: false,
+    })
+    waves.scaledCreeps.add(860)
+
+    guardian.upgradeLevel = 1
+    guardian.poll(10, 10)
+    assert.equal(shrineModifierErrors.length, 0)
+
+    resetHostCallStats()
+    const defHitBoss = waves.modifyIncomingDamage(
+      {
+        victim: 999,
+        attacker: defenderPlayer.pawnEntity,
+        inflictor: defenderPlayer.pawnEntity,
+        ability: 0,
+        flags: 0n,
+        hitGroup: 0,
+        amount: 100,
+      },
+      guardian,
+      tomes,
+    )
+    assert.ok(defHitBoss?.amount !== undefined && defHitBoss.amount < 100)
+    const creepHitStructure = waves.modifyIncomingDamage(
+      {
+        victim: 700,
+        attacker: 860,
+        inflictor: 860,
+        ability: 0,
+        flags: 0n,
+        hitGroup: 0,
+        amount: 50,
+      },
+      guardian,
+      tomes,
+    )
+    assert.equal(creepHitStructure?.amount, 70)
+    const bossHitDefender = waves.modifyIncomingDamage(
+      {
+        victim: defenderPlayer.pawnEntity,
+        attacker: 999,
+        inflictor: 999,
+        ability: 0,
+        flags: 0n,
+        hitGroup: 0,
+        amount: 100,
+      },
+      guardian,
+      tomes,
+    )
+    assert.equal(bossHitDefender?.amount, 135)
+    waves.handleCreepPostDamage(
+      {
+        victim: 999,
+        attacker: defenderPlayer.pawnEntity,
+        ability: 0,
+        healthBefore: boss.currentMaxHp,
+        healthLost: 50,
+        dealt: 50,
+      },
+      guardian,
+      52,
+    )
+    assert.equal(
+      hostCallStats.pawn,
+      0,
+      'Expected zero Pawn calls during cached combat damage evaluation',
+    )
+
+    // Skybase & 1/1 zipline creeps skip m_lifeState readField calls
+    npcStore.delete(860)
+    trooperIds.clear()
+    trooperIds.add(861)
+    trooperIds.add(862)
+    npcStore.set(861, {
+      health: 1,
+      maxHealth: 1,
+      team: 3,
+      position: { x: 0, y: 2000, z: 1025 },
+    })
+    npcStore.set(862, {
+      health: 150,
+      maxHealth: 150,
+      team: 3,
+      position: { x: 0, y: 5000, z: 900 },
+    })
+    lifeStateStore.set(861, 0)
+    lifeStateStore.set(862, 0)
+    resetHostCallStats()
+    waves.scaleNewlySpawnedCreeps()
+    assert.equal(
+      hostCallStats.readField,
+      0,
+      'Expected zero m_lifeState readField calls for skybase/zipline creeps',
+    )
+    assert.equal(hostCallStats.entityPosition, 0)
+
+    // Guardian position & shrine class lookups remain cached across repeat objective/poll calls
+    resetHostCallStats()
+    const obj = guardian.getActiveBossObjective({ x: 0, y: 0, z: 384 })
+    assert.equal(obj?.entity, 700)
+    assert.equal(hostCallStats.entityPosition, 0)
+    assert.equal(hostCallStats.readField, 0)
+    guardian.poll(10, 11)
+    assert.equal(hostCallStats.entityClass, 0)
+    assert.equal(hostCallStats.entityPosition, 0)
+
+    // Late waves deduplicate constant squad_size and saturated spawn_interval CVars
+    waves.applyServerConfig()
+    executedServerCommands.length = 0
+    waves.wave = 22
+    waves.spawnNextWave(200)
+    waves.spawnNextWave(210)
+    const squadCmds = executedServerCommands.filter(
+      (c) => c === `citadel_trooper_squad_size ${ZIPLINE_SQUAD_SIZE}`,
+    )
+    const intervalCmds = executedServerCommands.filter(
+      (c) =>
+        c === `citadel_trooper_spawn_interval_early ${MIN_SPAWN_INTERVAL_SECONDS}`,
+    )
+    assert.equal(squadCmds.length, 1)
+    assert.equal(intervalCmds.length, 1)
   })
 })
 

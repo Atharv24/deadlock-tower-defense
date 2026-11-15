@@ -18,6 +18,7 @@ import {
   purgeFriendlyAndSideLaneTroopers,
   removeStaticNeutralCamps,
   resolveSafeGroundOrigin,
+  SHOP_TRIGGER_SPAWNFLAGS,
   ShopZoneController,
   STRUCTURE_CDR_ENTITY_MODIFIER,
   suppressNonEnemyCenterTrooperSpawners,
@@ -179,12 +180,22 @@ describe('Engine Layer — Definitions, Modifiers, ShopZone, Respawn & dl_midtow
   })
 
   it('grants Buy Anywhere via ShopZoneController spheres and removes them cleanly on cleanup()', () => {
+    assert.equal(SHOP_TRIGGER_SPAWNFLAGS, 0x10000043)
+
     const shopZones = new ShopZoneController(2)
     const pawn = mockHost.defenderPlayer.pawn()!
     const ok = shopZones.ensureShopAccess(pawn.entity, { x: 0, y: -1950, z: 396 })
     assert.equal(ok, true)
     assert.equal(mockHost.pawnInShopStore.get(pawn.entity), true)
     assert.ok(mockHost.createdEntities.some((c) => c.designerName === 'trigger_item_shop'))
+
+    // Steady-state calls inside arena shop sphere execute 0 entityPosition/moveEntity calls
+    mockHost.resetHostCallStats()
+    assert.equal(shopZones.ensureShopAccess(pawn.entity, { x: 120, y: -1800, z: 396 }), true)
+    assert.equal(shopZones.ensureShopAccess(pawn.entity, { x: 450, y: -1600, z: 396 }), true)
+    assert.equal(mockHost.hostCallStats.entityPosition, 0)
+    assert.equal(mockHost.hostCallStats.moveEntity, 0)
+    assert.equal(mockHost.hostCallStats.readField, 2)
 
     shopZones.cleanup()
     assert.equal(mockHost.pawnInShopStore.get(pawn.entity), false)

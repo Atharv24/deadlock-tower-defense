@@ -86,7 +86,7 @@ Disabled in all public, `hyperline.gg`, and default local matches (`sv_cheats 0`
 - `/granttome` — Grant a random wave-scaled Minor Tome for testing
 - `/tomescale [%|reset]` — View or override per-wave Tome scaling at runtime
 
-### Gameplay Rules (`v0.7.6`)
+### Gameplay Rules (`v0.7.7`)
 
 - **Ranked Leaderboards (`td.highest_wave`, `td.creeps_slain`) & Cheat Protection:** Developer slash commands and `sv_cheats` are completely disabled in all public and default matches. Normal runs checkpoint progressively on each wave (`Wave 2+` or `Wave 1` with kills) and submit final results on defeat, disconnect, or `/restarttd`.
 - **Co-op Slots & Flex Slots:** All **12** Team 2 co-op player slots and all **12** item slots (4 Flex Slots unlocked immediately) stay open.

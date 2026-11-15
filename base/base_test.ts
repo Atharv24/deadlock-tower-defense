@@ -15,6 +15,7 @@ import {
   formatMatchClock,
   formatSoulsCount,
   formatTomeCountDisplay,
+  FrameCadenceScheduler,
   hasClockSteppedBackward,
   isLocalDevModeArgs,
   parseSlashCommandLine,
@@ -297,5 +298,37 @@ describe('Base Layer — Math, Format, Commands, Clock & Shutdown Watch', () => 
     }, (msg) => logs.push(msg))
     assert.equal(logs.length, 1)
     assert.match(logs[0], /Timer \[failing-timer\] error:.*boom/)
+  })
+
+  it('spreads overdue tasks across frames via FrameCadenceScheduler without starving slower tasks', () => {
+    const ran: string[] = []
+    let gatingEnabled = false
+    const scheduler = new FrameCadenceScheduler([
+      { name: 'fast-10hz', intervalSeconds: 0.1, phaseOffsetSeconds: 0.0, run: () => ran.push('fast-10hz') },
+      { name: 'slow-1hz', intervalSeconds: 1.0, phaseOffsetSeconds: 0.0, run: () => ran.push('slow-1hz') },
+      { name: 'gated', intervalSeconds: 0.5, phaseOffsetSeconds: 0.0, enabled: () => gatingEnabled, run: () => ran.push('gated') },
+    ])
+
+    // At t=0 both enabled tasks are due -> runs only one per frame!
+    assert.equal(scheduler.runNextDue(0), 'fast-10hz')
+    assert.deepEqual(ran, ['fast-10hz'])
+
+    // Next frame 15.6ms later -> slow-1hz (due at 0) wins before fast-10hz (now due at 0.1)
+    assert.equal(scheduler.runNextDue(0.0156), 'slow-1hz')
+    assert.deepEqual(ran, ['fast-10hz', 'slow-1hz'])
+
+    // Idle frame before next deadline does nothing
+    assert.equal(scheduler.runNextDue(0.05), undefined)
+
+    // Out-of-band markRan defers next fast-10hz run
+    scheduler.markRan('fast-10hz', 0.1)
+    assert.equal(scheduler.runNextDue(0.15), undefined)
+    assert.equal(scheduler.runNextDue(0.2), 'fast-10hz')
+
+    // Enable gated task and reset cleanly at t=1.0
+    gatingEnabled = true
+    scheduler.reset(1.0)
+    assert.equal(scheduler.runNextDue(0.99), undefined)
+    assert.equal(scheduler.runNextDue(1.0), 'fast-10hz')
   })
 })

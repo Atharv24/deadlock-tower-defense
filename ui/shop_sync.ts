@@ -20,6 +20,35 @@ export const SHOP_CLOSE_SECOND_PULSE_START_SECONDS = 0.28
  */
 export const SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS = 0.38
 
+export const SHOP_POLL_IDLE_INTERVAL_SECONDS = 0.08
+export const SHOP_POLL_ACTIVE_INTERVAL_SECONDS = 0.03
+
+export interface NativeShopPollGateInput {
+  readonly nowSeconds: number
+  readonly lastPollAtSeconds: number
+  readonly hasActiveTransition: boolean
+}
+
+/**
+ * Throttles native Buy Menu polling (`~12.5 Hz` idle, `~33 Hz` while open or settling)
+ * while still waking immediately on first frame or after a server clock backstep.
+ */
+export function shouldPollNativeShopState(
+  input: NativeShopPollGateInput,
+): boolean {
+  const { nowSeconds, lastPollAtSeconds, hasActiveTransition } = input
+  if (
+    lastPollAtSeconds < 0 ||
+    hasClockSteppedBackward(lastPollAtSeconds, nowSeconds)
+  ) {
+    return true
+  }
+  const minInterval = hasActiveTransition
+    ? SHOP_POLL_ACTIVE_INTERVAL_SECONDS
+    : SHOP_POLL_IDLE_INTERVAL_SECONDS
+  return nowSeconds - lastPollAtSeconds + 1e-6 >= minInterval
+}
+
 export interface NativeShopHudState {
   readonly wasShopOpen: boolean
   readonly hiddenForShop: boolean
