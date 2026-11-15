@@ -5,7 +5,6 @@
 import {
   addBot,
   Buttons,
-  createEntity,
   damage,
   type DamagedEvent,
   type DamageEvent,
@@ -21,13 +20,10 @@ import {
   killEntity,
   Layers,
   log,
-  moveEntity,
   Npc,
   type Player,
   players,
   readField,
-  removeEntities,
-  removeEntity,
   serverCommand,
   spawnNpc,
   toast,
@@ -36,16 +32,6 @@ import {
   writeField,
 } from 'modlock'
 
-import {
-  type BossAiState,
-  type BossGuardianCandidate,
-  type BossHeroCandidate,
-  computeBossAbilityUpgradeMask,
-  createBossAiState,
-  distance3D,
-  getBossWaypointsForObjective,
-  planBossDriveStep,
-} from './boss_ai'
 import {
   BOSS_BASE_MAX_HP,
   BOSS_COLOSSUS_ENTITY_MODIFIER,
@@ -77,9 +63,24 @@ import {
   ZIPLINE_SQUAD_SIZE,
   ZOMBIE_ARM_FUSE_SECONDS,
   ZOMBIE_BASE_KAMIKAZE_DAMAGE,
-} from './config'
+  type BossAiState,
+  type BossGuardianCandidate,
+  type BossHeroCandidate,
+  computeBossAbilityUpgradeMask,
+  createBossAiState,
+  distance3D,
+  getBossWaypointsForObjective,
+  planBossDriveStep,
+} from './td_config'
+import {
+  purgeFriendlyAndSideLaneTroopers as purgeMapFriendlyAndSideLaneTroopers,
+  removeStaticNeutralCamps,
+  suppressNonEnemyCenterTrooperSpawners as suppressMapNonEnemyCenterTrooperSpawners,
+  unlockTeamFlexSlots,
+} from '@engine/maps/dl_midtown'
+import { ShopZoneController } from '@engine/shop_zone'
 import type { GuardianManager } from './guardian'
-import type { TomeManager } from './tomes'
+import type { TomeManager } from '@components/roguelite'
 
 export interface CreepWaveSpec {
   readonly wave: number
@@ -126,12 +127,6 @@ interface SteeredWaveCreep {
 }
 
 const BOSS_SPAWN_X_OFFSETS = [-165, -55, 55, 165] as const
-const ARENA_SHOP_TRIGGER_ORIGIN: Vector = { x: 0, y: -4800, z: 600 }
-const ARENA_SHOP_TRIGGER_RADIUS = 16000
-const PERSONAL_SHOP_TRIGGER_RADIUS = 256
-// Bit 0 (clients) | Bit 1 (NPCs) | Bit 6 (allow all pawns incl. bots) | Bit 28 (kinematic moveable VPhysics trigger)
-const SHOP_TRIGGER_SPAWNFLAGS = 0x10000043
-
 export class WaveManager {
   wave = 0
   devCheatsEnabled = false
@@ -154,24 +149,19 @@ export class WaveManager {
     readonly patrons: { readonly entity: number; readonly pos: Vector }[]
   }
   private restoreIntervalAt = 0
-  private shopTriggerEntity = 0
-  private readonly personalShopTriggers = new Map<
-    number,
-    {
-      triggerEnt: number
-      lastPawnPos: Vector
-      nudgeToggle: boolean
-    }
-  >()
+  private readonly shopZones = new ShopZoneController(DEFENDER_TEAM)
   private readonly onMilestoneWaveCallback?: (wave: number) => void
   private readonly onWaveStartedCallback?: (wave: number) => void
+  private readonly isSlotAwaitingInitialHeroPick?: (slot: number) => boolean
 
   constructor(
     onMilestoneWave?: (wave: number) => void,
     onWaveStarted?: (wave: number) => void,
+    isSlotAwaitingInitialHeroPick?: (slot: number) => boolean,
   ) {
     this.onMilestoneWaveCallback = onMilestoneWave
     this.onWaveStartedCallback = onWaveStarted
+    this.isSlotAwaitingInitialHeroPick = isSlotAwaitingInitialHeroPick
   }
 
   /** Applies server CVars for single-lane Tower Defense. */
@@ -192,19 +182,12 @@ export class WaveManager {
    * ensures the Friendly Blue T1 Guardian stands at `[0, -1792, 384]`.
    */
   configureWorldForSingleLaneDefense(guardian: GuardianManager): void {
-    for (const camp of findEntities('info_neutral_trooper_camp')) {
-      fireInput(camp, 'SetDisabled', { boolean: true })
-      fireInput(camp, 'RemoveNeutrals')
-      fireInput(camp, 'Kill')
-    }
-    removeEntities('info_neutral_trooper_camp')
-    removeEntities('info_neutral_trooper_spawn')
-    removeEntities('npc_trooper_neutral')
+    removeStaticNeutralCamps()
 
     const disabledTrooperSpawns = this.suppressNonEnemyCenterTrooperSpawners()
     this.purgeFriendlyAndSideLaneTroopers()
     this.unlockAllPlayerFlexSlots()
-    this.cleanupShopTriggers()
+    this.shopZones.cleanup()
 
     const guardianEnt = guardian.ensureCenterLaneGuardianSpawned()
     if (disabledTrooperSpawns > 0) {
@@ -214,249 +197,20 @@ export class WaveManager {
     }
   }
 
-  /**
-   * Suppresses all Team 2 and side-lane `info_trooper_spawn` entities (disabling spawning and
-   * disabling ziplining) while keeping `CInfoTrooperSpawn.m_iLane` intact — `m_iLane` must NEVER
-   * be overwritten to `0`, because `CInfoTrooperBossSpawn::SpawnTrooperWave` (`server.dll + 0xd4ae03`)
-   * divides by `m_vecSpawnPoints.Count()` (`idiv 0` crash if Lane 4 spawners are detached).
-   * Actual Team 2 wave suppression is enforced natively via `citadel_spawn_combine_only 1`.
-   */
   suppressNonEnemyCenterTrooperSpawners(): number {
-    let suppressed = 0
-    for (const sp of findEntities('info_trooper_spawn')) {
-      let team = readField(sp, 'CBaseEntity', 'm_iTeamNum', 'uint8') as
-        | number
-        | undefined
-      if (typeof team !== 'number') {
-        const origin = entityPosition(sp)?.position
-        if (origin) {
-          team = origin.y > 0 ? 3 : DEFENDER_TEAM
-        }
-      }
-      const lane = readField(sp, 'CInfoTrooperSpawn', 'm_iLane', 'int32') as
-        | number
-        | undefined
-      if (team === 3 && lane === 4) {
-        fireInput(sp, 'SetSpawningEnabled', { boolean: true })
-        continue
-      }
-      fireInput(sp, 'SetSpawningEnabled', { boolean: false })
-      writeField(sp, 'CInfoTrooperSpawn', 'm_bDisableZiplining', 'bool', true)
-      suppressed += 1
-    }
-    return suppressed
+    return suppressMapNonEnemyCenterTrooperSpawners(DEFENDER_TEAM)
   }
 
-  /**
-   * Immediately removes any Team 2 friendly lane troopers (including `1/1` HP skybase or
-   * zipline passengers before they can ride the rope) and any stray side-lane enemy troopers.
-   */
   purgeFriendlyAndSideLaneTroopers(): number {
-    let removed = 0
-    for (const tr of findEntities('npc_trooper')) {
-      const npc = new Npc(tr).read()
-      const team =
-        npc?.team ??
-        (readField(tr, 'CBaseEntity', 'm_iTeamNum', 'uint8') as number | undefined)
-      const lifeState = readField(tr, 'CBaseEntity', 'm_lifeState', 'uint8')
-      if (typeof lifeState === 'number' && lifeState !== 0) {
-        continue
-      }
-      if (team === DEFENDER_TEAM) {
-        if (!new Npc(tr).remove()) {
-          killEntity({ victim: tr })
-        }
-        removed += 1
-        continue
-      }
-      if (
-        team === 3 &&
-        npc &&
-        npc.maxHealth > 1 &&
-        Math.abs(npc.position.x) > 2800
-      ) {
-        killEntity({ victim: tr })
-        removed += 1
-      }
-    }
-    return removed
+    return purgeMapFriendlyAndSideLaneTroopers(DEFENDER_TEAM)
   }
 
-  /** Keeps all 4 Flex Slots unlocked for Team 2 defenders so all 12 item slots stay open (#29). */
   unlockAllPlayerFlexSlots(): void {
-    for (const tm of findEntities('citadel_team_manager')) {
-      const team = readField(tm, 'CBaseEntity', 'm_iTeamNum', 'uint8')
-      if (team === DEFENDER_TEAM) {
-        const unlocked = readField(tm, 'CCitadelTeam', 'm_nFlexSlotsUnlocked', 'uint16')
-        if (typeof unlocked !== 'number' || unlocked < 4) {
-          writeField(tm, 'CCitadelTeam', 'm_nFlexSlotsUnlocked', 'uint16', 15)
-        }
-      }
-    }
+    unlockTeamFlexSlots(DEFENDER_TEAM, 15)
   }
 
-  private cleanupShopTriggers(): void {
-    if (this.shopTriggerEntity > 0) {
-      removeEntity(this.shopTriggerEntity)
-      this.shopTriggerEntity = 0
-    }
-    for (const entry of this.personalShopTriggers.values()) {
-      removeEntity(entry.triggerEnt)
-    }
-    this.personalShopTriggers.clear()
-  }
-
-  private configureShopTriggerForDefenders(triggerEnt: number): void {
-    writeField(triggerEnt, 'CBaseEntity', 'm_iTeamNum', 'uint8', DEFENDER_TEAM)
-    writeField(triggerEnt, 'CBaseTrigger', 'm_bDisabled', 'bool', false)
-    writeField(triggerEnt, 'CTriggerItemShop', 'm_vAudioOffset', 'vector', {
-      x: 0,
-      y: 0,
-      z: 0,
-    })
-    fireInput(triggerEnt, 'Enable')
-  }
-
-  private spawnShopSphereTrigger(origin: Vector, radius: number): number {
-    const created = createEntity({
-      designerName: 'trigger_item_shop',
-      subclass: '',
-      team: DEFENDER_TEAM,
-      position: origin,
-      facing: { pitch: 0, yaw: 0, roll: 0 },
-      keyValues: [
-        { key: 'origin', value: { vector: origin } },
-        { key: 'radius', value: { number: radius } },
-        { key: 'okifnomodel', value: { boolean: true } },
-        { key: 'StartDisabled', value: { boolean: false } },
-        { key: 'spawnflags', value: { integer: SHOP_TRIGGER_SPAWNFLAGS } },
-      ],
-      fields: [
-        {
-          className: 'CBaseEntity',
-          field: 'm_spawnflags',
-          type: 'uint32',
-          value: SHOP_TRIGGER_SPAWNFLAGS,
-        },
-        {
-          className: 'CBaseTrigger',
-          field: 'm_bDisabled',
-          type: 'bool',
-          value: false,
-        },
-        {
-          className: 'CTriggerItemShop',
-          field: 'm_vAudioOffset',
-          type: 'vector',
-          value: { x: 0, y: 0, z: 0 },
-        },
-      ],
-    })
-    if (created && created > 0) {
-      this.configureShopTriggerForDefenders(created)
-      return created
-    }
-    return 0
-  }
-
-  /**
-   * Grants Buy Anywhere without `sv_cheats 1` (#31): spawns native `radius` Rubikon
-   * sphere `trigger_item_shop` volumes (Layer A arena-wide `radius = 16000` at
-   * `{ x: 0, y: -4800, z: 600 }` + Layer B kinematic `1 << 28` per-pawn `radius = 256`
-   * centered at `pos.z + zOffset`) with `spawnflags = 0x10000043` so native VPhysics
-   * `CTriggerItemShop::StartTouch` keeps `CCitadelPlayerPawn.m_bInItemShopZone=true`.
-   */
   ensureDefenderShopAccess(pawnEntity: number, pawnPosition?: Vector): boolean {
-    if (pawnEntity <= 0) {
-      return false
-    }
-
-    if (this.shopTriggerEntity <= 0 || !entityPosition(this.shopTriggerEntity)) {
-      const created = this.spawnShopSphereTrigger(
-        ARENA_SHOP_TRIGGER_ORIGIN,
-        ARENA_SHOP_TRIGGER_RADIUS,
-      )
-      if (created > 0) {
-        this.shopTriggerEntity = created
-      }
-    }
-
-    for (const [trackedPawn, entry] of this.personalShopTriggers) {
-      const lifeState = readField(trackedPawn, 'CBaseEntity', 'm_lifeState', 'uint8')
-      if (typeof lifeState !== 'number' || lifeState !== 0) {
-        removeEntity(entry.triggerEnt)
-        this.personalShopTriggers.delete(trackedPawn)
-      }
-    }
-
-    const pos = pawnPosition ?? entityPosition(pawnEntity)?.position
-    const inShopNow =
-      readField(pawnEntity, 'CCitadelPlayerPawn', 'm_bInItemShopZone', 'bool') ===
-      true
-
-    if (pos) {
-      let personal = this.personalShopTriggers.get(pawnEntity)
-      if (personal && !entityPosition(personal.triggerEnt)) {
-        this.personalShopTriggers.delete(pawnEntity)
-        personal = undefined
-      }
-
-      const driftX = personal
-        ? Math.abs(pos.x - personal.lastPawnPos.x)
-        : Infinity
-      const driftY = personal
-        ? Math.abs(pos.y - personal.lastPawnPos.y)
-        : Infinity
-      const driftZ = personal
-        ? Math.abs(pos.z - personal.lastPawnPos.z)
-        : Infinity
-      const needsReposition =
-        !inShopNow ||
-        !personal ||
-        driftX > 70 ||
-        driftY > 70 ||
-        driftZ > 32
-
-      if (needsReposition) {
-        const zOffset = !inShopNow && personal?.nudgeToggle ? 420 : 36
-        const targetOrigin: Vector = {
-          x: pos.x,
-          y: pos.y,
-          z: pos.z + zOffset,
-        }
-        if (!personal) {
-          const pEnt = this.spawnShopSphereTrigger(
-            targetOrigin,
-            PERSONAL_SHOP_TRIGGER_RADIUS,
-          )
-          if (pEnt > 0) {
-            this.personalShopTriggers.set(pawnEntity, {
-              triggerEnt: pEnt,
-              lastPawnPos: { ...pos },
-              nudgeToggle: true,
-            })
-          }
-        } else {
-          if (!inShopNow) {
-            this.configureShopTriggerForDefenders(personal.triggerEnt)
-          }
-          moveEntity(personal.triggerEnt, targetOrigin, {
-            pitch: 0,
-            yaw: 0,
-            roll: 0,
-          })
-          personal.lastPawnPos = { ...pos }
-          personal.nudgeToggle = !personal.nudgeToggle
-        }
-      }
-    }
-
-    return (
-      readField(pawnEntity, 'CCitadelPlayerPawn', 'm_bInItemShopZone', 'bool') ===
-        true ||
-      this.personalShopTriggers.has(pawnEntity) ||
-      this.shopTriggerEntity > 0
-    )
+    return this.shopZones.ensureShopAccess(pawnEntity, pawnPosition)
   }
 
   /** Resets wave state for a new world or /restarttd. */
@@ -475,7 +229,7 @@ export class WaveManager {
     this.steeredWaveCreeps.clear()
     this.cachedBuildingTargets = undefined
     this.restoreIntervalAt = 0
-    this.cleanupShopTriggers()
+    this.shopZones.cleanup()
     this.applyServerConfig()
   }
 
@@ -543,12 +297,16 @@ export class WaveManager {
     this.reset(now)
   }
 
-  /** Reports whether at least one defender has spawned with a selected hero (`pawn.hero > 0`). */
+  /** Reports whether at least one defender has deployed with a confirmed hero (`pawn.hero > 0`). */
   hasActiveDefenderHero(): boolean {
     const conns = players()
     const humanConns = conns.filter((c) => !c.bot && c.ready)
     if (humanConns.length > 0) {
-      return humanConns.some((c) => (c.player.pawn()?.hero ?? 0) > 0)
+      return humanConns.some(
+        (c) =>
+          (c.player.pawn()?.hero ?? 0) > 0 &&
+          !this.isSlotAwaitingInitialHeroPick?.(c.player.slot),
+      )
     }
     return conns.some((c) => {
       const pawn = c.player.pawn()

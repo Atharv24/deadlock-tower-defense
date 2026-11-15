@@ -1,11 +1,11 @@
-# Modlock & Node build outputs
 build/
+mods/*/build/
 node_modules/
+mods/*/node_modules/
 .modlock/
-
-# Local reference dump, external CLI binaries, and crash dumps
+mods/*/.modlock/
+mods/*/_watch_trigger.txt
 reference/
 tools/*.exe
 tools/*.dll
-*.vpk
 *.mdmp

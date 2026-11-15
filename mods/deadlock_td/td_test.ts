@@ -1,22 +1,14 @@
 import assert from 'node:assert/strict'
-import { describe, it } from 'node:test'
+import { beforeEach, describe, it } from 'node:test'
 
+import { TomeManager } from '@components/roguelite'
+import { LeaderboardManager } from '@components/scores'
+import { mockHost, resetMockHost } from '@testing/mock_modlock_host'
+
+import { GuardianManager } from './guardian'
+import { TdProbe } from './probe'
 import {
   advanceBossWaypointIndex,
-  BOSS_GUARDIAN_MIN_STANDOFF,
-  BOSS_GUARDIAN_SIEGE_RANGE,
-  BOSS_LANE_ROUTES,
-  type BossButtonMask,
-  computeAimAngles,
-  computeBossAbilityUpgradeMask,
-  createBossAiState,
-  flatDistance2D,
-  getBossWaypointsForObjective,
-  planBossDriveStep,
-  selectBossTarget,
-  worldMoveToDriveAxes,
-} from '../src/boss_ai.ts'
-import {
   BASE_CREEP_HP,
   BASE_CREEP_SCALE,
   BASE_WAVE_SOUL_REWARD,
@@ -27,18 +19,20 @@ import {
   BOSS_COLOSSUS_APPLIED_SCALE,
   BOSS_COLOSSUS_ENTITY_MODIFIER,
   BOSS_DAMAGE_MULT_PER_BOSS_WAVE,
+  BOSS_GUARDIAN_MIN_STANDOFF,
+  BOSS_GUARDIAN_SIEGE_RANGE,
   BOSS_KILL_SOUL_REWARD,
-  canExecuteDevCommand,
-  canPlayerRestartActiveMatch,
+  BOSS_LANE_ROUTES,
+  type BossButtonMask,
   CLIP_SIZE_ENTITY_MODIFIERS,
+  computeAimAngles,
+  computeBossAbilityUpgradeMask,
   computeBossDamageMult,
   computeBossTier,
   computeCreepScaleAuraStep,
   computeGuardianRepair,
   computeGuardianUpgradeCost,
-  computeResidualWeaponDamageMult,
   computeStructureDamageMult,
-  computeTomeWaveMultiplier,
   computeVanillaEffectiveHpDamageScale,
   computeVanillaTomeBonuses,
   computeWaveCreepDamageMult,
@@ -47,35 +41,20 @@ import {
   computeWaveSoulReward,
   computeWaveSpawnIntervalSeconds,
   computeWaveTier,
-  decomposeBinaryEntityModifiers,
+  createBossAiState,
   deserializeTdHandoff,
-  DEV_COMMAND_NAMES,
   ELITE_HASTE_ENTITY_MODIFIER,
-  EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
-  type EmptyServerWatchState,
   evaluateAllStructuresRepair,
   evaluateBaseDefenseProgression,
   evaluateCreepHealthSync,
-  evaluateCreepLastHit,
-  evaluateDefenderRespawnDue,
-  evaluateEmptyServerShutdown,
   evaluateLeaderboardCheckpoint,
   evaluateLeaderboardSubmission,
-  evaluateLegendaryPurchase,
-  evaluateNativeShopHudSync,
   FIRE_RATE_ENTITY_MODIFIERS,
-  formatItemDisplayTitle,
-  formatMatchClock,
-  formatScaledMajorBoonSubtitle,
-  formatScaledMinorTomeDescription,
-  formatSoulsCount,
-  formatTomeCountDisplay,
+  flatDistance2D,
+  getBossWaypointsForObjective,
   getBossWaveSpec,
   getCreepScaleAuraModifier,
   getDefenderStageSpawnOrigin,
-  getHeroTomeEntityModifierPlan,
-  getLeaderboardSubtitleCopy,
-  getLeaderboardUnavailableCopy,
   getStructureFortifyAuraSpec,
   getStructureFortifyEntityModifiers,
   getWaveCreepModifiers,
@@ -85,18 +64,11 @@ import {
   GUARDIAN_REPAIR_COST_SOULS,
   GUARDIAN_UPGRADE_BASE_COST_SOULS,
   GUARDIAN_UPGRADE_COST_STEP_SOULS,
-  hasClockSteppedBackward,
   HERO_RESPAWN_TIME_SECONDS,
-  HERO_SPIRIT_ENTITY_MODIFIER,
-  INITIAL_NATIVE_SHOP_HUD_STATE,
   isBossWave,
-  isDefenderOutOfBoundsOrBelowMap,
   isExplodingZombieBaseMaxHp,
   isExplodingZombieIdentity,
-  isLocalDevModeArgs,
   isWithinZombieDetonationRange,
-  ITEM_DISPLAY_TITLES,
-  LEGENDARY_ITEM_COST_SOULS,
   MAJOR_BOON_POOL,
   MAX_COOP_DEFENDER_PLAYERS,
   MAX_CREEP_HP,
@@ -104,25 +76,18 @@ import {
   MAX_WAVE_SOUL_REWARD,
   MIN_SPAWN_INTERVAL_SECONDS,
   MINOR_TOME_POOL,
-  needsImmediateNativeShopWake,
-  parseSlashCommandLine,
-  parseTomeGrowthPerWave,
-  pickThreeMajorBoons,
+  planBossDriveStep,
+  selectBossTarget,
   selectUnscaledCreeps,
   serializeTdHandoff,
-  SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS,
-  SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS,
-  SHOP_CLOSE_SECOND_PULSE_START_SECONDS,
-  shouldFreeHudCursor,
-  shouldPushHudUpdate,
   SOUL_CACHE_BASE_SOULS,
   STRUCTURE_CDR_ENTITY_MODIFIER,
-  syncEntityModifierSet,
   TD_SERVER_CVARS,
   type TdHandoffState,
-  TOME_DROP_CHANCE,
+  worldMoveToDriveAxes,
   ZIPLINE_SQUAD_SIZE,
-} from '../src/config.ts'
+} from './td_config'
+import { WaveManager } from './wave'
 
 describe('Tier 1 — Wave Scaling & Boss Wave Math', () => {
   it('starts Wave 1 at BASE_CREEP_HP (200) and scales smoothly (+4%/wave) up to MAX_CREEP_HP cap', () => {
@@ -285,150 +250,7 @@ describe('Tier 1 — Per-Creep Scaling & No-Mid-Fight-Heal Regression', () => {
   })
 })
 
-describe('Tier 1 — onDamaged Player Last-Hit Tome System & Deduplication', () => {
-  it('ignores non-lethal hits', () => {
-    const validCreeps = new Set([501])
-    const pawnToSlot = new Map([[10, 0]])
-    const guardians = new Set([99])
-    const rewarded = new Set<number>()
-
-    const res = evaluateCreepLastHit(
-      { victim: 501, attacker: 10, healthBefore: 150, healthLost: 60 },
-      validCreeps,
-      pawnToSlot,
-      guardians,
-      rewarded,
-      0.01,
-    )
-    assert.equal(res.isKill, false)
-    assert.equal(res.granted, false)
-    assert.equal(res.reason, 'non_lethal')
-    assert.equal(rewarded.has(501), false)
-  })
-
-  it('rejects Friendly Blue T1 Guardian kills so tower kills never grant player Tomes', () => {
-    const validCreeps = new Set([501])
-    const pawnToSlot = new Map([[10, 0]])
-    const guardians = new Set([99])
-    const rewarded = new Set<number>()
-
-    const res = evaluateCreepLastHit(
-      { victim: 501, attacker: 99, healthBefore: 80, healthLost: 80 },
-      validCreeps,
-      pawnToSlot,
-      guardians,
-      rewarded,
-      0.01,
-    )
-    assert.equal(res.isKill, true)
-    assert.equal(res.isPlayerKill, false)
-    assert.equal(res.granted, false)
-    assert.equal(res.reason, 'guardian_kill')
-  })
-
-  it('deduplicates multi-pellet shotgun kills on the same creep handle in the same frame', () => {
-    const validCreeps = new Set([501])
-    const pawnToSlot = new Map([[10, 0]])
-    const guardians = new Set([99])
-    const rewarded = new Set<number>()
-
-    // Pellet 1 kills creep 501 and rolls 0.02 (< 0.10 TOME_DROP_CHANCE) -> grants Tome
-    const firstPellet = evaluateCreepLastHit(
-      { victim: 501, attacker: 10, healthBefore: 40, healthLost: 40 },
-      validCreeps,
-      pawnToSlot,
-      guardians,
-      rewarded,
-      0.02,
-      0.0,
-    )
-    assert.equal(firstPellet.granted, true)
-    assert.equal(firstPellet.reason, 'granted')
-    assert.equal(firstPellet.tome?.id, MINOR_TOME_POOL[0].id)
-
-    // Pellet 2 arrives on the same tick for creep 501 -> must be rejected as duplicate_kill
-    const secondPellet = evaluateCreepLastHit(
-      { victim: 501, attacker: 10, healthBefore: 40, healthLost: 40 },
-      validCreeps,
-      pawnToSlot,
-      guardians,
-      rewarded,
-      0.01,
-      0.0,
-    )
-    assert.equal(secondPellet.granted, false)
-    assert.equal(secondPellet.reason, 'duplicate_kill')
-  })
-
-  it('respects the 10% TOME_DROP_CHANCE threshold', () => {
-    const validCreeps = new Set([601, 602])
-    const pawnToSlot = new Map([[10, 0]])
-    const guardians = new Set<number>()
-    const rewarded = new Set<number>()
-
-    const miss = evaluateCreepLastHit(
-      { victim: 601, attacker: 10, healthBefore: 100, healthLost: 120 },
-      validCreeps,
-      pawnToSlot,
-      guardians,
-      rewarded,
-      TOME_DROP_CHANCE + 0.01,
-    )
-    assert.equal(miss.isPlayerKill, true)
-    assert.equal(miss.granted, false)
-    assert.equal(miss.reason, 'rng_miss')
-
-    const hit = evaluateCreepLastHit(
-      { victim: 602, attacker: 10, healthBefore: 100, healthLost: 120 },
-      validCreeps,
-      pawnToSlot,
-      guardians,
-      rewarded,
-      TOME_DROP_CHANCE - 0.001,
-      0.99,
-    )
-    assert.equal(hit.isPlayerKill, true)
-    assert.equal(hit.granted, true)
-    assert.equal(hit.tome?.id, MINOR_TOME_POOL[MINOR_TOME_POOL.length - 1].id)
-  })
-})
-
-describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
-  it('always offers 3 distinct Major Boons for milestone waves', () => {
-    for (const wave of [5, 10, 15, 20, 25, 30]) {
-      const [b1, b2, b3] = pickThreeMajorBoons(wave, 0)
-      assert.notEqual(b1.id, b2.id)
-      assert.notEqual(b2.id, b3.id)
-      assert.notEqual(b1.id, b3.id)
-    }
-
-    // Major Boon UI appearing mid-wave MUST NOT unlock mouse camera aiming
-    assert.equal(
-      shouldFreeHudCursor({
-        needsHeroPick: false,
-        hasPendingBoons: true,
-        matchState: 'active',
-      }),
-      false,
-    )
-    assert.equal(
-      shouldFreeHudCursor({
-        needsHeroPick: true,
-        hasPendingBoons: false,
-        matchState: 'active',
-      }),
-      true,
-    )
-    assert.equal(
-      shouldFreeHudCursor({
-        needsHeroPick: false,
-        hasPendingBoons: false,
-        matchState: 'defeat',
-      }),
-      true,
-    )
-  })
-
+describe('Tier 1 — TD Guardian Mechanics, Handoff & Zombie Identity', () => {
   it('validates Guardian repair Soul cost, full-HP guard, and max-HP clamping', () => {
     const full = computeGuardianRepair(
       GUARDIAN_BASE_MAX_HP,
@@ -479,21 +301,6 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
     assert.deepEqual(restored, state)
     assert.equal(deserializeTdHandoff(undefined), undefined)
     assert.equal(deserializeTdHandoff('{invalid json'), undefined)
-  })
-
-  it('parses Team Chat and All-Chat slash commands cleanly', () => {
-    assert.deepEqual(parseSlashCommandLine('/boss'), { name: 'boss', args: '' })
-    assert.deepEqual(parseSlashCommandLine('  /BOON   2  '), {
-      name: 'boon',
-      args: '2',
-    })
-    assert.deepEqual(parseSlashCommandLine('/hero Seven'), {
-      name: 'hero',
-      args: 'Seven',
-    })
-    assert.equal(parseSlashCommandLine('hello team'), undefined)
-    assert.equal(parseSlashCommandLine('/'), undefined)
-    assert.equal(parseSlashCommandLine('/   '), undefined)
   })
 
   it('distinguishes Graves Zombie base maxHP (400) and vanilla/custom melee & shambler identities from ranged troopers', () => {
@@ -550,99 +357,6 @@ describe('Tier 1 — 1-of-3 Major Boon Picker & Guardian Mechanics', () => {
 
     assert.equal(computeVanillaEffectiveHpDamageScale(700, 0), 1)
     assert.equal(computeVanillaEffectiveHpDamageScale(700, 700), 0.5)
-  })
-
-  it('auto-resets hosted server to idle after 3s flush grace and auto-quits only in local --arg dev mode (#33, v0.7.5)', () => {
-    assert.equal(EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS, 3)
-
-    const state: EmptyServerWatchState = {
-      hasSeenHuman: false,
-      emptySinceSeconds: undefined,
-      quitIssued: false,
-    }
-
-    // Cold server startup (0..60s before first human joins) must NEVER trigger quit or reset
-    const coldCheck = evaluateEmptyServerShutdown(state, 0, 60, false)
-    assert.equal(coldCheck.shouldQuit, false)
-    assert.equal(coldCheck.shouldResetMatch, false)
-    assert.equal(coldCheck.nextState.hasSeenHuman, false)
-
-    // First human joins at t=65s
-    const joined = evaluateEmptyServerShutdown(coldCheck.nextState, 1, 65, false)
-    assert.equal(joined.shouldQuit, false)
-    assert.equal(joined.shouldResetMatch, false)
-    assert.equal(joined.nextState.hasSeenHuman, true)
-    assert.equal(joined.nextState.emptySinceSeconds, undefined)
-
-    // Probe mode bypasses shutdown & reset
-    const probeCheck = evaluateEmptyServerShutdown(joined.nextState, 0, 100, true)
-    assert.equal(probeCheck.shouldQuit, false)
-    assert.equal(probeCheck.shouldResetMatch, false)
-
-    // 1. Hosted mode (allowProcessQuit=false, default): waits 3s flush grace, then emits shouldResetMatch=true ONCE without calling quit!
-    const disconnectStart = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false)
-    assert.equal(disconnectStart.shouldQuit, false)
-    assert.equal(disconnectStart.shouldResetMatch, false)
-    assert.equal(disconnectStart.nextState.emptySinceSeconds, 100)
-
-    const beforeGrace = evaluateEmptyServerShutdown(disconnectStart.nextState, 0, 102.9, false)
-    assert.equal(beforeGrace.shouldQuit, false)
-    assert.equal(beforeGrace.shouldResetMatch, false)
-
-    const afterGraceHosted = evaluateEmptyServerShutdown(beforeGrace.nextState, 0, 103, false)
-    assert.equal(afterGraceHosted.shouldQuit, false)
-    assert.equal(afterGraceHosted.shouldResetMatch, true)
-    assert.equal(afterGraceHosted.nextState.hasSeenHuman, false)
-    assert.equal(afterGraceHosted.nextState.emptySinceSeconds, undefined)
-    assert.equal(afterGraceHosted.nextState.quitIssued, false)
-
-    // Subsequent empty ticks stay idle at Wave 0 without looping reset or quit
-    const afterHostedReset = evaluateEmptyServerShutdown(
-      afterGraceHosted.nextState,
-      0,
-      104,
-      false,
-    )
-    assert.equal(afterHostedReset.shouldQuit, false)
-    assert.equal(afterHostedReset.shouldResetMatch, false)
-    assert.equal(afterHostedReset.nextState.hasSeenHuman, false)
-
-    // Explicit 0s custom delay also works immediately (hosted -> reset, local dev -> quit)
-    const zeroDelayHosted = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false, 0, false)
-    assert.equal(zeroDelayHosted.shouldQuit, false)
-    assert.equal(zeroDelayHosted.shouldResetMatch, true)
-
-    const zeroDelayQuit = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false, 0, true)
-    assert.equal(zeroDelayQuit.shouldQuit, true)
-    assert.equal(zeroDelayQuit.shouldResetMatch, false)
-    assert.equal(zeroDelayQuit.nextState.quitIssued, true)
-
-    // 2. Local --arg dev mode (allowProcessQuit=true): optional custom delay (30s) cancels on reconnect and quits once at 30s
-    const delayedStart = evaluateEmptyServerShutdown(joined.nextState, 0, 100, false, 30, true)
-    assert.equal(delayedStart.shouldQuit, false)
-    assert.equal(delayedStart.shouldResetMatch, false)
-    assert.equal(delayedStart.nextState.emptySinceSeconds, 100)
-
-    const reconnected = evaluateEmptyServerShutdown(delayedStart.nextState, 1, 120, false, 30, true)
-    assert.equal(reconnected.shouldQuit, false)
-    assert.equal(reconnected.shouldResetMatch, false)
-    assert.equal(reconnected.nextState.emptySinceSeconds, undefined)
-
-    const delayedAgain = evaluateEmptyServerShutdown(reconnected.nextState, 0, 200, false, 30, true)
-    assert.equal(delayedAgain.shouldQuit, false)
-    assert.equal(delayedAgain.nextState.emptySinceSeconds, 200)
-
-    const at29s = evaluateEmptyServerShutdown(delayedAgain.nextState, 0, 229, false, 30, true)
-    assert.equal(at29s.shouldQuit, false)
-
-    const at30s = evaluateEmptyServerShutdown(at29s.nextState, 0, 230, false, 30, true)
-    assert.equal(at30s.shouldQuit, true)
-    assert.equal(at30s.shouldResetMatch, false)
-    assert.equal(at30s.nextState.quitIssued, true)
-
-    const afterDelayedQuit = evaluateEmptyServerShutdown(at30s.nextState, 0, 231, false, 30, true)
-    assert.equal(afterDelayedQuit.shouldQuit, false)
-    assert.equal(afterDelayedQuit.shouldResetMatch, false)
   })
 })
 
@@ -1128,1054 +842,57 @@ describe('Tier 1 — Enemy Hero Boss AI Navigation, Aiming & Combat Brain', () =
   })
 })
 
-describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Host)', async () => {
-  const { registerHooks } = await import('node:module')
-
-  // Simulated engine state for the mock Modlock host
-  const npcStore = new Map<
-    number,
-    { health: number; maxHealth: number; team: number; position: { x: number; y: number; z: number } }
-  >()
-  const patronPhaseStore = new Map<number, number>()
-
-  function seedMockTeam2Structures(): void {
-    npcStore.set(700, {
-      health: 5500,
-      maxHealth: 5500,
-      team: 2,
-      position: { x: 0, y: -1792, z: 384 },
-    })
-    npcStore.set(701, {
-      health: 9000,
-      maxHealth: 9000,
-      team: 2,
-      position: { x: -1288, y: -3472, z: 376 },
-    })
-    npcStore.set(702, {
-      health: 4000,
-      maxHealth: 4000,
-      team: 2,
-      position: { x: -1072, y: -5454, z: 641 },
-    })
-    npcStore.set(703, {
-      health: 4000,
-      maxHealth: 4000,
-      team: 2,
-      position: { x: -1488, y: -5459, z: 641 },
-    })
-    npcStore.set(704, {
-      health: 8000,
-      maxHealth: 8000,
-      team: 2,
-      position: { x: 299, y: -7535, z: 980 },
-    })
-    npcStore.set(705, {
-      health: 8000,
-      maxHealth: 8000,
-      team: 2,
-      position: { x: -2859, y: -7535, z: 980 },
-    })
-    npcStore.set(706, {
-      health: 12000,
-      maxHealth: 12000,
-      team: 2,
-      position: { x: -1280, y: -8034, z: 632 },
-    })
-    patronPhaseStore.set(706, 0)
-  }
-
-  seedMockTeam2Structures()
-  npcStore.set(801, {
-    health: 150,
-    maxHealth: 150,
-    team: 3,
-    position: { x: 0, y: -500, z: 384 },
-  })
-  npcStore.set(802, {
-    health: 150,
-    maxHealth: 150,
-    team: 3,
-    position: { x: 40, y: -500, z: 384 },
-  })
-
-  const appliedModifiers: string[] = []
-  const entityModifiers = new Map<number, Set<string>>()
-  const shrineModifierErrors: string[] = []
-  const heldPlayerModifiers: Array<{ slot: number; mod: string; active: boolean }> = []
-  let activeMockAuraScale = 1.0
-  const activeBossBots: MockPlayer[] = []
-  const refreshedAbilities: string[] = []
-  const heldModifierStates: Array<{ entity: number; state: string; active: boolean }> = []
-  const executedServerCommands: string[] = []
-  const spawnedTrooperUnits: string[] = []
-  const emittedSounds: Array<{ entity: number; sound: string }> = []
-  const firedInputs: Array<{ entity: number; input: string }> = []
-  const scaleStore = new Map<number, number>()
-  const lifeStateStore = new Map<number, number>()
-  const modelStore = new Map<number, string>()
-  const spawnerLaneStore = new Map<number, number>([
-    [14053, 4],
-    [14315, 4],
-    [14318, 4],
-    [14319, 4],
-    [14291, 4],
-    [14051, 1],
-  ])
-  const spawnerDisableZipStore = new Map<number, boolean>()
-  const teamFlexSlotsStore = new Map<number, number>([[710, 0]])
-  const mockSettings = new Map<string, string>()
-  const trooperIds = new Set<number>()
-  const neutralIds = new Set<number>()
-  const necroSkeleIds = new Set<number>()
-  const failedCustomModifiers: string[] = []
-  const givenItems: Array<{ slot: number; item: string }> = []
-  const reportedScores: Array<{ slot: number; board: string; value: number; options: Record<string, unknown> }> = []
-  const addedMetrics: Array<{ slot: number; name: string; value: number }> = []
-  const createdEntities: Array<{ entity: number; designerName: string; team: number }> = []
-  const shopTriggerIds = new Set<number>()
-  type MockShopBounds = {
-    origin: { x: number; y: number; z: number }
-    scaleVec: { x: number; y: number; z: number }
-    mins: { x: number; y: number; z: number }
-    maxs: { x: number; y: number; z: number }
-    model: string
-    radius: number
-    team: number
-    disabled: boolean
-    mapEntity: boolean
-    spawnflags: number
-  }
-  const shopTriggerBounds = new Map<number, MockShopBounds>()
-  const pawnInShopStore = new Map<number, boolean>()
-  const seedDefaultMapShop = () => {
-    shopTriggerIds.add(15001)
-    shopTriggerBounds.set(15001, {
-      origin: { x: -1260, y: -10141, z: 1476 },
-      scaleVec: { x: 1, y: 1, z: 1 },
-      mins: { x: -138, y: -138, z: -130 },
-      maxs: { x: 138, y: 138, z: 130 },
-      model: 'maps/dl_midtown/entities/3568_souls_dealer_shop_trigger_14781_3568_154.vmdl',
-      radius: 0,
-      team: 2,
-      disabled: false,
-      mapEntity: true,
-      spawnflags: 513,
-    })
-    shopTriggerIds.add(15002)
-    shopTriggerBounds.set(15002, {
-      origin: { x: 1260, y: 10141, z: 1476 },
-      scaleVec: { x: 1, y: 1, z: 1 },
-      mins: { x: -138, y: -138, z: -130 },
-      maxs: { x: 138, y: 138, z: 130 },
-      model: 'maps/dl_midtown/entities/3578_souls_dealer_shop_trigger_14781_3578_154.vmdl',
-      radius: 0,
-      team: 3,
-      disabled: false,
-      mapEntity: true,
-      spawnflags: 513,
-    })
-    shopTriggerIds.add(15003)
-    shopTriggerBounds.set(15003, {
-      origin: { x: -5600, y: -1800, z: 380 },
-      scaleVec: { x: 1, y: 1, z: 1 },
-      mins: { x: -144, y: -144, z: -64 },
-      maxs: { x: 144, y: 144, z: 64 },
-      model: 'maps/dl_midtown/entities/shop_rebel_t1_blue_shop_item_trigger_14781_901_36.vmdl',
-      radius: 0,
-      team: 0,
-      disabled: false,
-      mapEntity: true,
-      spawnflags: 513,
-    })
-  }
-  const syncMockShopZone = () => {
-    const pos = defenderPlayer.position
-    let inside = false
-    for (const ent of shopTriggerIds) {
-      const b = shopTriggerBounds.get(ent)
-      if (!b || b.disabled) continue
-      if (b.team !== 2 && b.team !== 0 && b.team !== 4) continue
-      if (b.mapEntity) {
-        if (!b.model) continue
-        const minX = b.origin.x + b.scaleVec.x * b.mins.x
-        const maxX = b.origin.x + b.scaleVec.x * b.maxs.x
-        const minY = b.origin.y + b.scaleVec.y * b.mins.y
-        const maxY = b.origin.y + b.scaleVec.y * b.maxs.y
-        const minZ = b.origin.z + b.scaleVec.z * b.mins.z
-        const maxZ = b.origin.z + b.scaleVec.z * b.maxs.z
-        if (
-          pos.x >= minX &&
-          pos.x <= maxX &&
-          pos.y >= minY &&
-          pos.y <= maxY &&
-          pos.z >= minZ &&
-          pos.z <= maxZ
-        ) {
-          inside = true
-          break
-        }
-      } else {
-        // Enforce PassesTriggerFilters bit 6 (0x40) and CBaseTrigger::InitTrigger radius > 0 on mod-created triggers
-        if ((b.spawnflags & 0x40) === 0 || b.radius <= 0) continue
-        const dx = pos.x - b.origin.x
-        const dy = pos.y - b.origin.y
-        const dz = pos.z - b.origin.z
-        if (dx * dx + dy * dy + dz * dz <= b.radius * b.radius) {
-          inside = true
-          break
-        }
-      }
-    }
-    pawnInShopStore.set(defenderPlayer.pawnEntity, inside)
-  }
-  seedDefaultMapShop()
-  const mockBoardPages = new Map<string, unknown>()
-  const mockBotPlayers: Array<{ player: MockPlayer; name: string; bot: boolean; ready: boolean; steamId: bigint; generation: number; roles: string[] }> = []
-  let mockVanillaMode = false
-  let mockReportScoreResult = true
-  let nextSpawnedEntityId = 2000
-  let probePassed = false
-  let probeFailedReason = ''
-
-  class MockPlayer {
-    readonly slot: number
-    souls = 1000
-    ap = 0
-    team = 2
-    hero = 1
-    pawnEntity = 10
-    health = 700
-    maxHealth = 700
-    position = { x: 0, y: -1950, z: 396 }
-    eyeAngles = { pitch: 0, yaw: 90, roll: 0 }
-    lastDrive?: {
-      facing: { pitch: number; yaw: number; roll: number }
-      forward: number
-      left: number
-      held: bigint
-      pressed: bigint
-    }
-    abilityList: {
-      name: string
-      slot: number
-      entity?: number
-      upgrades?: number
-      charges?: number
-      cooldownEnd?: number
-      id?: number
-      state?: number
-      cooldownStart?: number
-      rechargeStart?: number
-      rechargeEnd?: number
-      imbues?: string[]
-    }[] = [
-      {
-        name: 'citadel_ability_primary',
-        slot: 0,
-        entity: 400,
-        upgrades: 1,
-        charges: 0,
-        cooldownEnd: 0,
-        id: 1,
-        state: 0,
-        cooldownStart: 0,
-        rechargeStart: 0,
-        rechargeEnd: 0,
-        imbues: [],
-      },
-    ]
-    constructor(slot: number) {
-      this.slot = slot
-    }
-    pawn() {
-      return {
-        entity: this.pawnEntity,
-        hero: this.hero,
-        team: this.team,
-        health: this.health,
-        maxHealth: this.maxHealth,
-        position: this.position,
-        eyeAngles: this.eyeAngles,
-        cameraAngles: this.eyeAngles,
-        generation: 1,
-        souls: this.souls,
-        eyePosition: {
-          x: this.position.x,
-          y: this.position.y,
-          z: this.position.z + 64,
-        },
-        velocity: { x: 0, y: 0, z: 0 },
-        abilityPoints: this.ap,
-        abilityUnlocks: 0,
-      }
-    }
-    setting(k: string) {
-      if (k === 'wave_interval') return mockSettings.get('wave_interval') ?? '20'
-      if (k === 'tome_scaling') return mockSettings.get('tome_scaling') ?? '0.06'
-      if (k === 'hud_mode') return mockSettings.get('hud_mode') ?? 'full'
-      return mockSettings.get(k)
-    }
-    respawn() {
-      this.health = this.maxHealth
-      lifeStateStore.set(this.pawnEntity, 0)
-      return true
-    }
-    announce(_t: string, _m: string) {
-      return true
-    }
-    addMetric(name: string, value: number) {
-      addedMetrics.push({ slot: this.slot, name, value })
-      return true
-    }
-    adjustSouls(delta: number) {
-      this.souls += delta
-      return true
-    }
-    adjustAbilityPoints(pts: number) {
-      this.ap += pts
-      return true
-    }
-    giveItem(item: string) {
-      givenItems.push({ slot: this.slot, item })
-      return true
-    }
-    giveModifier(mod: string) {
-      if (this.hero === 0 || this.abilityList.length === 0) {
-        return false
-      }
-      if (mockVanillaMode && mod.startsWith('td_')) {
-        failedCustomModifiers.push(mod)
-        return false
-      }
-      appliedModifiers.push(mod)
-      if (mod === 'upgrade_colossus/modifier_colossus_active') {
-        scaleStore.set(this.pawnEntity, 1.2)
-      } else if (mod.startsWith('td_boss_hero_stats_')) {
-        const tier = Number(mod.replace('td_boss_hero_stats_', '')) || 1
-        this.maxHealth = 700 + [1750, 3250, 5500, 8500, 13000][tier - 1]
-        scaleStore.set(this.pawnEntity, [1.35, 1.5, 1.65, 1.8, 1.95][tier - 1])
-      } else if (mod === 'td_boss_endless_boost') {
-        this.maxHealth += 1600
-      } else if (mod === 'td_boss_size_step') {
-        this.maxHealth = 700 + 25000
-        scaleStore.set(this.pawnEntity, 2.05)
-      } else if (mod.startsWith('td_creep_scale_aura_')) {
-        const step = Number(mod.replace('td_creep_scale_aura_', '')) || 1
-        activeMockAuraScale = Number((0.9 + (step - 1) * 0.05).toFixed(2))
-        for (const [ent, s] of npcStore.entries()) {
-          if (s.team === 3 && ((ent >= 800 && ent < 900) || trooperIds.has(ent))) {
-            scaleStore.set(ent, activeMockAuraScale)
-          }
-        }
-      }
-      return true
-    }
-    holdModifier(mod: string, active?: boolean) {
-      const isOn = active !== false
-      heldPlayerModifiers.push({ slot: this.slot, mod, active: isOn })
-      if (isOn && mod.startsWith('td_creep_scale_aura_')) {
-        const step = Number(mod.replace('td_creep_scale_aura_', '')) || 1
-        activeMockAuraScale = Number((0.9 + (step - 1) * 0.05).toFixed(2))
-        for (const [ent, s] of npcStore.entries()) {
-          if (s.team === 3 && ((ent >= 800 && ent < 900) || trooperIds.has(ent))) {
-            scaleStore.set(ent, activeMockAuraScale)
-          }
-        }
-      }
-      return true
-    }
-    abilities() {
-      return this.abilityList.map((a, idx) => ({
-        entity: a.entity ?? 400 + idx,
-        upgrades: a.upgrades ?? 1,
-        charges: a.charges ?? 0,
-        cooldownEnd: a.cooldownEnd ?? 0,
-        id: a.id ?? idx + 1,
-        state: a.state ?? 0,
-        cooldownStart: a.cooldownStart ?? 0,
-        rechargeStart: a.rechargeStart ?? 0,
-        rechargeEnd: a.rechargeEnd ?? 0,
-        imbues: a.imbues ?? [],
-        ...a,
-      }))
-    }
-    setAbility(opts: { ability: string; upgrades?: number; cooldownEnd?: number }) {
-      const found = this.abilityList.find((a) => a.name === opts.ability)
-      if (found) {
-        if (opts.upgrades !== undefined) {
-          found.upgrades = opts.upgrades
-        }
-        if (opts.cooldownEnd !== undefined) {
-          found.cooldownEnd = opts.cooldownEnd
-        }
-      }
-      return true
-    }
-    connection() {
-      if (this === defenderPlayer) {
-        return {
-          player: defenderPlayer,
-          name: 'Defender',
-          bot: false,
-          ready: true,
-          steamId: 1n,
-          generation: 1,
-          roles: [],
-        }
-      }
-      return mockBotPlayers.find((b) => b.player === this)
-    }
-    seat(_seating?: unknown) {
-      return true
-    }
-    refreshAbility(ability: string) {
-      refreshedAbilities.push(ability)
-      const found = this.abilityList.find((a) => a.name === ability)
-      if (found) {
-        found.cooldownEnd = 0
-        found.rechargeEnd = 0
-      }
-      return true
-    }
-    heal(amount: number) {
-      this.health = Math.min(this.maxHealth, this.health + amount)
-      return true
-    }
-    sound(_s: string) {
-      return true
-    }
-    teleport(pos: { x: number; y: number; z: number }, facing?: { pitch: number; yaw: number; roll: number }) {
-      this.position = { ...pos }
-      if (facing) this.eyeAngles = { ...facing }
-      const s = npcStore.get(this.pawnEntity)
-      if (s) s.position = { ...pos }
-      if (this === defenderPlayer) syncMockShopZone()
-      return true
-    }
-    drive(cmd?: {
-      facing: { pitch: number; yaw: number; roll: number }
-      forward: number
-      left: number
-      held: bigint
-      pressed: bigint
-    }) {
-      this.lastDrive = cmd
-      if (!cmd) return true
-      this.eyeAngles = { ...cmd.facing }
-      const rad = (cmd.facing.yaw * Math.PI) / 180
-      const fx = Math.cos(rad)
-      const fy = Math.sin(rad)
-      const lx = -fy
-      const ly = fx
-      const wx = cmd.forward * fx + cmd.left * lx
-      const wy = cmd.forward * fy + cmd.left * ly
-      this.position = {
-        x: this.position.x + wx * 75,
-        y: this.position.y + wy * 75,
-        z: this.position.z,
-      }
-      const s = npcStore.get(this.pawnEntity)
-      if (s) s.position = { ...this.position }
-      if (this === defenderPlayer) syncMockShopZone()
-
-      // Simulate primary weapon fire when Buttons.attack (1n) is held
-      if ((cmd.held & 1n) !== 0n && this.team === 2) {
-        const angleDiff = (a: number, b: number) => {
-          let d = ((a - b + 540) % 360) - 180
-          if (d < -180) d += 360
-          return Math.abs(d)
-        }
-        for (const [ent, s] of npcStore.entries()) {
-          if (s.team !== 3 || s.health <= 0) continue
-          const dist = Math.hypot(s.position.x - this.position.x, s.position.y - this.position.y)
-          const yawTo = (Math.atan2(s.position.y - this.position.y, s.position.x - this.position.x) * 180) / Math.PI
-          if (dist <= 350 && angleDiff(cmd.facing.yaw, yawTo) <= 22) {
-            s.health = Math.max(0, s.health - 45)
-          }
-        }
-        for (const bot of activeBossBots) {
-          if (bot.health <= 0) continue
-          const dist = Math.hypot(bot.position.x - this.position.x, bot.position.y - this.position.y)
-          const yawTo = (Math.atan2(bot.position.y - this.position.y, bot.position.x - this.position.x) * 180) / Math.PI
-          if (dist <= 350 && angleDiff(cmd.facing.yaw, yawTo) <= 22) {
-            bot.health = Math.max(0, bot.health - 45)
-          }
-        }
-      }
-      if ((cmd.held & 1n) !== 0n && this.team === 3) {
-        const angleDiff = (a: number, b: number) => {
-          let d = ((a - b + 540) % 360) - 180
-          if (d < -180) d += 360
-          return Math.abs(d)
-        }
-        const def = defenderPlayer
-        const dDef = Math.hypot(def.position.x - this.position.x, def.position.y - this.position.y)
-        const yawToDef = (Math.atan2(def.position.y - this.position.y, def.position.x - this.position.x) * 180) / Math.PI
-        if (def.health > 0 && dDef <= 950 && angleDiff(cmd.facing.yaw, yawToDef) <= 22) {
-          def.health = Math.max(0, def.health - 60)
-        } else {
-          const g = npcStore.get(700)
-          if (g && g.health > 0) {
-            const dG = Math.hypot(g.position.x - this.position.x, g.position.y - this.position.y)
-            const yawToG = (Math.atan2(g.position.y - this.position.y, g.position.x - this.position.x) * 180) / Math.PI
-            if (dG <= 944 && angleDiff(cmd.facing.yaw, yawToG) <= 22) {
-              g.health = Math.max(0, g.health - 60)
-            }
-          }
-        }
-      }
-      return true
-    }
-    removeBot() {
-      return true
-    }
-  }
-
-  const defenderPlayer = new MockPlayer(0)
-
-  class MockNpc {
-    readonly entity: number
-    constructor(entity: number) {
-      this.entity = entity
-    }
-    read() {
-      const s = npcStore.get(this.entity)
-      if (!s) return undefined
-      return {
-        ...s,
-        facing: { pitch: 0, yaw: 270, roll: 0 },
-      }
-    }
-    setHealth(hp: number, maxHp?: number) {
-      const s = npcStore.get(this.entity)
-      if (!s) return false
-      s.health = hp
-      if (maxHp !== undefined) s.maxHealth = maxHp
-      return true
-    }
-    move(position: { x: number; y: number; z: number }) {
-      const s = npcStore.get(this.entity)
-      if (!s) return false
-      s.position = { ...position }
-      return true
-    }
-    holdModifier(_mod: string, _active?: boolean) {
-      return true
-    }
-    remove() {
-      const existed = npcStore.delete(this.entity)
-      trooperIds.delete(this.entity)
-      neutralIds.delete(this.entity)
-      necroSkeleIds.delete(this.entity)
-      modelStore.delete(this.entity)
-      return existed
-    }
-  }
-
-  class MockProbeRun {
-    constructor(_name: string, _timeout: number) {}
-    tick(_now: number, _wait: string, stepFn: () => boolean | string) {
-      const res = stepFn()
-      if (res === true) {
-        probePassed = true
-      } else if (typeof res === 'string') {
-        probeFailedReason = res
-      }
-    }
-  }
-
-  const mockModlockSource = `
-    export const Buttons = {
-      attack: 1n << 0n,
-      jump: 1n << 1n,
-      crouch: 1n << 2n,
-      dash: 1n << 3n,
-      use: 1n << 4n,
-      altFire: 1n << 5n,
-      reload: 1n << 6n,
-      melee: 1n << 7n,
-      ability1: 1n << 8n,
-      ability2: 1n << 9n,
-      ability3: 1n << 10n,
-      ultimate: 1n << 11n,
-      parry: 1n << 12n,
-    };
-    export const Layers = {
-      solid: 1n << 0n,
-      hitbox: 1n << 1n,
-      trigger: 1n << 2n,
-      playerClip: 1n << 4n,
-      player: 1n << 18n,
-      npc: 1n << 19n,
-      staticLevel: 1n << 20n,
-      hero: 1n << 21n,
-      trooper: 1n << 22n,
-      building: 1n << 23n,
-    };
-    export const trace = () => undefined;
-    export const ground = (pt) => ({ x: pt.x, y: pt.y, z: pt.z - 12 });
-    export const Npc = globalThis.__mockModlock.Npc;
-    export const ProbeRun = globalThis.__mockModlock.ProbeRun;
-    export const players = () => [
-      { player: globalThis.__mockModlock.defenderPlayer, name: 'Defender', bot: false, ready: true, steamId: 1n, generation: 1, roles: [] },
-      ...globalThis.__mockModlock.mockBotPlayers,
-    ];
-    export const reportScore = (player, board, value, options = {}) => {
-      globalThis.__mockModlock.reportedScores.push({ slot: player.slot, board, value, options });
-      return globalThis.__mockModlock.getReportScoreResult();
-    };
-    export const readBoard = (board, read = {}) => {
-      return globalThis.__mockModlock.mockBoardPages.get(board + ':' + (read.window ?? 'allTime'));
-    };
-    export const addBot = (opts) => {
-      const ent = globalThis.__mockModlock.allocSpawnEntity();
-      const p = new globalThis.__mockModlock.MockPlayer(2);
-      p.team = opts.team;
-      p.pawnEntity = ent;
-      p.position = opts.position ? { ...opts.position } : { x: 0, y: 1200, z: 390 };
-      if (opts.team === 3) globalThis.__mockModlock.activeBossBots.push(p);
-      globalThis.__mockModlock.npcStore.set(ent, { health: 2500, maxHealth: 2500, team: opts.team, position: { ...p.position } });
-      return p;
-    };
-    export const findEntitiesByName = (name) => {
-      globalThis.__mockModlock.entityScanStats.findByName += 1;
-      if (name.includes('boss_rebel_t1_blue')) return globalThis.__mockModlock.npcStore.has(700) ? [700] : [];
-      if (name.includes('rebels_t2_boss_blue')) return globalThis.__mockModlock.npcStore.has(701) ? [701] : [];
-      if (name.includes('rebels_watcher_blue')) return [702, 703].filter((id) => globalThis.__mockModlock.npcStore.has(id));
-      if (name.includes('amber_t3_generator_purple')) return globalThis.__mockModlock.npcStore.has(704) ? [704] : [];
-      if (name.includes('amber_t3_generator_yellow')) return globalThis.__mockModlock.npcStore.has(705) ? [705] : [];
-      return [];
-    };
-    export const findEntities = (cls) => {
-      globalThis.__mockModlock.entityScanStats.findByClass += 1;
-      if (cls === 'info_super_trooper_spawn') return [14020, 14325];
-      if (cls === 'info_trooper_spawn') return [14053, 14315, 14318, 14319, 14291, 14051];
-      if (cls === 'info_neutral_trooper_camp') return [];
-      if (cls === 'npc_trooper') return [...globalThis.__mockModlock.npcStore.keys()].filter((id) => (id >= 800 && id < 900) || globalThis.__mockModlock.trooperIds.has(id));
-      if (cls === 'npc_trooper_neutral') return [...globalThis.__mockModlock.npcStore.keys()].filter((id) => (id >= 1600 && id < 1700) || globalThis.__mockModlock.neutralIds.has(id));
-      if (cls === 'npc_necro_skele') return [...globalThis.__mockModlock.npcStore.keys()].filter((id) => globalThis.__mockModlock.necroSkeleIds.has(id));
-      if (cls === 'npc_trooper_boss') return globalThis.__mockModlock.npcStore.has(700) ? [700] : [];
-      if (cls === 'npc_boss_tier2') return globalThis.__mockModlock.npcStore.has(701) ? [701] : [];
-      if (cls === 'npc_barrack_boss') return [702, 703].filter((id) => globalThis.__mockModlock.npcStore.has(id));
-      if (cls === 'destroyable_building') return [704, 705].filter((id) => globalThis.__mockModlock.npcStore.has(id));
-      if (cls === 'npc_boss_tier3') return globalThis.__mockModlock.npcStore.has(706) ? [706] : [];
-      if (cls === 'npc_boss_tier3core') return [];
-      if (cls === 'citadel_team_manager') return [710];
-      if (cls === 'trigger_item_shop') return [...globalThis.__mockModlock.shopTriggerIds];
-      return [];
-    };
-    export const createEntity = (opts) => {
-      const ent = globalThis.__mockModlock.allocSpawnEntity();
-      globalThis.__mockModlock.createdEntities.push({
-        entity: ent,
-        designerName: opts.designerName,
-        team: opts.team,
-      });
-      if (opts.designerName === 'trigger_item_shop') {
-        globalThis.__mockModlock.shopTriggerIds.add(ent);
-        const kvModel = opts.keyValues?.find((kv) => kv.key === 'model')?.value?.text ?? '';
-        const kvRadius = opts.keyValues?.find((kv) => kv.key === 'radius')?.value?.number ?? 0;
-        const kvScales = opts.keyValues?.find((kv) => kv.key === 'scales')?.value?.vector ?? { x: 1, y: 1, z: 1 };
-        const fieldSpawnflags = Number(
-          opts.fields?.find(
-            (f) =>
-              f.className === 'CBaseEntity' &&
-              f.field === 'm_spawnflags' &&
-              f.type === 'uint32',
-          )?.value ?? 0,
-        );
-        const mins = kvModel.includes('center_shop_south_trigger')
-          ? { x: -165, y: -150, z: -122 }
-          : kvModel.includes('3568_souls_dealer_shop_trigger')
-            ? { x: -138, y: -138, z: -130 }
-            : { x: 0, y: 0, z: 0 };
-        const maxs = kvModel.includes('center_shop_south_trigger')
-          ? { x: 165, y: 150, z: 122 }
-          : kvModel.includes('3568_souls_dealer_shop_trigger')
-            ? { x: 138, y: 138, z: 130 }
-            : { x: 0, y: 0, z: 0 };
-        globalThis.__mockModlock.shopTriggerBounds.set(ent, {
-          origin: { ...opts.position },
-          scaleVec: { ...kvScales },
-          mins,
-          maxs,
-          model: kvModel,
-          radius: kvRadius,
-          team: opts.team ?? 2,
-          disabled: false,
-          mapEntity: false,
-          spawnflags: fieldSpawnflags,
-        });
-        globalThis.__mockModlock.npcStore.set(ent, {
-          health: 1,
-          maxHealth: 1,
-          team: opts.team ?? 2,
-          position: { ...opts.position },
-        });
-        globalThis.__mockModlock.syncMockShopZone();
-      }
-      return ent;
-    };
-    export const removeEntity = (entity) => {
-      if (globalThis.__mockModlock.shopTriggerBounds.get(entity)?.mapEntity) {
-        return false;
-      }
-      globalThis.__mockModlock.shopTriggerIds.delete(entity);
-      globalThis.__mockModlock.shopTriggerBounds.delete(entity);
-      globalThis.__mockModlock.npcStore.delete(entity);
-      globalThis.__mockModlock.syncMockShopZone();
-      return true;
-    };
-    export const fireInput = (entity, input, value, _activator) => {
-      globalThis.__mockModlock.firedInputs.push({ entity, input });
-      if (globalThis.__mockModlock.shopTriggerIds.has(entity) && input === 'StartTouch') {
-        throw new Error('trigger_item_shop has no input StartTouch');
-      }
-      if (globalThis.__mockModlock.shopTriggerBounds.has(entity)) {
-        const b = globalThis.__mockModlock.shopTriggerBounds.get(entity);
-        if (input === 'Enable') {
-          b.disabled = false;
-          globalThis.__mockModlock.syncMockShopZone();
-        }
-      }
-      if (input === 'SetAbsScale' && value && typeof value.number === 'number') {
-        globalThis.__mockModlock.scaleStore.set(entity, value.number);
-      }
-      if (input === 'SetHealth' && value && typeof value.integer === 'number') {
-        const s = globalThis.__mockModlock.npcStore.get(entity);
-        if (s) s.health = value.integer;
-      }
-      if (input === 'OverrideHealth' && value && typeof value.integer === 'number') {
-        const s = globalThis.__mockModlock.npcStore.get(entity);
-        if (s) s.maxHealth = value.integer;
-      }
-      return true;
-    };
-    export const damage = (opts) => {
-      const def = globalThis.__mockModlock.defenderPlayer;
-      if (opts.victim === def.pawnEntity) {
-        def.health = Math.max(0, def.health - opts.amount);
-        return true;
-      }
-      const s = globalThis.__mockModlock.npcStore.get(opts.victim);
-      if (s) s.health = Math.max(0, s.health - opts.amount);
-      return true;
-    };
-    export const emitSound = (entity, sound) => {
-      globalThis.__mockModlock.emittedSounds.push({ entity, sound });
-      return true;
-    };
-    export const killEntity = (opts) => {
-      const s = globalThis.__mockModlock.npcStore.get(opts.victim);
-      if (s) s.health = 0;
-      globalThis.__mockModlock.lifeStateStore.set(opts.victim, 2);
-      return true;
-    };
-    export const removeEntities = () => 0;
-    export const holdEntityModifier = (entity, modifier, active = true) => {
-      if (entity <= 0) return false;
-      if (modifier.startsWith('td_')) {
-        globalThis.__mockModlock.failedCustomModifiers.push(modifier);
-        return false;
-      }
-      if (entity === 704 || entity === 705) {
-        globalThis.__mockModlock.shrineModifierErrors.push('holdEntityModifier called on Shrine entity ' + entity);
-        return false;
-      }
-      let set = globalThis.__mockModlock.entityModifiers.get(entity);
-      if (!set) {
-        set = new Set();
-        globalThis.__mockModlock.entityModifiers.set(entity, set);
-      }
-      if (active === false) {
-        set.delete(modifier);
-      } else {
-        set.add(modifier);
-        globalThis.__mockModlock.appliedModifiers.push(modifier);
-      }
-      return true;
-    };
-    export const giveEntityModifier = (entity, modifier, _seconds) => {
-      return holdEntityModifier(entity, modifier, true);
-    };
-    export const modifiers = (entity) => {
-      const set = globalThis.__mockModlock.entityModifiers.get(entity);
-      if (!set) return [];
-      return [...set].map((name) => ({
-        name,
-        className: 'CCitadelModifier',
-        caster: 0,
-        ability: 0,
-        age: 0,
-        stacks: 1,
-        maxStacks: 1,
-        team: 2,
-        disabled: false,
-      }));
-    };
-    export const onKill = () => {};
-    export const onAbilityCast = () => {};
-    export const onSpawn = () => {};
-    export const holdModifierState = (entity, state, active) => {
-      globalThis.__mockModlock.heldModifierStates.push({ entity, state, active: active !== false });
-      return true;
-    };
-    export const entityClass = (entity) => {
-      if (entity === 704 || entity === 705) return { className: 'CDestroyableBuilding', designerName: 'destroyable_building' };
-      if ((entity >= 1600 && entity < 1700) || globalThis.__mockModlock.neutralIds.has(entity)) return { className: 'CNPC_TrooperNeutral', designerName: 'npc_trooper_neutral' };
-      if (globalThis.__mockModlock.necroSkeleIds.has(entity)) return { className: 'CNPC_NecroSkele', designerName: 'npc_necro_skele' };
-      return { className: 'CNPC_Trooper', designerName: 'npc_trooper' };
-    };
-    export const moveEntity = (entity, pos) => {
-      const s = globalThis.__mockModlock.npcStore.get(entity);
-      if (s && pos) s.position = { ...pos };
-      const b = globalThis.__mockModlock.shopTriggerBounds.get(entity);
-      // Kinematic VPhysics trigger movement requires spawnflags bit 28 (0x10000000)
-      if (b && pos && (b.spawnflags & 0x10000000) !== 0) {
-        b.origin = { ...pos };
-        globalThis.__mockModlock.syncMockShopZone();
-      }
-      return true;
-    };
-    export const readModifierField = () => undefined;
-    export const entityPosition = (entity) => {
-      const sb = globalThis.__mockModlock.shopTriggerBounds.get(entity);
-      if (sb) {
-        return { position: { ...sb.origin }, facing: { pitch: 0, yaw: 0, roll: 0 }, velocity: { x: 0, y: 0, z: 0 } };
-      }
-      const s = globalThis.__mockModlock.npcStore.get(entity);
-      return s ? { position: s.position, facing: { pitch: 0, yaw: 270, roll: 0 }, velocity: { x: 0, y: 0, z: 0 } } : undefined;
-    };
-    export const readField = (entity, cls, field, type) => {
-      if (field.includes('.')) {
-        throw new Error('Schema error: dotted field path is not supported: ' + field);
-      }
-      if (cls === 'CBaseEntity' && field === 'm_iTeamNum' && type !== 'uint8') {
-        throw new Error('Schema error: CBaseEntity.m_iTeamNum is smaller than its requested type ' + type);
-      }
-      if (cls === 'CBaseEntity' && field === 'm_lifeState' && type !== 'uint8') {
-        throw new Error('Schema error: CBaseEntity.m_lifeState is smaller than its requested type ' + type);
-      }
-      if (cls === 'CNPC_Boss_Tier3' && field === 'm_ePhase' && type !== 'uint32') {
-        throw new Error('Schema error: CNPC_Boss_Tier3.m_ePhase must be uint32, got ' + type);
-      }
-      if (cls === 'CCitadelTeam' && field === 'm_nFlexSlotsUnlocked' && type !== 'uint16') {
-        throw new Error('Schema error: CCitadelTeam.m_nFlexSlotsUnlocked must be uint16, got ' + type);
-      }
-      if (cls === 'CCitadelPlayerPawn' && field === 'm_bInItemShopZone') {
-        if (type !== 'bool') throw new Error('Schema error: CCitadelPlayerPawn.m_bInItemShopZone must be bool, got ' + type);
-        return globalThis.__mockModlock.pawnInShopStore.get(entity) ?? false;
-      }
-      if (entity === 710) {
-        if (cls === 'CBaseEntity' && field === 'm_iTeamNum') return 2;
-        if (cls === 'CCitadelTeam' && field === 'm_nFlexSlotsUnlocked') return globalThis.__mockModlock.teamFlexSlotsStore.get(710) ?? 0;
-      }
-      if (cls === 'CInfoTrooperSpawn' && field === 'm_iLane') {
-        return globalThis.__mockModlock.spawnerLaneStore.get(entity);
-      }
-      if (cls === 'CInfoTrooperSpawn' && field === 'm_bDisableZiplining') {
-        return globalThis.__mockModlock.spawnerDisableZipStore.get(entity) ?? false;
-      }
-      if ([14053, 14315, 14318, 14319].includes(entity)) {
-        if (cls === 'CBaseEntity' && field === 'm_iTeamNum') return 3;
-      }
-      if (entity === 14291) {
-        if (cls === 'CBaseEntity' && field === 'm_iTeamNum') return 2;
-      }
-      if (entity === 14051) {
-        if (cls === 'CBaseEntity' && field === 'm_iTeamNum') return 3;
-      }
-      if (cls === 'CNPC_Boss_Tier3' && field === 'm_ePhase') {
-        return globalThis.__mockModlock.patronPhaseStore.get(entity) ?? 0;
-      }
-      if (cls === 'CGameSceneNode' && field === 'm_flScale') {
-        return globalThis.__mockModlock.scaleStore.get(entity);
-      }
-      if (cls === 'CBaseEntity' && field === 'm_lifeState') {
-        return globalThis.__mockModlock.lifeStateStore.get(entity) ?? 0;
-      }
-      if (cls === 'CModelState' && field === 'm_ModelName') {
-        const sb = globalThis.__mockModlock.shopTriggerBounds.get(entity);
-        if (sb) return '';
-        return globalThis.__mockModlock.modelStore.get(entity);
-      }
-      const shopBound = globalThis.__mockModlock.shopTriggerBounds.get(entity);
-      if (shopBound) {
-        if (cls === 'CBaseEntity' && field === 'm_iTeamNum') {
-          if (type !== 'uint8') throw new Error('Schema error: m_iTeamNum must be uint8, got ' + type);
-          return shopBound.team;
-        }
-        if (cls === 'CBaseTrigger' && field === 'm_bDisabled') {
-          if (type !== 'bool') throw new Error('Schema error: m_bDisabled must be bool, got ' + type);
-          return shopBound.disabled;
-        }
-      }
-      const s = globalThis.__mockModlock.npcStore.get(entity);
-      if (s && cls === 'CBaseEntity') {
-        if (field === 'm_iHealth') return s.health;
-        if (field === 'm_iMaxHealth') return s.maxHealth;
-        if (field === 'm_iTeamNum') return s.team;
-      }
-      return undefined;
-    };
-    export const writeField = (entity, cls, field, type, val) => {
-      if (field.includes('.')) {
-        throw new Error('Schema error: dotted field path is not supported: ' + field);
-      }
-      if (cls === 'CInfoTrooperSpawn' && field === 'm_iLane' && typeof val === 'number') {
-        globalThis.__mockModlock.spawnerLaneStore.set(entity, val);
-      }
-      if (cls === 'CInfoTrooperSpawn' && field === 'm_bDisableZiplining' && typeof val === 'boolean') {
-        globalThis.__mockModlock.spawnerDisableZipStore.set(entity, val);
-      }
-      if (cls === 'CCitadelTeam' && field === 'm_nFlexSlotsUnlocked' && typeof val === 'number') {
-        if (type !== 'uint16') throw new Error('Schema error: m_nFlexSlotsUnlocked must be uint16');
-        globalThis.__mockModlock.teamFlexSlotsStore.set(entity, val);
-      }
-      if (cls === 'CGameSceneNode' && field === 'm_flScale' && typeof val === 'number') {
-        globalThis.__mockModlock.scaleStore.set(entity, val);
-      }
-      if (cls === 'CBaseTrigger' && field === 'm_bDisabled' && typeof val === 'boolean') {
-        const sb = globalThis.__mockModlock.shopTriggerBounds.get(entity);
-        if (sb) {
-          sb.disabled = val;
-          globalThis.__mockModlock.syncMockShopZone();
-        }
-      }
-      if (cls === 'CBaseEntity' && field === 'm_iTeamNum' && typeof val === 'number') {
-        const sb = globalThis.__mockModlock.shopTriggerBounds.get(entity);
-        if (sb) {
-          sb.team = val;
-          globalThis.__mockModlock.syncMockShopZone();
-        }
-      }
-      const s = globalThis.__mockModlock.npcStore.get(entity);
-      if (s && cls === 'CBaseEntity' && typeof val === 'number') {
-        if (field === 'm_iHealth') s.health = val;
-        if (field === 'm_iMaxHealth') s.maxHealth = val;
-      }
-      return true;
-    };
-    export const spawnNpc = (opts) => {
-      if (globalThis.__mockModlock.isVanillaMode() && opts.unit.startsWith('td_')) {
-        return undefined;
-      }
-      const ent = globalThis.__mockModlock.allocSpawnEntity();
-      globalThis.__mockModlock.spawnedTrooperUnits.push(opts.unit);
-      if (opts.className === 'npc_trooper') {
-        globalThis.__mockModlock.trooperIds.add(ent);
-      } else if (opts.className === 'npc_trooper_neutral') {
-        globalThis.__mockModlock.neutralIds.add(ent);
-      } else if (opts.className === 'npc_necro_skele') {
-        globalThis.__mockModlock.necroSkeleIds.add(ent);
-      }
-      const defaultHp = opts.unit === 'trooper_melee' ? (globalThis.__mockModlock.isVanillaMode() ? 400 : 413) : 150;
-      if (opts.unit === 'trooper_melee') {
-        globalThis.__mockModlock.modelStore.set(
-          ent,
-          globalThis.__mockModlock.isVanillaMode()
-            ? 'models/npc_units/trooper/sapphire_trooper_01_melee.vmdl'
-            : 'models/heroes_wip/necro/necro_shambler.vmdl'
-        );
-      } else if (opts.unit === 'npc_necro_skele') {
-        globalThis.__mockModlock.modelStore.set(ent, 'models/heroes_wip/necro/necro_shambler.vmdl');
-      }
-      globalThis.__mockModlock.npcStore.set(ent, {
-        health: opts.health ?? defaultHp,
-        maxHealth: opts.maxHealth ?? opts.health ?? defaultHp,
-        team: opts.team,
-        position: { ...opts.position },
-      });
-      return new globalThis.__mockModlock.Npc(ent);
-    };
-    export const serverCommand = (cmd) => {
-      globalThis.__mockModlock.executedServerCommands.push(cmd);
-      return true;
-    };
-    export const toast = () => {};
-    export const log = () => true;
-  `
-  ;(globalThis as Record<string, unknown>).__mockModlock = {
-    Npc: MockNpc,
-    ProbeRun: MockProbeRun,
-    MockPlayer,
-    defenderPlayer,
+describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Host)', () => {
+  const {
     npcStore,
+    patronPhaseStore,
+    seedMockTeam2Structures,
+    appliedModifiers,
+    entityModifiers,
+    shrineModifierErrors,
+    activeBossBots,
+    refreshedAbilities,
+    heldModifierStates,
     executedServerCommands,
     spawnedTrooperUnits,
     emittedSounds,
-    trooperIds,
-    neutralIds,
-    necroSkeleIds,
-    isVanillaMode: () => mockVanillaMode,
-    getReportScoreResult: () => mockReportScoreResult,
-    modelStore,
-    allocSpawnEntity: () => ++nextSpawnedEntityId,
-    activeBossBots,
     firedInputs,
     scaleStore,
     lifeStateStore,
-    patronPhaseStore,
+    modelStore,
     spawnerLaneStore,
     spawnerDisableZipStore,
     teamFlexSlotsStore,
     mockSettings,
-    heldModifierStates,
+    trooperIds,
+    neutralIds,
+    necroSkeleIds,
+    failedCustomModifiers,
+    givenItems,
     reportedScores,
     addedMetrics,
     createdEntities,
     shopTriggerIds,
     shopTriggerBounds,
-    seedDefaultMapShop,
-    syncMockShopZone,
     pawnInShopStore,
+    seedDefaultMapShop,
     mockBoardPages,
     mockBotPlayers,
-    entityModifiers,
-    shrineModifierErrors,
-    appliedModifiers,
-    failedCustomModifiers,
-    entityScanStats: { findByClass: 0, findByName: 0 },
-  }
+    MockPlayer,
+    defenderPlayer,
+    entityScanStats,
+  } = mockHost
 
-  registerHooks({
-    resolve(specifier, context, nextResolve) {
-      if (specifier === 'modlock') {
-        return { url: 'modlock:mock', shortCircuit: true }
-      }
-      if (
-        (specifier.startsWith('./') || specifier.startsWith('../')) &&
-        !specifier.endsWith('.ts') &&
-        !specifier.endsWith('.tsx')
-      ) {
-        return nextResolve(`${specifier}.ts`, context)
-      }
-      return nextResolve(specifier, context)
-    },
-    load(url, context, nextLoad) {
-      if (url === 'modlock:mock') {
-        return {
-          format: 'module',
-          source: mockModlockSource,
-          shortCircuit: true,
-        }
-      }
-      return nextLoad(url, context)
-    },
+  beforeEach(() => {
+    resetMockHost()
   })
-
-  const { GuardianManager } = await import('../src/guardian.ts')
-  const { LeaderboardManager } = await import('../src/leaderboard.ts')
-  const { WaveManager } = await import('../src/wave.ts')
-  const { TomeManager } = await import('../src/tomes.ts')
-  const { TdProbe } = await import('../src/probe.ts')
 
   it('drives GuardianManager, WaveManager, TomeManager, and TdProbe through all Probe steps (Boss Colossus scaling, Boss combat AI, Tome scaling, and Multi-Stage Base Progression) to PASS', () => {
     appliedModifiers.length = 0
     entityModifiers.clear()
     shrineModifierErrors.length = 0
     const guardian = new GuardianManager()
-    const tomes = new TomeManager()
+    const tomes = new TomeManager({ minorTomePool: MINOR_TOME_POOL, majorBoonPool: MAJOR_BOON_POOL })
     const waves = new WaveManager((w) => tomes.offerMajorBoonForWave(w))
     const probe = new TdProbe()
 
@@ -2184,12 +901,12 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     waves.reset(0)
     waves.configureWorldForSingleLaneDefense(guardian)
 
-    for (let step = 1; step <= 80 && !probePassed; step++) {
+    for (let step = 1; step <= 80 && !mockHost.probePassed; step++) {
       probe.tick(step * 0.25, waves, guardian, tomes)
-      assert.equal(probeFailedReason, '', `TdProbe failed: ${probeFailedReason}`)
+      assert.equal(mockHost.probeFailedReason, '', `TdProbe failed: ${mockHost.probeFailedReason}`)
     }
 
-    assert.equal(probePassed, true, 'Expected TdProbe to reach PASS state')
+    assert.equal(mockHost.probePassed, true, 'Expected TdProbe to reach PASS state')
     assert.ok(
       appliedModifiers.includes('upgrade_colossus/modifier_colossus_active'),
       'Expected stock Colossus modifier to be applied to Raid Bosses',
@@ -2376,6 +1093,46 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     defenderPlayer.hero = 1
   })
 
+  it('holds Wave 1 while Steam GC auto-spawns a roster hero behind an unconfirmed initial HeroPickerModal', () => {
+    const awaitingSlots = new Set<number>([0])
+    const waves = new WaveManager(undefined, undefined, (slot) => awaitingSlots.has(slot))
+    waves.reset(0)
+
+    // Steam GC auto-spawns hero_yamato (id 27) on Team 2 while slot 0 is still choosing in HeroPickerModal
+    defenderPlayer.hero = 27
+    waves.tick(15, true)
+    assert.equal(waves.wave, 0)
+    assert.equal(waves.waitingForDefenderHero, true)
+    assert.equal(waves.nextWaveTime, 20)
+
+    // Player confirms/picks a hero -> HeroPicker closes and 5s Wave 1 countdown starts
+    awaitingSlots.delete(0)
+    waves.tick(16, true)
+    assert.equal(waves.waitingForDefenderHero, false)
+    assert.equal(waves.wave, 0)
+
+    waves.tick(20, true)
+    assert.equal(waves.wave, 1)
+
+    const handoffRaw = serializeTdHandoff({
+      version: 1,
+      wave: 0,
+      nextWaveTime: 20,
+      matchState: 'active',
+      guardianUpgradeLevel: 0,
+      guardianBonusMaxHp: 0,
+      scaledCreeps: [],
+      rewardedCreeps: [],
+      playerTomes: {},
+      playerKills: {},
+      awaitingHeroPickSlots: [0, 2],
+    })
+    const handoffRestored = deserializeTdHandoff(handoffRaw)
+    assert.deepEqual(handoffRestored?.awaitingHeroPickSlots, [0, 2])
+
+    defenderPlayer.hero = 1
+  })
+
   it('skips placeholder Boss pawn (hero === 0), configures Colossus scale + HP bar visibility + refreshed abilities, and awards Major Boon ONLY on Boss kill (#13, #14, #15)', () => {
     appliedModifiers.length = 0
     givenItems.length = 0
@@ -2400,7 +1157,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     const boss = waves.activeBosses[0]
 
     // Simulate 1-frame placeholder pawn right after addBot (hero=0, abilities=[], pawnEntity=900)
-    const botMock = boss.bot as unknown as MockPlayer
+    const botMock = boss.bot as unknown as InstanceType<typeof MockPlayer>
     botMock.hero = 0
     botMock.pawnEntity = 900
     botMock.abilityList = []
@@ -2684,7 +1441,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   })
 
   it('runs cleanly on Modlock servers (Colossus Bosses, Tome scaling, and zero missing-modifier spam)', () => {
-    mockVanillaMode = true
+    mockHost.vanillaMode = true
     try {
       npcStore.clear()
       trooperIds.clear()
@@ -2714,11 +1471,12 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       })
 
       const guardian = new GuardianManager()
-      const tomes = new TomeManager()
+      const tomes = new TomeManager({ minorTomePool: MINOR_TOME_POOL, majorBoonPool: MAJOR_BOON_POOL })
       const waves = new WaveManager((w) => tomes.offerMajorBoonForWave(w))
       guardian.reset()
       tomes.reset()
       waves.reset(0)
+      waves.configureWorldForSingleLaneDefense(guardian)
 
       // Spawn Wave 5 (Colossus Raid Boss, zero wave neutrals in v0.6.0)
       waves.wave = 4
@@ -2727,7 +1485,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
 
       const boss = waves.activeBosses[0]
       assert.ok(boss, 'Expected Wave 5 Boss to spawn')
-      const botMock = boss.bot as unknown as MockPlayer
+      const botMock = boss.bot as unknown as InstanceType<typeof MockPlayer>
       botMock.hero = 6
       botMock.health = 700
       botMock.maxHealth = 700
@@ -2796,16 +1554,16 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
       assert.equal(spiritCast?.amount, 136, 'Expected 6 Spirit Tomes (+36%) to boost ability damage to 136')
 
       // Verify TdProbe passes all steps end-to-end on vanilla mock!
-      probePassed = false
-      probeFailedReason = ''
+      mockHost.probePassed = false
+      mockHost.probeFailedReason = ''
       const vanillaProbe = new TdProbe()
-      for (let step = 1; step <= 90 && !probePassed; step++) {
+      for (let step = 1; step <= 90 && !mockHost.probePassed; step++) {
         vanillaProbe.tick(100 + step * 0.25, waves, guardian, tomes)
-        assert.equal(probeFailedReason, '', `Vanilla TdProbe failed: ${probeFailedReason}`)
+        assert.equal(mockHost.probeFailedReason, '', `Vanilla TdProbe failed: ${mockHost.probeFailedReason}`)
       }
-      assert.equal(probePassed, true, 'Expected TdProbe to reach PASS in stock Modlock mode')
+      assert.equal(mockHost.probePassed, true, 'Expected TdProbe to reach PASS in stock Modlock mode')
     } finally {
-      mockVanillaMode = false
+      mockHost.vanillaMode = false
     }
   })
 
@@ -2825,7 +1583,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.equal(guardian.currentStage, 'guardian')
     assert.ok(guardian.entity > 0)
 
-    const scanStats = (globalThis as { __mockModlock: { entityScanStats: { findByClass: number; findByName: number } } })
+    const scanStats = (globalThis as unknown as { __mockModlock: { entityScanStats: { findByClass: number; findByName: number } } })
       .__mockModlock.entityScanStats
     scanStats.findByClass = 0
     scanStats.findByName = 0
@@ -2901,7 +1659,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
   })
 
   it('scales Minor Tome and Major Boon rewards with wave number and respects configurable tome_scaling (#30)', () => {
-    const tomes = new TomeManager()
+    const tomes = new TomeManager({ minorTomePool: MINOR_TOME_POOL, majorBoonPool: MAJOR_BOON_POOL })
     const guardian = new GuardianManager()
     guardian.reset()
     tomes.reset()
@@ -2957,7 +1715,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     })
 
     const leaderboard = new LeaderboardManager()
-    const tomes = new TomeManager()
+    const tomes = new TomeManager({ minorTomePool: MINOR_TOME_POOL, majorBoonPool: MAJOR_BOON_POOL })
     tomes.reset()
     for (let i = 0; i < 340; i++) {
       tomes.playerKills.set(defenderPlayer.slot, i + 1)
@@ -3167,7 +1925,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     npcStore.set(706, { health: 12000, maxHealth: 12000, team: 2, position: { x: 0, y: -8800, z: 384 } })
 
     const guardian = new GuardianManager()
-    const tomes = new TomeManager()
+    const tomes = new TomeManager({ minorTomePool: MINOR_TOME_POOL, majorBoonPool: MAJOR_BOON_POOL })
     const waves = new WaveManager()
     guardian.reset()
     tomes.reset()
@@ -3288,7 +2046,7 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
 
   it('reconciles WaveManager, TomeManager, and LeaderboardManager caches across server clock backsteps (v0.7.1)', () => {
     const waves = new WaveManager()
-    const tomes = new TomeManager()
+    const tomes = new TomeManager({ minorTomePool: MINOR_TOME_POOL, majorBoonPool: MAJOR_BOON_POOL })
     const lb = new LeaderboardManager()
 
     // 1. WaveManager: warm server clock at 200s resets backward to 0.5s
@@ -3334,20 +2092,20 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
 
   it('captures reportScore() host acceptance state across checkpoints, /restarttd, idle reset, and handoff (v0.7.5)', () => {
     reportedScores.length = 0
-    mockReportScoreResult = true
+    mockHost.reportScoreResult = true
 
     const lb = new LeaderboardManager()
     assert.equal(lb.lastReportAccepted, undefined)
     assert.equal(lb.acceptedReportsCount, 0)
 
     // When host rejects/has no `scores` service (`reportScore` returns false), surface false without incrementing acceptedReportsCount
-    mockReportScoreResult = false
+    mockHost.reportScoreResult = false
     assert.equal(lb.checkpointPlayer(defenderPlayer as never, 2, 12), true)
     assert.equal(lb.lastReportAccepted, false)
     assert.equal(lb.acceptedReportsCount, 0)
 
     // When host accepts `scores` RPC (`reportScore` returns true), update lastReportAccepted=true & increment acceptedReportsCount
-    mockReportScoreResult = true
+    mockHost.reportScoreResult = true
     assert.equal(lb.checkpointPlayer(defenderPlayer as never, 3, 25), true)
     assert.equal(lb.lastReportAccepted, true)
     assert.equal(lb.acceptedReportsCount, 1)
@@ -3409,11 +2167,11 @@ describe('Tier 1B — Full Manager & TdProbe State Machine Integration (Mock Hos
     assert.equal(restoredLb.acceptedReportsCount, 0)
     assert.equal(restoredLb.sessionBestBySlot.size, 0)
 
-    mockReportScoreResult = true
+    mockHost.reportScoreResult = true
   })
 })
 
-describe('Tier 5 — HUD Stability CVars & Legendary Armory', () => {
+describe('Tier 5 & Tier 6 — TD CVars, Stage Spawns, Fortify & Run Handoff', () => {
   it('configures fast pregame exit and arena isolation without hero-testing HUD collapse', () => {
     const cvarMap = new Map<string, string | number>(TD_SERVER_CVARS)
     assert.equal(cvarMap.get('citadel_pregame_wait_duration'), 1)
@@ -3450,84 +2208,6 @@ describe('Tier 5 — HUD Stability CVars & Legendary Armory', () => {
     assert.equal(getDefenderStageSpawnOrigin('patron_stage2').y, -7200)
   })
 
-  it('frees HUD cursor when Legendary Armory is open without stealing cursor for Boons', () => {
-    assert.equal(
-      shouldFreeHudCursor({
-        needsHeroPick: false,
-        hasPendingBoons: true,
-        legendaryShopOpen: false,
-        matchState: 'active',
-      }),
-      false,
-    )
-    assert.equal(
-      shouldFreeHudCursor({
-        needsHeroPick: false,
-        hasPendingBoons: false,
-        legendaryShopOpen: true,
-        matchState: 'active',
-      }),
-      true,
-    )
-    assert.equal(
-      shouldFreeHudCursor({
-        needsHeroPick: false,
-        hasPendingBoons: false,
-        legendaryShopOpen: false,
-        leaderboardOpen: true,
-        matchState: 'active',
-      }),
-      true,
-    )
-  })
-
-  it('formats official Tier-5 Legendary item titles and validates Soul/ownership rules (#26)', () => {
-    assert.equal(formatItemDisplayTitle('upgrade_celestial_guidance'), 'Celestial Blessing')
-    assert.equal(formatItemDisplayTitle('upgrade_eldritch_shot'), 'Haunting Shot')
-    assert.equal(formatItemDisplayTitle('upgrade_icarus_wings'), 'Seraphim Wings')
-    assert.equal(formatItemDisplayTitle('upgrade_infinite_rounds'), 'Infinite Rounds')
-    assert.equal(formatItemDisplayTitle('upgrade_mystical_piano'), 'Mystical Piano')
-    assert.equal(formatItemDisplayTitle('upgrade_nullification_aura'), 'Nullification Burst')
-    assert.equal(formatItemDisplayTitle('upgrade_omnicharge_pendant'), 'Omnicharge Signet')
-    assert.equal(formatItemDisplayTitle('upgrade_prism_blast'), 'Prism Blast')
-    assert.equal(formatItemDisplayTitle('upgrade_shrink_ray'), 'Shrink Ray')
-    assert.equal(Object.keys(ITEM_DISPLAY_TITLES).length, 9)
-
-    const dead = evaluateLegendaryPurchase({
-      hasLivingHero: false,
-      souls: 20_000,
-      itemName: 'upgrade_eldritch_shot',
-      ownedItemNames: [],
-    })
-    assert.equal(dead.ok, false)
-
-    const duplicate = evaluateLegendaryPurchase({
-      hasLivingHero: true,
-      souls: 20_000,
-      itemName: 'upgrade_eldritch_shot',
-      ownedItemNames: ['upgrade_eldritch_shot'],
-    })
-    assert.equal(duplicate.ok, false)
-
-    const broke = evaluateLegendaryPurchase({
-      hasLivingHero: true,
-      souls: LEGENDARY_ITEM_COST_SOULS - 1,
-      itemName: 'upgrade_eldritch_shot',
-      ownedItemNames: [],
-    })
-    assert.equal(broke.ok, false)
-
-    const valid = evaluateLegendaryPurchase({
-      hasLivingHero: true,
-      souls: LEGENDARY_ITEM_COST_SOULS,
-      itemName: 'upgrade_eldritch_shot',
-      ownedItemNames: [],
-    })
-    assert.deepEqual(valid, { ok: true, cost: LEGENDARY_ITEM_COST_SOULS })
-  })
-})
-
-describe('Tier 6 — Playtest Fixes: 5s Respawn, Below-Map Recovery, 12 Slots & Scaled Tome Math (#25, #29, #30)', () => {
   it('locks fixed 5s respawn timer & 12 co-op player slots in TD_SERVER_CVARS (#25, #29)', () => {
     const cvarMap = new Map<string, string | number>(TD_SERVER_CVARS)
     assert.equal(cvarMap.get('citadel_player_override_spawn_time'), HERO_RESPAWN_TIME_SECONDS)
@@ -3537,83 +2217,6 @@ describe('Tier 6 — Playtest Fixes: 5s Respawn, Below-Map Recovery, 12 Slots & 
     assert.equal(cvarMap.get('citadel_team_size'), MAX_COOP_DEFENDER_PLAYERS)
     assert.equal(cvarMap.get('citadel_spawn_combine_only'), 1)
     assert.equal(MAX_COOP_DEFENDER_PLAYERS, 12)
-  })
-
-  it('triggers respawn at exactly 5s and catches below-lane and below-courtyard underground positions (#25)', () => {
-    // Alive -> cleared state
-    const aliveEval = evaluateDefenderRespawnDue({
-      alive: true,
-      hasHero: true,
-      nowSeconds: 10,
-      diedAtSeconds: 4,
-      lastRespawnAttemptAt: undefined,
-    })
-    assert.equal(aliveEval.shouldCallRespawn, false)
-    assert.equal(aliveEval.nextDiedAtSeconds, undefined)
-
-    // Dies at t = 20 -> at 24.9s still waiting, at 25.0s fires respawn, then throttles 0.5s
-    const d0 = evaluateDefenderRespawnDue({
-      alive: false,
-      hasHero: true,
-      nowSeconds: 20,
-      diedAtSeconds: undefined,
-      lastRespawnAttemptAt: undefined,
-    })
-    assert.equal(d0.nextDiedAtSeconds, 20)
-    assert.equal(d0.shouldCallRespawn, false)
-
-    const dWait = evaluateDefenderRespawnDue({
-      alive: false,
-      hasHero: true,
-      nowSeconds: 24.9,
-      diedAtSeconds: d0.nextDiedAtSeconds,
-      lastRespawnAttemptAt: d0.nextLastRespawnAttemptAt,
-    })
-    assert.equal(dWait.shouldCallRespawn, false)
-
-    const dDue = evaluateDefenderRespawnDue({
-      alive: false,
-      hasHero: true,
-      nowSeconds: 25.0,
-      diedAtSeconds: dWait.nextDiedAtSeconds,
-      lastRespawnAttemptAt: dWait.nextLastRespawnAttemptAt,
-    })
-    assert.equal(dDue.shouldCallRespawn, true)
-    assert.equal(dDue.nextLastRespawnAttemptAt, 25.0)
-
-    const dThrottle = evaluateDefenderRespawnDue({
-      alive: false,
-      hasHero: true,
-      nowSeconds: 25.25,
-      diedAtSeconds: dDue.nextDiedAtSeconds,
-      lastRespawnAttemptAt: dDue.nextLastRespawnAttemptAt,
-    })
-    assert.equal(dThrottle.shouldCallRespawn, false)
-
-    // Playable Center Lane street, central staircase dip, Courtyard, and Patron Pit stay allowed
-    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: 0, y: -1950, z: 396 }), false)
-    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: -112, y: -296, z: 256 }), false)
-    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: -1280, y: -6850, z: 654 }), false)
-    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: -1280, y: -8034, z: 632 }), false)
-
-    // Below street / below Courtyard roof / negative map Z are immediately caught for rescue
-    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: 0, y: -1950, z: 120 }), true)
-    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: -1280, y: -7000, z: 420 }), true)
-    assert.equal(isDefenderOutOfBoundsOrBelowMap({ x: -1280, y: -10000, z: 600 }), true)
-  })
-
-  it('computes pure Tome wave multipliers and formats scaled Minor/Major labels (#30)', () => {
-    assert.equal(parseTomeGrowthPerWave(undefined), 0.06)
-    assert.equal(parseTomeGrowthPerWave('0'), 0)
-    assert.equal(parseTomeGrowthPerWave('0.10'), 0.1)
-    assert.equal(parseTomeGrowthPerWave('10'), 0.1)
-    assert.equal(computeTomeWaveMultiplier(1, 0.06), 1)
-    assert.equal(computeTomeWaveMultiplier(21, 0.05), 2)
-    assert.equal(computeTomeWaveMultiplier(43, 0.06), 3.52)
-    assert.equal(formatTomeCountDisplay(3), '3')
-    assert.equal(formatTomeCountDisplay(2.600001), '2.6')
-    assert.ok(formatScaledMajorBoonSubtitle(MAJOR_BOON_POOL[0], 2).length > 0)
-    assert.ok(formatScaledMinorTomeDescription(MINOR_TOME_POOL[0], 2).includes('+16 Spirit Power'))
   })
 
   it('evaluates leaderboard run eligibility and round-trips run state through TdHandoffState', () => {
@@ -3683,196 +2286,7 @@ describe('Tier 6 — Playtest Fixes: 5s Respawn, Below-Map Recovery, 12 Slots & 
     assert.deepEqual(restored?.runSubmittedSlots, [0])
   })
 
-  it('disables sv_cheats and dev commands by default, enables dev commands only with --arg dev + developer role, and protects active co-op matches from mid-run restarts', () => {
-    const cvarMap = new Map<string, string | number>(TD_SERVER_CVARS)
-    assert.equal(cvarMap.get('sv_cheats'), 0)
-    assert.deepEqual(DEV_COMMAND_NAMES, [
-      'skipwave',
-      'boss',
-      'granttome',
-      'tomescale',
-      'souls',
-    ])
-
-    assert.equal(isLocalDevModeArgs([]), false)
-    assert.equal(isLocalDevModeArgs(['probe']), false)
-    assert.equal(isLocalDevModeArgs(['dev']), true)
-    assert.equal(isLocalDevModeArgs(['probe', 'DEV']), true)
-
-    assert.equal(
-      canExecuteDevCommand({
-        devModeEnabled: false,
-        isBot: false,
-        roles: ['developer', 'tester'],
-      }),
-      false,
-    )
-    assert.equal(
-      canExecuteDevCommand({
-        devModeEnabled: true,
-        isBot: true,
-        roles: ['developer'],
-      }),
-      false,
-    )
-    assert.equal(
-      canExecuteDevCommand({
-        devModeEnabled: true,
-        isBot: false,
-        roles: ['tester'],
-      }),
-      false,
-    )
-    assert.equal(
-      canExecuteDevCommand({
-        devModeEnabled: true,
-        isBot: false,
-        roles: ['developer'],
-      }),
-      true,
-    )
-
-    assert.equal(
-      canPlayerRestartActiveMatch({
-        matchState: 'active',
-        humanPlayerCount: 2,
-        isLocalDevPlayer: false,
-      }),
-      false,
-    )
-    assert.equal(
-      canPlayerRestartActiveMatch({
-        matchState: 'active',
-        humanPlayerCount: 1,
-        isLocalDevPlayer: false,
-      }),
-      true,
-    )
-    assert.equal(
-      canPlayerRestartActiveMatch({
-        matchState: 'defeat',
-        humanPlayerCount: 4,
-        isLocalDevPlayer: false,
-      }),
-      true,
-    )
-    assert.equal(
-      canPlayerRestartActiveMatch({
-        matchState: 'active',
-        humanPlayerCount: 4,
-        isLocalDevPlayer: true,
-      }),
-      true,
-    )
-  })
-
-  it('formats Souls and Match Clock deterministically without toLocaleString and throttles HUD relay pushes (#32)', () => {
-    assert.equal(formatSoulsCount(0), '0')
-    assert.equal(formatSoulsCount(9600), '9,600')
-    assert.equal(formatSoulsCount(1234567), '1,234,567')
-    assert.equal(formatSoulsCount(-1250), '-1,250')
-
-    assert.equal(formatMatchClock(0), '00:00')
-    assert.equal(formatMatchClock(65), '01:05')
-    assert.equal(formatMatchClock(3661), '1:01:01')
-
-    // First render pushes immediately
-    assert.equal(
-      shouldPushHudUpdate({
-        lastSig: undefined,
-        nextSig: '0;1',
-        lastModalSig: undefined,
-        nextModalSig: 'm0',
-        nowSeconds: 1,
-        lastSentAtSeconds: -999,
-      }),
-      true,
-    )
-
-    // Identical sig within same second is skipped
-    assert.equal(
-      shouldPushHudUpdate({
-        lastSig: '10;1;500',
-        nextSig: '10;1;500',
-        lastModalSig: 'm0',
-        nextModalSig: 'm0',
-        nowSeconds: 10.25,
-        lastSentAtSeconds: 10.0,
-      }),
-      false,
-    )
-
-    // Rapid combat damage changes (< 0.5s since last send) are capped to <= 2 Hz unless modal changed
-    assert.equal(
-      shouldPushHudUpdate({
-        lastSig: '10;1;500',
-        nextSig: '10;1;450',
-        lastModalSig: 'm0',
-        nextModalSig: 'm0',
-        nowSeconds: 10.25,
-        lastSentAtSeconds: 10.0,
-      }),
-      false,
-    )
-    assert.equal(
-      shouldPushHudUpdate({
-        lastSig: '10;1;500',
-        nextSig: '10;1;450',
-        lastModalSig: 'm0',
-        nextModalSig: 'm0',
-        nowSeconds: 10.5,
-        lastSentAtSeconds: 10.0,
-      }),
-      true,
-    )
-
-    // Modal state changes (e.g. opening Boon Picker or Armory) bypass throttle immediately
-    assert.equal(
-      shouldPushHudUpdate({
-        lastSig: '10;1;500',
-        nextSig: '10;1;500;boon',
-        lastModalSig: 'm0',
-        nextModalSig: 'm1',
-        nowSeconds: 10.1,
-        lastSentAtSeconds: 10.0,
-      }),
-      true,
-    )
-
-    // Pure checkpoint evaluation skips Wave 1 / 0 kills only when requireProgressOnWave1=true
-    assert.equal(
-      evaluateLeaderboardCheckpoint({
-        wave: 1,
-        kills: 0,
-        rankedEligible: true,
-        isProbeMode: false,
-        requireProgressOnWave1: true,
-      }).eligible,
-      false,
-    )
-    assert.deepEqual(
-      evaluateLeaderboardCheckpoint({
-        wave: 4,
-        kills: 62,
-        rankedEligible: true,
-        isProbeMode: false,
-        prevBest: { wave: 3, kills: 40 },
-        prevReportedKills: 40,
-      }),
-      {
-        eligible: true,
-        shouldReportWave: true,
-        waveScore: 4,
-        safeKills: 62,
-        tiebreak: -62,
-        creepsDelta: 22,
-      },
-    )
-  })
-})
-
-describe('Tier 3 — Modlock v0.1.83 Entity Modifiers, onKill & onAbilityCast', () => {
-  it('decomposes structure fortify and hero Tome bonuses onto binary C++ entity modifier plans without double-multiplying fire rate', () => {
+  it('maps Guardian fortify levels onto expected C++ entity modifier sets', () => {
     assert.deepEqual(getStructureFortifyEntityModifiers(0), [])
     assert.deepEqual(getStructureFortifyEntityModifiers(1), [
       FIRE_RATE_ENTITY_MODIFIERS[0].modifier,
@@ -3884,418 +2298,5 @@ describe('Tier 3 — Modlock v0.1.83 Entity Modifiers, onKill & onAbilityCast', 
       getStructureFortifyEntityModifiers(12).length,
       FIRE_RATE_ENTITY_MODIFIERS.length + 1,
     )
-    assert.deepEqual(decomposeBinaryEntityModifiers(200, CLIP_SIZE_ENTITY_MODIFIERS), [
-      ...CLIP_SIZE_ENTITY_MODIFIERS.map((t) => t.modifier),
-    ])
-
-    const heroPlan = getHeroTomeEntityModifierPlan({
-      weapon: 1,
-      firerate: 1,
-      spirit: 1,
-    })
-    assert.deepEqual(heroPlan, [
-      FIRE_RATE_ENTITY_MODIFIERS[0].modifier,
-      CLIP_SIZE_ENTITY_MODIFIERS[0].modifier,
-      HERO_SPIRIT_ENTITY_MODIFIER,
-    ])
-
-    assert.equal(computeResidualWeaponDamageMult({ weapon: 3, firerate: 4, omni: 0 }), 1.3)
-    assert.equal(computeResidualWeaponDamageMult({ weapon: 2, firerate: 5, omni: 2 }), 1.3)
-
-    // Differential syncEntityModifierSet issues 0 calls at empty/unchanged state and toggles cleanly
-    const calls: Array<{ entity: number; mod: string; active: boolean }> = []
-    const store = new Map<number, Set<string>>()
-    const hold = (entity: number, mod: string, active = true) => {
-      calls.push({ entity, mod, active })
-      return true
-    }
-    assert.equal(syncEntityModifierSet(10, [], store, hold), false)
-    assert.equal(calls.length, 0)
-    assert.equal(
-      syncEntityModifierSet(10, ['m_a', 'm_b'], store, hold),
-      true,
-    )
-    assert.equal(calls.length, 2)
-    assert.equal(
-      syncEntityModifierSet(10, ['m_a', 'm_b'], store, hold),
-      false,
-    )
-    assert.equal(calls.length, 2)
-    assert.equal(
-      syncEntityModifierSet(10, ['m_a', 'm_c'], store, hold),
-      true,
-    )
-    assert.deepEqual(calls.slice(2), [
-      { entity: 10, mod: 'm_b', active: false },
-      { entity: 10, mod: 'm_c', active: true },
-    ])
   })
 })
-
-describe('Hyperline Dedicated Server Clock Backsteps & Leaderboard Copy (v0.7.1)', () => {
-  it('detects backward server clock jumps and self-heals HUD push gating, respawn timers, and shutdown watches', () => {
-    assert.equal(hasClockSteppedBackward(180.0, 0.015), true)
-    assert.equal(hasClockSteppedBackward(10.0, 10.0), false)
-    assert.equal(hasClockSteppedBackward(10.0, 9.98), false)
-    assert.equal(hasClockSteppedBackward(10.0, 9.5), true)
-
-    // Warm dedicated server reset: HUD previously stamped at t=180s, clock resets to t=0.015s
-    assert.equal(
-      shouldPushHudUpdate({
-        lastSig: '1;0;5;0',
-        nextSig: '1;0;5;0',
-        lastModalSig: 'm0',
-        nextModalSig: 'm0',
-        nowSeconds: 0.015,
-        lastSentAtSeconds: 180.0,
-      }),
-      true,
-    )
-
-    // Defender died at t=180s, then clock jumped back to t=1.0s -> reclamp instead of locking out respawn for 185s
-    const respawnReset = evaluateDefenderRespawnDue({
-      alive: false,
-      hasHero: true,
-      nowSeconds: 1.0,
-      diedAtSeconds: 180.0,
-      lastRespawnAttemptAt: 180.0,
-    })
-    assert.equal(respawnReset.nextDiedAtSeconds, 1.0)
-    assert.equal(respawnReset.shouldCallRespawn, false)
-    const respawnAfter5s = evaluateDefenderRespawnDue({
-      alive: false,
-      hasHero: true,
-      nowSeconds: 6.0,
-      diedAtSeconds: respawnReset.nextDiedAtSeconds,
-      lastRespawnAttemptAt: respawnReset.nextLastRespawnAttemptAt,
-    })
-    assert.equal(respawnAfter5s.shouldCallRespawn, true)
-
-    // Empty server watch timer stamped at 180s reclamps on clock drop to 0.5s:
-    // hosted mode (default) resets match once 3s later without calling quit;
-    // local --arg dev mode (`allowProcessQuit = true`) quits once 3s later.
-    const emptyReset = evaluateEmptyServerShutdown(
-      { hasSeenHuman: true, emptySinceSeconds: 180.0, quitIssued: false },
-      0,
-      0.5,
-      false,
-    )
-    assert.equal(emptyReset.shouldQuit, false)
-    assert.equal(emptyReset.shouldResetMatch, false)
-    assert.equal(emptyReset.nextState.emptySinceSeconds, 0.5)
-    const emptyHostedDue = evaluateEmptyServerShutdown(emptyReset.nextState, 0, 3.6, false)
-    assert.equal(emptyHostedDue.shouldQuit, false)
-    assert.equal(emptyHostedDue.shouldResetMatch, true)
-    assert.equal(emptyHostedDue.nextState.hasSeenHuman, false)
-
-    const emptyDevDue = evaluateEmptyServerShutdown(
-      emptyReset.nextState,
-      0,
-      3.6,
-      false,
-      EMPTY_SERVER_SHUTDOWN_DELAY_SECONDS,
-      true,
-    )
-    assert.equal(emptyDevDue.shouldQuit, true)
-    assert.equal(emptyDevDue.shouldResetMatch, false)
-  })
-
-  it('formats accurate LeaderboardModal subtitles and unavailable/acceptance copy without mislabeling hosted servers (v0.7.1, v0.7.5)', () => {
-    const rankedPendingSubtitle = getLeaderboardSubtitleCopy({ rankedEligible: true })
-    assert.ok(rankedPendingSubtitle.includes('Ranked Run Active'))
-    assert.ok(rankedPendingSubtitle.includes('Wave 2+ or 1+ kill'))
-    assert.equal(rankedPendingSubtitle.includes('Defeat or Restart (Wave 2+)'), false)
-
-    const rankedAcceptedSubtitle = getLeaderboardSubtitleCopy({
-      rankedEligible: true,
-      lastReportAccepted: true,
-      acceptedReportsCount: 3,
-    })
-    assert.ok(rankedAcceptedSubtitle.includes('Server accepted 3 score checkpoints'))
-
-    const rankedRejectedSubtitle = getLeaderboardSubtitleCopy({
-      rankedEligible: true,
-      lastReportAccepted: false,
-    })
-    assert.ok(rankedRejectedSubtitle.includes('Host scores service inactive'))
-
-    const unrankedSubtitle = getLeaderboardSubtitleCopy({
-      rankedEligible: false,
-      disqualifyReason: '--arg dev',
-    })
-    assert.ok(unrankedSubtitle.includes('Unranked'))
-    assert.ok(unrankedSubtitle.includes('--arg dev'))
-
-    // Hosted Hyperline server across all 3 `lastReportAccepted` states must NEVER claim "Local Dev Server"
-    const hostedPending = getLeaderboardUnavailableCopy({
-      isLocalDev: false,
-      currentWave: 1,
-      currentKills: 0,
-    })
-    assert.equal(hostedPending.title.includes('Local Dev'), false)
-    assert.ok(hostedPending.detail.includes('Reach Wave 2'))
-
-    const hostedAccepted = getLeaderboardUnavailableCopy({
-      isLocalDev: false,
-      currentWave: 4,
-      currentKills: 37,
-      sessionBest: { wave: 6, kills: 72 },
-      lastReportAccepted: true,
-      acceptedReportsCount: 2,
-    })
-    assert.equal(hostedAccepted.title.includes('Local Dev'), false)
-    assert.ok(hostedAccepted.title.includes('Hyperline Scores Accepted'))
-    assert.ok(hostedAccepted.detail.includes('Server accepted 2 Ranked score checkpoints'))
-    assert.ok(hostedAccepted.statsLine.includes('Current Run: Wave 4 (37 Creep Last-Hits)'))
-    assert.ok(hostedAccepted.statsLine.includes('Session Best: Wave 6 (72 Creep Last-Hits)'))
-
-    const hostedRejected = getLeaderboardUnavailableCopy({
-      isLocalDev: false,
-      currentWave: 3,
-      currentKills: 15,
-      lastReportAccepted: false,
-      acceptedReportsCount: 0,
-    })
-    assert.ok(hostedRejected.title.includes('Host Scores Service Inactive'))
-    assert.ok(hostedRejected.detail.includes('returned false from reportScore()'))
-
-    // True local dev mode (--arg dev) clearly says Local Dev Mode and shows Current Run
-    const localDevFallback = getLeaderboardUnavailableCopy({
-      isLocalDev: true,
-      currentWave: 1,
-      currentKills: 0,
-    })
-    assert.ok(localDevFallback.title.includes('Local Dev Mode (--arg dev)'))
-    assert.ok(localDevFallback.statsLine.includes('Current Run: Wave 1 (0 Creep Last-Hits)'))
-    assert.equal(localDevFallback.statsLine.includes('Session Best'), false)
-  })
-})
-
-describe('Native Buy Menu Panorama HUD Collapse & Restore Sync (v0.7.4)', () => {
-  it('stays completely idle with zero wake-ups when native Buy Menu has not been opened', () => {
-    assert.equal(needsImmediateNativeShopWake(undefined, false, 5.0), false)
-    const idle1 = evaluateNativeShopHudSync(undefined, false, 5.0)
-    assert.deepEqual(idle1.nextState, INITIAL_NATIVE_SHOP_HUD_STATE)
-    assert.equal(idle1.suppressShow, false)
-    assert.equal(idle1.shouldHideNow, false)
-    assert.equal(idle1.closeTransientModals, false)
-    assert.equal(idle1.holdStockHudPulse, false)
-    assert.equal(idle1.resyncCursorNow, false)
-    assert.equal(idle1.bumpedEpoch, false)
-    assert.equal(idle1.nextState.hudEpoch, 0)
-
-    assert.equal(needsImmediateNativeShopWake(idle1.nextState, false, 10.0), false)
-    const idle2 = evaluateNativeShopHudSync(idle1.nextState, false, 10.0)
-    assert.deepEqual(idle2, idle1)
-  })
-
-  it('orchestrates hide, stock HUD pulse, 80ms fast restore with 0ms cursor lock, secondary pulse, and keyed epoch settle', () => {
-    // Rising edge: opening Buy Menu hides HUD, closes transient modals, holds stock HUD pulse
-    assert.equal(needsImmediateNativeShopWake(undefined, true, 8.0), true)
-    const opened = evaluateNativeShopHudSync(undefined, true, 8.0)
-    assert.equal(opened.suppressShow, true)
-    assert.equal(opened.shouldHideNow, true)
-    assert.equal(opened.closeTransientModals, true)
-    assert.equal(opened.holdStockHudPulse, true)
-    assert.equal(opened.resyncCursorNow, true)
-    assert.equal(opened.bumpedEpoch, false)
-    assert.equal(opened.nextState.wasShopOpen, true)
-    assert.equal(opened.nextState.hudEpoch, 0)
-
-    // Sustained shop open keeps suppressing show() diffs and holding stock HUD pulse without waking every frame
-    assert.equal(needsImmediateNativeShopWake(opened.nextState, true, 9.25), false)
-    const held = evaluateNativeShopHudSync(opened.nextState, true, 9.25)
-    assert.equal(held.suppressShow, true)
-    assert.equal(held.shouldHideNow, false)
-    assert.equal(held.closeTransientModals, false)
-    assert.equal(held.holdStockHudPulse, true)
-    assert.equal(held.bumpedEpoch, false)
-
-    // Falling edge at t=10.0: waits only 80ms before restoring HUD (zero artificial cursor lock!)
-    assert.equal(needsImmediateNativeShopWake(held.nextState, false, 10.0), true)
-    const justClosed = evaluateNativeShopHudSync(held.nextState, false, 10.0)
-    assert.equal(justClosed.suppressShow, true)
-    assert.equal(justClosed.shouldHideNow, false)
-    assert.equal(justClosed.holdStockHudPulse, true)
-    assert.equal(justClosed.nextState.closedAtSeconds, 10.0)
-
-    const beforeRestore = 10.0 + SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS - 0.02
-    assert.equal(
-      needsImmediateNativeShopWake(justClosed.nextState, false, beforeRestore),
-      false,
-    )
-    const stillWaiting = evaluateNativeShopHudSync(
-      justClosed.nextState,
-      false,
-      beforeRestore,
-    )
-    assert.equal(stillWaiting.suppressShow, true)
-    assert.equal(stillWaiting.holdStockHudPulse, true)
-    assert.equal(stillWaiting.bumpedEpoch, false)
-
-    // Past +0.08s restore delay: lifts stock HUD pulse, signals cursor modal resync if needed, bumps epoch -> 1
-    const restoreTime = 10.0 + SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS + 0.02
-    assert.equal(
-      needsImmediateNativeShopWake(stillWaiting.nextState, false, restoreTime),
-      true,
-    )
-    const restored = evaluateNativeShopHudSync(
-      stillWaiting.nextState,
-      false,
-      restoreTime,
-    )
-    assert.equal(restored.suppressShow, false)
-    assert.equal(restored.shouldHideNow, false)
-    assert.equal(restored.holdStockHudPulse, false)
-    assert.equal(restored.resyncCursorNow, true)
-    assert.equal(restored.bumpedEpoch, true)
-    assert.equal(restored.nextState.initialRestoreDone, true)
-    assert.equal(restored.nextState.secondPulseStarted, false)
-    assert.equal(restored.nextState.settleResetDone, false)
-    assert.equal(restored.nextState.hudEpoch, 1)
-
-    // Between +0.08s and +0.28s: normal rendering, no extra wake-up
-    const midWindowTime = 10.0 + SHOP_CLOSE_SECOND_PULSE_START_SECONDS - 0.05
-    assert.equal(
-      needsImmediateNativeShopWake(restored.nextState, false, midWindowTime),
-      false,
-    )
-    const between = evaluateNativeShopHudSync(
-      restored.nextState,
-      false,
-      midWindowTime,
-    )
-    assert.equal(between.suppressShow, false)
-    assert.equal(between.holdStockHudPulse, false)
-    assert.equal(between.bumpedEpoch, false)
-
-    // At +0.28s: starts brief secondary stock HUD pulse while keeping custom HUD visible
-    const secondPulseTime = 10.0 + SHOP_CLOSE_SECOND_PULSE_START_SECONDS + 0.02
-    assert.equal(
-      needsImmediateNativeShopWake(between.nextState, false, secondPulseTime),
-      true,
-    )
-    const secondPulse = evaluateNativeShopHudSync(
-      between.nextState,
-      false,
-      secondPulseTime,
-    )
-    assert.equal(secondPulse.suppressShow, false)
-    assert.equal(secondPulse.holdStockHudPulse, true)
-    assert.equal(secondPulse.bumpedEpoch, false)
-    assert.equal(secondPulse.nextState.secondPulseStarted, true)
-    assert.equal(secondPulse.nextState.settleResetDone, false)
-
-    assert.equal(
-      needsImmediateNativeShopWake(
-        secondPulse.nextState,
-        false,
-        10.0 + SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS - 0.02,
-      ),
-      false,
-    )
-
-    // Past +0.38s settle threshold: releases stock HUD pulse and bumps epoch -> 2, preserving monotonic hudEpoch
-    const settleTime = 10.0 + SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS + 0.02
-    assert.equal(
-      needsImmediateNativeShopWake(secondPulse.nextState, false, settleTime),
-      true,
-    )
-    const settled = evaluateNativeShopHudSync(
-      secondPulse.nextState,
-      false,
-      settleTime,
-    )
-    assert.equal(settled.suppressShow, false)
-    assert.equal(settled.holdStockHudPulse, false)
-    assert.equal(settled.bumpedEpoch, true)
-    assert.equal(settled.resyncCursorNow, false)
-    assert.equal(settled.nextState.settleResetDone, true)
-    assert.equal(settled.nextState.hudEpoch, 2)
-
-    // Subsequent idle frames remain quiet with hudEpoch === 2 preserved
-    assert.equal(needsImmediateNativeShopWake(settled.nextState, false, 12.0), false)
-    const afterSettle = evaluateNativeShopHudSync(settled.nextState, false, 12.0)
-    assert.equal(afterSettle.suppressShow, false)
-    assert.equal(afterSettle.holdStockHudPulse, false)
-    assert.equal(afterSettle.bumpedEpoch, false)
-    assert.equal(afterSettle.nextState.hudEpoch, 2)
-  })
-
-  it('keeps hudEpoch strictly monotonic across rapid Buy Menu reopens and server clock backsteps', () => {
-    const open1 = evaluateNativeShopHudSync(undefined, true, 20.0)
-    const close1 = evaluateNativeShopHudSync(open1.nextState, false, 20.5)
-
-    // Rapid reopen before +0.08s restore delay
-    const reopenBeforeRestore = evaluateNativeShopHudSync(
-      close1.nextState,
-      true,
-      20.53,
-    )
-    assert.equal(reopenBeforeRestore.suppressShow, true)
-    assert.equal(reopenBeforeRestore.shouldHideNow, true)
-    assert.equal(reopenBeforeRestore.holdStockHudPulse, true)
-    assert.equal(reopenBeforeRestore.nextState.closedAtSeconds, undefined)
-    assert.equal(reopenBeforeRestore.nextState.hudEpoch, 0)
-
-    // Complete restore (epoch -> 1), then reopen before +0.38s settle
-    const close2 = evaluateNativeShopHudSync(
-      reopenBeforeRestore.nextState,
-      false,
-      22.0,
-    )
-    const restored2 = evaluateNativeShopHudSync(
-      close2.nextState,
-      false,
-      22.0 + SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS + 0.02,
-    )
-    assert.equal(restored2.bumpedEpoch, true)
-    assert.equal(restored2.nextState.hudEpoch, 1)
-
-    const reopenBeforeSettle = evaluateNativeShopHudSync(
-      restored2.nextState,
-      true,
-      22.2,
-    )
-    assert.equal(reopenBeforeSettle.suppressShow, true)
-    assert.equal(reopenBeforeSettle.shouldHideNow, true)
-    assert.equal(reopenBeforeSettle.holdStockHudPulse, true)
-    assert.equal(reopenBeforeSettle.nextState.hudEpoch, 1)
-
-    // Server clock backstep while waiting in post-close restore immediately restores cleanly & increments epoch (1 -> 2)
-    const close3 = evaluateNativeShopHudSync(
-      reopenBeforeSettle.nextState,
-      false,
-      180.0,
-    )
-    assert.equal(close3.suppressShow, true)
-    assert.equal(needsImmediateNativeShopWake(close3.nextState, false, 0.2), true)
-    const clockReset = evaluateNativeShopHudSync(close3.nextState, false, 0.2)
-    assert.equal(clockReset.suppressShow, false)
-    assert.equal(clockReset.holdStockHudPulse, false)
-    assert.equal(clockReset.bumpedEpoch, true)
-    assert.equal(clockReset.resyncCursorNow, true)
-    assert.equal(clockReset.nextState.settleResetDone, true)
-    assert.equal(clockReset.nextState.hudEpoch, 2)
-
-    // Subsequent open + full close cycle increments from 2 -> 3 -> 4 (never resets back to 0)
-    const openNext = evaluateNativeShopHudSync(clockReset.nextState, true, 5.0)
-    const closeNext = evaluateNativeShopHudSync(openNext.nextState, false, 5.5)
-    const restoreNext = evaluateNativeShopHudSync(
-      closeNext.nextState,
-      false,
-      5.5 + SHOP_CLOSE_HUD_RESTORE_DELAY_SECONDS + 0.02,
-    )
-    assert.equal(restoreNext.nextState.hudEpoch, 3)
-    const settleNext = evaluateNativeShopHudSync(
-      restoreNext.nextState,
-      false,
-      5.5 + SHOP_CLOSE_HUD_SETTLE_RESET_SECONDS + 0.02,
-    )
-    assert.equal(settleNext.nextState.hudEpoch, 4)
-  })
-})
-
-
-
-

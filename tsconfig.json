@@ -1,14 +1,33 @@
 {
+  "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "target": "es2023",
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "lib": ["es2023"],
-    "types": [],
-    "jsx": "react-jsx",
-    "jsxImportSource": "modlock",
-    "strict": true,
-    "noEmit": true
+    "paths": {
+      "modlock": ["./mods/deadlock_td/node_modules/modlock/index.d.ts"],
+      "modlock/*": ["./mods/deadlock_td/node_modules/modlock/*"],
+      "@base": ["./base/index.ts"],
+      "@base/*": ["./base/*"],
+      "@engine": ["./engine/index.ts"],
+      "@engine/*": ["./engine/*"],
+      "@ui": ["./ui/index.ts"],
+      "@ui/*": ["./ui/*"],
+      "@components/*": ["./components/*"]
+    }
   },
-  "exclude": ["build", "node_modules", "test", "reference"]
+  "include": [
+    "base/**/*.ts",
+    "engine/**/*.ts",
+    "ui/**/*.ts",
+    "ui/**/*.tsx",
+    "components/**/*.ts",
+    "components/**/*.tsx"
+  ],
+  "exclude": [
+    "**/*_test.ts",
+    "**/*.test.ts",
+    "testing",
+    "tools",
+    "mods",
+    "build",
+    "node_modules"
+  ]
 }

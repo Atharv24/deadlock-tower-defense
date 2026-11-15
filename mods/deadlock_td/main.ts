@@ -7,7 +7,6 @@ import {
   command,
   every,
   findHero,
-  ground,
   handedOff,
   handoff,
   holdModifierState,
@@ -30,7 +29,6 @@ import {
   readField,
   serverCommand,
   toast,
-  type Vector,
   writeField,
 } from 'modlock'
 
@@ -55,30 +53,49 @@ import {
   PLAYER_SPAWN_ANGLES,
   serializeTdHandoff,
   TD_PRECACHE_RESOURCES,
-} from './src/config'
-import { GuardianManager } from './src/guardian'
+  MAJOR_BOON_POOL,
+} from './td_config'
+import { GuardianManager } from './guardian'
 import {
   consumeHeroReselectPlacementReset,
   consumeImmediateHudSync,
+  exportHudAwaitingHeroPickSlots,
   handleHudClockBackstep,
   invalidateHudSettingCache,
+  isSlotAwaitingInitialHeroPick,
+  markHudRestoredFromHandoff,
   openHeroPickerForPlayer,
   pollNativeShopStateEveryFrame,
   renderTdHud,
   requestImmediateHudSync,
+  requireInitialHeroPickForPlayer,
+  resetHudForNewWorld,
   resetHudTransientState,
   selectDefenderHero,
   toggleCompactHudForPlayer,
   toggleLeaderboardForPlayer,
   toggleLegendaryShopForPlayer,
-} from './src/hud'
-import { LeaderboardManager } from './src/leaderboard'
-import { TdProbe } from './src/probe'
-import { TomeManager } from './src/tomes'
-import { WaveManager } from './src/wave'
+} from './td_hud'
+import { TdProbe } from './probe'
+import { WaveManager } from './wave'
+import { runTimerSafely as runTimerGuard } from '@base/timer_guard'
+import { resolveSafeGroundOrigin } from '@engine/respawn'
+import { TomeManager } from '@components/roguelite'
+import { LeaderboardManager } from '@components/scores'
 
 const guardian = new GuardianManager()
-const tomes = new TomeManager()
+const tomes = new TomeManager({
+  minorTomePool: MINOR_TOME_POOL,
+  majorBoonPool: MAJOR_BOON_POOL,
+  onCustomMajorBoon: ({ boon, mult }) => {
+    if (boon.guardianHeal || boon.guardianUpgrade) {
+      guardian.applyMajorBoonFortify(
+        Math.round((boon.guardianHeal ?? 0) * mult),
+        Boolean(boon.guardianUpgrade),
+      )
+    }
+  },
+})
 const leaderboard = new LeaderboardManager()
 const waves = new WaveManager(
   (milestoneWave) => {
@@ -94,15 +111,12 @@ const waves = new WaveManager(
       leaderboard.checkpointAllPlayers(startedWave, tomes)
     }
   },
+  (slot) => isSlotAwaitingInitialHeroPick(slot),
 )
 
 /** Isolates repeating timer errors so Modlock's `timer.ts` never permanently cancels a loop (#32). */
 function runTimerSafely(name: string, fn: () => void): void {
-  try {
-    fn()
-  } catch (err) {
-    log(`Timer [${name}] error: ${String(err)}`)
-  }
+  runTimerGuard(name, fn, log)
 }
 
 let probe: TdProbe | undefined
@@ -145,17 +159,6 @@ function reconcileClockBackstep(prevNow: number, nextNow: number): void {
 }
 
 /** Ground-traces the target frontline anchor so defenders always spawn cleanly above the walkable floor mesh. */
-function resolveSafeFrontlineOrigin(rawOrigin: Vector): Vector {
-  const floor = ground(rawOrigin, { above: 220, below: 512 })
-  if (floor) {
-    return {
-      x: rawOrigin.x,
-      y: rawOrigin.y,
-      z: Math.max(rawOrigin.z, floor.z + 12),
-    }
-  }
-  return rawOrigin
-}
 
 /** Teleports a Team 2 defender onto the active frontline, falling back to `zipline('blue')` if teleport fails. */
 function placeDefenderAtFrontline(
@@ -163,7 +166,7 @@ function placeDefenderAtFrontline(
   pawnKey: string,
   force = false,
 ): void {
-  const spawnOrigin = resolveSafeFrontlineOrigin(guardian.getDefenderSpawnOrigin())
+  const spawnOrigin = resolveSafeGroundOrigin(guardian.getDefenderSpawnOrigin())
   if (player.teleport(spawnOrigin, PLAYER_SPAWN_ANGLES)) {
     placedHeroKeyBySlot.set(player.slot, pawnKey)
     ziplineFallbackKeyBySlot.delete(player.slot)
@@ -339,6 +342,7 @@ function persistHandoff(): void {
         ? { runLastReportAccepted: lbCheckpoint.lastReportAccepted }
         : {}),
       runAcceptedReportsCount: lbCheckpoint.acceptedReportsCount,
+      awaitingHeroPickSlots: exportHudAwaitingHeroPickSlots(),
     }),
   )
 }
@@ -425,6 +429,7 @@ onStart((args) => {
         acceptedReportsCount: restored.runAcceptedReportsCount,
       },
     )
+    markHudRestoredFromHandoff(restored.awaitingHeroPickSlots)
     log(
       `Restored Hidden King's Defense state at Wave ${waves.wave} from hot-reload handoff`,
     )
@@ -468,7 +473,7 @@ onWorld((mapName) => {
   diedAtBySlot.clear()
   lastRespawnAttemptBySlot.clear()
   postSpawnVerifyAtBySlot.clear()
-  resetHudTransientState()
+  resetHudForNewWorld()
   guardian.reset()
   tomes.reset()
   leaderboard.resetSessionDiagnostics()
@@ -487,6 +492,7 @@ onPlayerJoin((joined) => {
     requestImmediateHudSync()
   }
   if (!joined.connection.bot && !probe) {
+    requireInitialHeroPickForPlayer(joined.connection.player)
     if (emptyServerWatch.emptySinceSeconds !== undefined) {
       log(
         localDevMode

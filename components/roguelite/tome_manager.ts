@@ -1,7 +1,3 @@
-// Player last-hit Tome / Boon system using Modlock's `onDamaged` hook,
-// per-creep deduplication, stackable VData `td_tome_*` modifiers, and
-// 1-of-3 Major Boon milestone picker state.
-
 import {
   type AbilityCastEvent,
   type DamagedEvent,
@@ -12,12 +8,13 @@ import {
   players,
   toast,
 } from 'modlock'
+import { syncEntityModifierSet } from '@engine/entity_modifiers'
 
 import {
   computeTomeWaveMultiplier,
   computeVanillaTomeBonuses,
+  DEFAULT_SOUL_CACHE_BASE_SOULS,
   DEFAULT_TOME_GROWTH_PER_WAVE,
-  DEFENDER_TEAM,
   evaluateCreepLastHit,
   formatScaledMajorBoonSubtitle,
   formatScaledMinorTomeDescription,
@@ -27,18 +24,58 @@ import {
   type MinorTomeDef,
   parseTomeGrowthPerWave,
   pickThreeMajorBoons,
-  SOUL_CACHE_BASE_SOULS,
-  syncEntityModifierSet,
+  TOME_DROP_CHANCE,
   type VanillaTomeBonuses,
-} from './config'
-import type { GuardianManager } from './guardian'
+} from './tome_math'
+
+export interface FriendlyStructureTarget {
+  readonly entity?: number
+  readonly upgradeLevel?: number
+  isFriendlyStructureEntity?(ent: number): boolean
+  applyMajorBoonFortify?(heal: number, addLevel: boolean): void
+}
+
+export interface TomeManagerMetrics {
+  readonly creepKill?: string
+  readonly tomeEarned?: string
+}
+
+export interface TomeManagerOptions {
+  readonly minorTomePool: readonly MinorTomeDef[]
+  readonly majorBoonPool: readonly MajorBoonDef[]
+  readonly defenderTeam?: number
+  readonly settingKey?: string
+  readonly tomeDropChance?: number
+  readonly metrics?: TomeManagerMetrics
+  readonly onCustomMajorBoon?: (ctx: {
+    readonly player: Player
+    readonly boon: MajorBoonDef
+    readonly mult: number
+    readonly wave: number
+  }) => void
+}
 
 function hasLiveHeroPawn(player: Player): boolean {
   const pawn = player.pawn()
   return Boolean(pawn && pawn.hero > 0 && pawn.health > 0 && pawn.team >= 2)
 }
 
+function isStructureSet(
+  target: FriendlyStructureTarget | ReadonlySet<number>,
+): target is ReadonlySet<number> {
+  return target instanceof Set
+}
+
 export class TomeManager {
+  private readonly minorTomePool: readonly MinorTomeDef[]
+  private readonly majorBoonPool: readonly MajorBoonDef[]
+  private readonly defenderTeam: number
+  private readonly settingKey: string
+  private readonly tomeDropChance: number
+  private readonly creepKillMetric: string
+  private readonly tomeEarnedMetric: string
+  private readonly onCustomMajorBoon?: TomeManagerOptions['onCustomMajorBoon']
+
   readonly rewardedCreeps = new Set<number>()
   readonly playerTomes = new Map<number, Record<string, number>>()
   readonly playerKills = new Map<number, number>()
@@ -55,7 +92,18 @@ export class TomeManager {
   private readonly appliedHeroEntityModifiers = new Map<number, Set<string>>()
   private readonly playerLastPawnEntity = new Map<number, number>()
 
-  /** Resets Tome & Boon state for a new match or /restarttd. */
+  constructor(options: TomeManagerOptions) {
+    this.minorTomePool = options.minorTomePool
+    this.majorBoonPool = options.majorBoonPool
+    this.defenderTeam = options.defenderTeam ?? 2
+    this.settingKey = options.settingKey ?? 'tome_scaling'
+    this.tomeDropChance = options.tomeDropChance ?? TOME_DROP_CHANCE
+    this.creepKillMetric = options.metrics?.creepKill ?? 'td.creeps_killed'
+    this.tomeEarnedMetric = options.metrics?.tomeEarned ?? 'td.tomes_earned'
+    this.onCustomMajorBoon = options.onCustomMajorBoon
+  }
+
+  /** Resets Tome & Boon state for a new match or restart. */
   reset(): void {
     this.rewardedCreeps.clear()
     this.playerTomes.clear()
@@ -68,18 +116,18 @@ export class TomeManager {
     this.lastGrantedNotice = ''
   }
 
-  /** Sets a manual session override for Tome scaling per wave (`/tomescale`), or `undefined` to use manifest setting. */
+  /** Sets a manual session override for Tome scaling per wave, or `undefined` to use manifest setting. */
   setGrowthRateOverride(rate: number | undefined): void {
     this.growthRateOverride = rate
     this.cachedSettingExpiresAt = -1
   }
 
-  /** Invalidates the cached `tome_scaling` setting (e.g. on `onSettingChanged` or clock reset). */
+  /** Invalidates the cached scaling setting (e.g. on `onSettingChanged` or clock reset). */
   invalidateSettingCache(): void {
     this.cachedSettingExpiresAt = -1
   }
 
-  /** Returns active Tome growth rate per wave (`override` or cached `tome_scaling` setting). */
+  /** Returns active Tome growth rate per wave (`override` or cached setting). */
   getGrowthRate(now = 0): number {
     if (this.growthRateOverride !== undefined) {
       return this.growthRateOverride
@@ -91,7 +139,7 @@ export class TomeManager {
     ) {
       const conns = players()
       const reader = conns.find((c) => !c.bot && c.ready) ?? conns[0]
-      const rawSetting = reader?.player.setting('tome_scaling')
+      const rawSetting = reader?.player.setting(this.settingKey)
       this.cachedSettingRate = parseTomeGrowthPerWave(rawSetting)
       this.cachedSettingExpiresAt = now + 2.0
     }
@@ -144,35 +192,45 @@ export class TomeManager {
 
   /**
    * Handles a Modlock `onDamaged` event: filters for player last-hits on
-   * enemy creeps (ignoring Friendly Blue T1 Guardian kills), deduplicates by
-   * creep entity handle, and rolls the 10% Tome drop.
+   * enemy creeps (ignoring friendly structure kills), deduplicates by
+   * creep entity handle, and rolls the configured Tome drop chance.
    */
   onDamaged(
     hit: DamagedEvent,
     validCreepEntities: ReadonlySet<number>,
-    guardian: GuardianManager,
+    friendlyStructures?: FriendlyStructureTarget | ReadonlySet<number>,
     rngRoll = Math.random(),
     tomePickRoll = Math.random(),
     currentWave = 1,
   ): LastHitEvaluation {
-    // Map active human/defender player pawn entities to their player slot.
     const pawnToSlot = new Map<number, number>()
     const slotToPlayer = new Map<number, Player>()
     for (const conn of players()) {
       const p = conn.player
       const pawn = p.pawn()
-      if (pawn && pawn.team === 2) {
+      if (pawn && pawn.team === this.defenderTeam) {
         pawnToSlot.set(pawn.entity, p.slot)
         slotToPlayer.set(p.slot, p)
       }
     }
 
     const guardianSet = new Set<number>()
-    if (guardian.entity > 0) {
-      guardianSet.add(guardian.entity)
-    }
-    if (hit.attacker > 0 && guardian.isFriendlyStructureEntity(hit.attacker)) {
-      guardianSet.add(hit.attacker)
+    if (friendlyStructures) {
+      if (isStructureSet(friendlyStructures)) {
+        for (const ent of friendlyStructures) {
+          guardianSet.add(ent)
+        }
+      } else {
+        if ((friendlyStructures.entity ?? 0) > 0) {
+          guardianSet.add(friendlyStructures.entity!)
+        }
+        if (
+          hit.attacker > 0 &&
+          friendlyStructures.isFriendlyStructureEntity?.(hit.attacker)
+        ) {
+          guardianSet.add(hit.attacker)
+        }
+      }
     }
 
     const result = evaluateCreepLastHit(
@@ -183,6 +241,8 @@ export class TomeManager {
       this.rewardedCreeps,
       rngRoll,
       tomePickRoll,
+      this.minorTomePool,
+      this.tomeDropChance,
     )
 
     if (
@@ -198,7 +258,7 @@ export class TomeManager {
       const prevKills = this.playerKills.get(result.playerSlot) ?? 0
       this.playerKills.set(result.playerSlot, prevKills + 1)
       const killer = slotToPlayer.get(result.playerSlot)
-      killer?.addMetric('td.creeps_killed', 1)
+      killer?.addMetric(this.creepKillMetric, 1)
 
       if (result.granted && result.tome && killer) {
         this.applyMinorTome(killer, result.tome, currentWave)
@@ -215,7 +275,7 @@ export class TomeManager {
   onKill(
     kill: KillEvent,
     validCreepEntities: ReadonlySet<number>,
-    guardian: GuardianManager,
+    friendlyStructures?: FriendlyStructureTarget | ReadonlySet<number>,
     rngRoll = Math.random(),
     tomePickRoll = Math.random(),
     currentWave = 1,
@@ -230,7 +290,7 @@ export class TomeManager {
         dealt: 1,
       },
       validCreepEntities,
-      guardian,
+      friendlyStructures,
       rngRoll,
       tomePickRoll,
       currentWave,
@@ -254,7 +314,9 @@ export class TomeManager {
         break
       }
       case 'souls': {
-        const soulGain = Math.round((tome.amount ?? SOUL_CACHE_BASE_SOULS) * mult)
+        const soulGain = Math.round(
+          (tome.amount ?? DEFAULT_SOUL_CACHE_BASE_SOULS) * mult,
+        )
         player.adjustSouls(soulGain, false)
         this.incrementTally(player.slot, tome.id, mult)
         break
@@ -262,7 +324,7 @@ export class TomeManager {
     }
 
     const scaledDesc = formatScaledMinorTomeDescription(tome, mult)
-    player.addMetric('td.tomes_earned', 1)
+    player.addMetric(this.tomeEarnedMetric, 1)
     if (hasLiveHeroPawn(player)) {
       player.sound('Powerup.Pickup.Generic')
     }
@@ -276,23 +338,28 @@ export class TomeManager {
         ? `TOME DROP (${mult.toFixed(2)}x): ${tome.name} — ${scaledDesc}!`
         : `TOME DROP: ${tome.name} — ${scaledDesc}!`,
     )
-    log(`Player slot ${player.slot} earned ${tome.name} (${mult.toFixed(2)}x on Wave ${Math.max(1, currentWave)})`)
+    log(
+      `Player slot ${player.slot} earned ${tome.name} (${mult.toFixed(2)}x on Wave ${Math.max(1, currentWave)})`,
+    )
     this.syncHeroModifiers(player)
   }
 
-  /** Offers a 1-of-3 Major Boon choice to all Team 2 defenders on milestone/Boss waves. */
+  /** Offers a 1-of-3 Major Boon choice to all defenders on milestone/Boss waves. */
   offerMajorBoonForWave(wave: number): void {
+    if (this.majorBoonPool.length === 0) {
+      return
+    }
     const clampedWave = Math.max(1, Math.floor(wave))
     for (const conn of players()) {
       const p = conn.player
       const pawn = p.pawn()
-      if (conn.bot && (!pawn || pawn.team !== DEFENDER_TEAM)) {
+      if (conn.bot && (!pawn || pawn.team !== this.defenderTeam)) {
         continue
       }
-      if (pawn && pawn.team !== DEFENDER_TEAM) {
+      if (pawn && pawn.team !== this.defenderTeam) {
         continue
       }
-      const choices = pickThreeMajorBoons(clampedWave, p.slot)
+      const choices = pickThreeMajorBoons(clampedWave, p.slot, this.majorBoonPool)
       this.pendingBoonChoices.set(p.slot, choices)
       this.pendingBoonWave.set(p.slot, clampedWave)
       if (hasLiveHeroPawn(p)) {
@@ -309,9 +376,18 @@ export class TomeManager {
   chooseMajorBoon(
     player: Player,
     choiceIndex: number,
-    guardian: GuardianManager,
+    structureOrFallbackWave?: FriendlyStructureTarget | number,
     fallbackWave = 1,
   ): MajorBoonDef | undefined {
+    const target =
+      typeof structureOrFallbackWave === 'number'
+        ? undefined
+        : structureOrFallbackWave
+    const resolvedFallbackWave =
+      typeof structureOrFallbackWave === 'number'
+        ? structureOrFallbackWave
+        : fallbackWave
+
     const choices = this.pendingBoonChoices.get(player.slot)
     if (!choices) {
       toast(player, 'No Major Boon choice is currently pending.')
@@ -323,16 +399,17 @@ export class TomeManager {
     }
 
     const boon = choices[choiceIndex]
-    const boonWave = this.pendingBoonWave.get(player.slot) ?? fallbackWave
+    const boonWave =
+      this.pendingBoonWave.get(player.slot) ?? resolvedFallbackWave
     const mult = this.getWaveMultiplier(boonWave)
     this.pendingBoonChoices.delete(player.slot)
     this.pendingBoonWave.delete(player.slot)
 
     for (const mod of boon.modifiers) {
-      const tomeKey = mod.name.replace('td_tome_', '')
+      const tomeKey = mod.name.replace(/^td_tome_/, '')
       const scaledStacks = Number((mod.stacks * mult).toFixed(4))
       this.incrementTally(player.slot, tomeKey, scaledStacks)
-      player.addMetric('td.tomes_earned', mod.stacks)
+      player.addMetric(this.tomeEarnedMetric, mod.stacks)
       if (tomeKey === 'health' || tomeKey === 'omni') {
         player.heal(Math.round(280 * mult))
       }
@@ -350,8 +427,13 @@ export class TomeManager {
       this.incrementTally(player.slot, 'soul_jackpot', mult)
     }
 
-    if (boon.guardianHeal || boon.guardianUpgrade) {
-      guardian.applyMajorBoonFortify(
+    if (this.onCustomMajorBoon) {
+      this.onCustomMajorBoon({ player, boon, mult, wave: boonWave })
+    } else if (
+      target?.applyMajorBoonFortify &&
+      (boon.guardianHeal || boon.guardianUpgrade)
+    ) {
+      target.applyMajorBoonFortify(
         Math.round((boon.guardianHeal ?? 0) * mult),
         Boolean(boon.guardianUpgrade),
       )
@@ -397,7 +479,12 @@ export class TomeManager {
     let ent = pawnEntityOverride ?? 0
     if (pawnEntityOverride === undefined) {
       const pawn = player.pawn()
-      if (!pawn || pawn.team !== DEFENDER_TEAM || pawn.hero <= 0 || pawn.health <= 0) {
+      if (
+        !pawn ||
+        pawn.team !== this.defenderTeam ||
+        pawn.hero <= 0 ||
+        pawn.health <= 0
+      ) {
         return
       }
       ent = pawn.entity
@@ -443,15 +530,27 @@ export class TomeManager {
     const bonuses = this.getVanillaBonuses(slot)
     if (bonuses.cooldownReductionFraction <= 0) return
     const pawn = player.pawn()
-    if (!pawn || pawn.team !== DEFENDER_TEAM || pawn.hero <= 0 || pawn.health <= 0) {
+    if (
+      !pawn ||
+      pawn.team !== this.defenderTeam ||
+      pawn.hero <= 0 ||
+      pawn.health <= 0
+    ) {
       return
     }
     for (const abil of player.abilities()) {
-      if (abil.slot < 0 || abil.slot > 3 || abil.cooldownEnd <= nowSeconds + 0.35) {
+      if (
+        abil.slot < 0 ||
+        abil.slot > 3 ||
+        abil.cooldownEnd <= nowSeconds + 0.35
+      ) {
         continue
       }
       const key = `${slot}:${abil.name}`
-      if (Math.abs((this.trimmedCooldownStarts.get(key) ?? -1) - abil.cooldownStart) < 0.05) {
+      if (
+        Math.abs((this.trimmedCooldownStarts.get(key) ?? -1) - abil.cooldownStart) <
+        0.05
+      ) {
         continue
       }
       const fullDuration = Math.max(0, abil.cooldownEnd - abil.cooldownStart)
@@ -477,7 +576,12 @@ export class TomeManager {
       const bonuses = this.getVanillaBonuses(slot)
       if (bonuses.regenPerSecond <= 0) continue
       const pawn = conn.player.pawn()
-      if (!pawn || pawn.team !== DEFENDER_TEAM || pawn.hero <= 0 || pawn.health <= 0) {
+      if (
+        !pawn ||
+        pawn.team !== this.defenderTeam ||
+        pawn.hero <= 0 ||
+        pawn.health <= 0
+      ) {
         continue
       }
       const maxHp = pawn.effectiveMaxHealth ?? pawn.maxHealth

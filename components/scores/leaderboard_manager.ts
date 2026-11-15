@@ -1,7 +1,3 @@
-// Leaderboard & run tracking manager for Deadlock Tower Defense.
-// Reports progressive wave checkpoints & incremental kill deltas (`td.highest_wave` +
-// `td.creeps_slain`) via Modlock's `scores` service and caches standings for the HUD.
-
 import {
   type BoardPage,
   type BoardWindow,
@@ -16,14 +12,23 @@ import {
   BOARD_CREEPS_SLAIN,
   BOARD_HIGHEST_WAVE,
   evaluateLeaderboardCheckpoint,
-} from './config'
-import type { TomeManager } from './tomes'
+} from './leaderboard_eval'
 
 let runSequence = 0
 
-function createRunId(): string {
+function createRunId(prefix: string): string {
   runSequence += 1
-  return `td-${Date.now().toString(36)}-${runSequence}`
+  return `${prefix}-${Date.now().toString(36)}-${runSequence}`
+}
+
+export interface PlayerKillsSource {
+  getKills(slot: number): number
+}
+
+export interface LeaderboardOptions {
+  readonly primaryBoard?: string
+  readonly secondaryBoard?: string
+  readonly runPrefix?: string
 }
 
 export interface LeaderboardCheckpointHandoff {
@@ -36,7 +41,11 @@ export interface LeaderboardCheckpointHandoff {
 
 /** Tracks per-match ranked eligibility, live checkpoint reporting, and cached board pages. */
 export class LeaderboardManager {
-  runId = createRunId()
+  readonly primaryBoard: string
+  readonly secondaryBoard: string
+  private readonly runPrefix: string
+
+  runId: string
   rankedEligible = true
   disqualifyReason: string | undefined = undefined
   isProbeMode = false
@@ -53,9 +62,16 @@ export class LeaderboardManager {
     { page: BoardPage | undefined; expiresAt: number }
   >()
 
-  /** Starts a fresh Ranked run ID (called on fresh world load or `/restarttd`). */
+  constructor(options?: LeaderboardOptions) {
+    this.primaryBoard = options?.primaryBoard ?? BOARD_HIGHEST_WAVE
+    this.secondaryBoard = options?.secondaryBoard ?? BOARD_CREEPS_SLAIN
+    this.runPrefix = options?.runPrefix ?? 'td'
+    this.runId = createRunId(this.runPrefix)
+  }
+
+  /** Starts a fresh Ranked run ID (called on fresh world load or match restart). */
   startNewRun(): void {
-    this.runId = createRunId()
+    this.runId = createRunId(this.runPrefix)
     this.rankedEligible = true
     this.disqualifyReason = undefined
     this.submittedSlots.clear()
@@ -65,7 +81,7 @@ export class LeaderboardManager {
     this.boardCache.clear()
   }
 
-  /** Clears per-session standings and host score acceptance diagnostics (fresh world load / idle lobby reset). */
+  /** Clears per-session standings and host score acceptance diagnostics (fresh world load / idle reset). */
   resetSessionDiagnostics(): void {
     this.sessionBestBySlot.clear()
     this.lastReportAccepted = undefined
@@ -102,7 +118,7 @@ export class LeaderboardManager {
     submittedSlots: readonly number[] = [],
     checkpointState?: Partial<LeaderboardCheckpointHandoff>,
   ): void {
-    this.runId = runId && runId.length > 0 ? runId : createRunId()
+    this.runId = runId && runId.length > 0 ? runId : createRunId(this.runPrefix)
     this.rankedEligible = rankedEligible
     this.disqualifyReason = disqualifyReason
     this.submittedSlots.clear()
@@ -161,13 +177,13 @@ export class LeaderboardManager {
     }
     this.rankedEligible = false
     this.disqualifyReason = reason
-    log(`Marked current TD run ${this.runId} as unranked sandbox (${reason})`)
+    log(`Marked current run ${this.runId} as unranked sandbox (${reason})`)
     return true
   }
 
   /**
-   * Checkpoints `td.highest_wave` (`KEEP_BEST`, negated kills tiebreak) whenever wave/kills
-   * improve and `td.creeps_slain` (`KEEP_SUM`) by incremental kill delta since the previous
+   * Checkpoints primary score (`KEEP_BEST`, negated kills tiebreak) whenever wave/kills
+   * improve and secondary score (`KEEP_SUM`) by incremental kill delta since the previous
    * checkpoint in this run so mid-run disconnects never lose progress or double-count kills.
    */
   checkpointPlayer(
@@ -215,7 +231,7 @@ export class LeaderboardManager {
       })
       waveAccepted = reportScore(
         player,
-        BOARD_HIGHEST_WAVE,
+        this.primaryBoard,
         decision.waveScore,
         {
           tiebreak: decision.tiebreak,
@@ -228,7 +244,7 @@ export class LeaderboardManager {
       this.reportedKillsBySlot.set(player.slot, decision.safeKills)
       creepsAccepted = reportScore(
         player,
-        BOARD_CREEPS_SLAIN,
+        this.secondaryBoard,
         decision.creepsDelta,
         {
           key: `${this.runId}-c-${player.slot}-${this.reportSeq}`,
@@ -244,15 +260,15 @@ export class LeaderboardManager {
 
     this.boardCache.clear()
     log(
-      `Reported TD checkpoint ${this.runId} for slot ${player.slot}: Wave ${decision.waveScore}, totalKills=${decision.safeKills} (+${decision.creepsDelta} delta), scoresAccepted=${accepted} (acceptedCount=${this.acceptedReportsCount})`,
+      `Reported score checkpoint ${this.runId} for slot ${player.slot}: Wave ${decision.waveScore}, totalKills=${decision.safeKills} (+${decision.creepsDelta} delta), scoresAccepted=${accepted} (acceptedCount=${this.acceptedReportsCount})`,
     )
     return true
   }
 
-  /** Checkpoints progressive run stats for all connected non-bot defenders. */
+  /** Checkpoints progressive run stats for all connected non-bot players. */
   checkpointAllPlayers(
     wave: number,
-    tomes: TomeManager,
+    killsSource: PlayerKillsSource,
     opts?: { requireProgressOnWave1?: boolean },
   ): number {
     let submitted = 0
@@ -262,7 +278,7 @@ export class LeaderboardManager {
         this.checkpointPlayer(
           conn.player,
           wave,
-          tomes.getKills(conn.player.slot),
+          killsSource.getKills(conn.player.slot),
           opts,
         )
       ) {
@@ -272,7 +288,7 @@ export class LeaderboardManager {
     return submitted
   }
 
-  /** Submits `td.highest_wave` (with negated kills tiebreak) and `td.creeps_slain` for a player. */
+  /** Submits primary & secondary scores for a player. */
   submitRunForPlayer(
     player: Player,
     wave: number,
@@ -288,10 +304,10 @@ export class LeaderboardManager {
     })
   }
 
-  /** Submits the current run for all connected non-bot human defenders. */
+  /** Submits the current run for all connected non-bot human players. */
   submitRunForAllPlayers(
     wave: number,
-    tomes: TomeManager,
+    killsSource: PlayerKillsSource,
     minWave = 1,
   ): number {
     let submitted = 0
@@ -301,7 +317,7 @@ export class LeaderboardManager {
         this.submitRunForPlayer(
           conn.player,
           wave,
-          tomes.getKills(conn.player.slot),
+          killsSource.getKills(conn.player.slot),
           minWave,
         )
       ) {
@@ -316,7 +332,7 @@ export class LeaderboardManager {
     this.boardCache.clear()
   }
 
-  /** Returns a cached `td.highest_wave` page (short TTL while loading or unavailable so HUD recovers fast). */
+  /** Returns a cached primary board page (short TTL while loading or unavailable so HUD recovers fast). */
   getBoardSnapshot(
     player: Player,
     window: BoardWindow,
@@ -328,7 +344,7 @@ export class LeaderboardManager {
     if (cached && now < cached.expiresAt && now + 2.0 >= cached.expiresAt) {
       return cached.page
     }
-    const page = readBoard(BOARD_HIGHEST_WAVE, { window, limit, player })
+    const page = readBoard(this.primaryBoard, { window, limit, player })
     const ttl = page === undefined ? 0.75 : page.loading ? 0.4 : 1.5
     this.boardCache.set(cacheKey, { page, expiresAt: now + ttl })
     return page

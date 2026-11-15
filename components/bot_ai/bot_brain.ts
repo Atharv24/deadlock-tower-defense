@@ -1,9 +1,13 @@
-// Autonomous Enemy Hero Boss navigation, target acquisition, 360° aiming,
-// hero-specific ability casting, and anti-stuck recovery for Center Lane (`hl_defense`).
-// Kept free of runtime `modlock` host calls (type-only imports) so 100% of the
-// math and state machine can be deterministically unit-tested in Tier 1.
+import type { Ability, DriveCommand, Vector } from 'modlock'
+import {
+  clamp,
+  computeAimAngles,
+  distance3D,
+  flatDistance2D,
+  worldMoveToDriveAxes,
+} from '@base/math'
 
-import type { Ability, Angles, DriveCommand, Vector } from 'modlock'
+export { computeAimAngles, distance3D, flatDistance2D, worldMoveToDriveAxes }
 
 export interface BossButtonMask {
   readonly attack: bigint
@@ -29,20 +33,11 @@ export interface BossHeroCandidate {
   readonly aimHeightOffset?: number
 }
 
-export type BossObjectiveKind =
-  | 'guardian'
-  | 'walker'
-  | 'base_guardian'
-  | 'shrine_east'
-  | 'shrine_west'
-  | 'patron_stage1'
-  | 'patron_stage2'
-
 export interface BossGuardianCandidate {
   readonly entity: number
   readonly position: Vector
   readonly alive: boolean
-  readonly objectiveKind?: BossObjectiveKind
+  readonly objectiveKind?: string
   readonly siegeRange?: number
   readonly minStandoff?: number
   readonly aimOffsetZ?: number
@@ -63,7 +58,7 @@ export type BossBehaviorMode = 'march' | 'hero_combat' | 'guardian_siege'
 export interface BossAiState {
   readonly routeIndex: 0 | 1
   waypointIndex: number
-  lastObjectiveKind?: BossObjectiveKind
+  lastObjectiveKind?: string
   lastCheckPos: Vector
   lastCheckAt: number
   stuckCount: number
@@ -91,158 +86,70 @@ export interface BossDrivePlan {
   readonly unstuckTeleport?: Vector
 }
 
-/**
- * Valve-authored Center Lane (`LaneNum = 4`, `LaneSlot = 1` West & `LaneSlot = 2` East)
- * staircase spline waypoints extracted from `hl_defense` (`dl_defense_default_ents.vents_c`).
- *
- * Avoids the `(0, 0)` central cover/drop (`z = 388 -> 256 -> 388`) and terminates at
- * `[±85, -1180, 384]` (`618u` from Blue Guardian `[0, -1792, 384]`), well inside
- * `npc_boss_tier1`'s `m_flInvulRange = 944.882` while safely outside its `275u` melee ring
- * and raised pedestal (`~450u`).
- */
-export const BOSS_LANE_ROUTES: readonly [readonly Vector[], readonly Vector[]] = [
-  // Route 0: West Center Lane Staircase (`spawnOrigin.x <= 0`)
-  [
-    { x: -192, y: 1024, z: 388 },
-    { x: -192, y: 496, z: 272 },
-    { x: -112, y: 96, z: 258 },
-    { x: -112, y: -296, z: 256 },
-    { x: -152, y: -480, z: 264 },
-    { x: -160, y: -1024, z: 388 },
-    { x: -85, y: -1180, z: 384 },
-  ],
-  // Route 1: East Center Lane Staircase (`spawnOrigin.x > 0`)
-  [
-    { x: 192, y: 1008, z: 388 },
-    { x: 176, y: 472, z: 256 },
-    { x: 112, y: 336, z: 256 },
-    { x: 104, y: -136, z: 256 },
-    { x: 160, y: -496, z: 264 },
-    { x: 144, y: -1032, z: 388 },
-    { x: 85, y: -1180, z: 384 },
-  ],
-]
-
-/** Guardian `m_flInvulRange` is `944.882u`; engage comfortably inside `880u`. */
-export const BOSS_GUARDIAN_SIEGE_RANGE = 880
-/** Minimum distance kept from `[0, -1792, 384]` so Bosses never wedge onto the Guardian dais. */
-export const BOSS_GUARDIAN_MIN_STANDOFF = 485
-
-const POST_GUARDIAN_TO_WALKER: readonly [readonly Vector[], readonly Vector[]] = [
-  [
-    { x: -215, y: -1792, z: 384 },
-    { x: -60, y: -2360, z: 384 },
-    { x: -544, y: -2872, z: 384 },
-    { x: -1040, y: -3050, z: 380 },
-  ],
-  [
-    { x: 215, y: -1792, z: 384 },
-    { x: 40, y: -2360, z: 384 },
-    { x: -544, y: -2872, z: 384 },
-    { x: -1040, y: -3050, z: 380 },
-  ],
-]
-
-const POST_WALKER_TO_BASE_GATE: readonly Vector[] = [
-  { x: -1050, y: -3472, z: 380 },
-  { x: -1264, y: -3880, z: 384 },
-  { x: -1280, y: -4352, z: 430 },
-  { x: -1280, y: -4835, z: 530 },
-  { x: -1280, y: -5020, z: 615 },
-]
-
-const COURTYARD_HUB: readonly Vector[] = [
-  { x: -1280, y: -5780, z: 641 },
-  { x: -1280, y: -6450, z: 641 },
-  { x: -1280, y: -6850, z: 641 },
-]
-
-const COURTYARD_TO_EAST_SHRINE: readonly Vector[] = [
-  { x: -520, y: -6890, z: 695 },
-  { x: 40, y: -6944, z: 768 },
-  { x: 210, y: -7190, z: 920 },
-]
-
-const COURTYARD_TO_WEST_SHRINE: readonly Vector[] = [
-  { x: -2020, y: -6890, z: 695 },
-  { x: -2632, y: -6960, z: 768 },
-  { x: -2770, y: -7190, z: 920 },
-]
-
-const COURTYARD_TO_PATRON_STAGE1: readonly Vector[] = [
-  { x: -1280, y: -7200, z: 641 },
-  { x: -1280, y: -7460, z: 641 },
-]
-
-const COURTYARD_TO_PATRON_STAGE2: readonly Vector[] = [
-  { x: -1280, y: -7200, z: 641 },
-  { x: -1280, y: -7540, z: 641 },
-  { x: -1280, y: -7800, z: 632 },
-]
-
-/**
- * Returns the full Center Lane -> Base waypoint chain for `routeIndex` (`0` West / `1` East)
- * leading to the active vulnerable objective (`Guardian -> Walker -> Base Guardians -> Shrines -> Patron`).
- */
-export function getBossWaypointsForObjective(
-  routeIndex: 0 | 1,
-  objectiveKind: BossObjectiveKind = 'guardian',
-): readonly Vector[] {
-  const upper = BOSS_LANE_ROUTES[routeIndex]
-  if (objectiveKind === 'guardian') {
-    return upper
-  }
-  const toWalker = [...upper, ...POST_GUARDIAN_TO_WALKER[routeIndex]]
-  if (objectiveKind === 'walker') {
-    return toWalker
-  }
-  const toBaseGate = [...toWalker, ...POST_WALKER_TO_BASE_GATE]
-  if (objectiveKind === 'base_guardian') {
-    return toBaseGate
-  }
-  const toCourtyard = [...toBaseGate, ...COURTYARD_HUB]
-  if (objectiveKind === 'shrine_east') {
-    return [...toCourtyard, ...COURTYARD_TO_EAST_SHRINE]
-  }
-  if (objectiveKind === 'shrine_west') {
-    return [...toCourtyard, ...COURTYARD_TO_WEST_SHRINE]
-  }
-  if (objectiveKind === 'patron_stage1') {
-    return [...toCourtyard, ...COURTYARD_TO_PATRON_STAGE1]
-  }
-  return [...toCourtyard, ...COURTYARD_TO_PATRON_STAGE2]
+export interface AbilityDecision {
+  readonly slot: number
+  readonly pressed: bigint
+  readonly channelDuration: number
+  readonly slamDelay?: number
+  readonly needsConfirmClick?: boolean
+  readonly groundAim?: boolean
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value))
+export interface BotCorridorConfig {
+  readonly northCorridorMinY?: number
+  readonly northCorridorMaxAbsX?: number
+  readonly antiKiteMinY?: number
+  readonly upperPitBiasMinY?: number
+  readonly pedestalGuardObjectiveKind?: string
+  readonly pedestalGuardMaxY?: number
+  readonly courtyardMaxY?: number
+  readonly defaultMinStandoff?: number
+  readonly defaultSiegeRange?: number
 }
 
-export function flatDistance2D(a: Vector, b: Vector): number {
-  return Math.hypot(a.x - b.x, a.y - b.y)
+export interface BotStepInput {
+  readonly hero: string
+  readonly bossPos: Vector
+  readonly bossEyePos: Vector
+  readonly bossHealth: number
+  readonly bossMaxHealth: number
+  readonly abilities: readonly Ability[]
+  readonly heroes: readonly BossHeroCandidate[]
+  readonly guardian?: BossGuardianCandidate
+  readonly state: BossAiState
+  readonly now: number
+  readonly buttons: BossButtonMask
+  readonly waypoints: readonly Vector[]
+  readonly corridor?: BotCorridorConfig
 }
 
-export function distance3D(a: Vector, b: Vector): number {
-  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)
-}
+const DEFAULT_SIEGE_RANGE = 880
+const DEFAULT_MIN_STANDOFF = 485
 
 /**
  * Computes `AbilityOptions.upgrades` bitmask for Boss tiers (`1..5`):
  * bit `0` (`0b0001`) unlocks the ability, and bits `1..3` unlock T1..T3 upgrades.
  */
 export function computeBossAbilityUpgradeMask(tier: number): number {
-  if (tier <= 1) return 0b0011 // Unlocked + T1
-  if (tier === 2) return 0b0111 // Unlocked + T1 + T2
-  return 0b1111 // Unlocked + T1 + T2 + T3 (Max)
+  if (tier <= 1) return 0b0011
+  if (tier === 2) return 0b0111
+  return 0b1111
 }
 
-/** Creates initial AI tracking state for a newly spawned (or hot-reload adopted) Boss Hero. */
-export function createBossAiState(spawnOrigin: Vector, now = 0): BossAiState {
+/** Creates initial AI tracking state for a newly spawned (or hot-reload adopted) Hero Bot. */
+export function createBossAiState(
+  spawnOrigin: Vector,
+  now = 0,
+  routes?: readonly [readonly Vector[], readonly Vector[]],
+): BossAiState {
   const routeIndex: 0 | 1 = spawnOrigin.x <= 0 ? 0 : 1
-  const waypoints = BOSS_LANE_ROUTES[routeIndex]
+  const waypoints = routes ? routes[routeIndex] : undefined
   let initialIdx = 0
-  for (let i = 0; i < waypoints.length - 1; i++) {
-    if (spawnOrigin.y < waypoints[i].y - 80) {
-      initialIdx = i + 1
+  if (waypoints) {
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      if (spawnOrigin.y < waypoints[i].y - 80) {
+        initialIdx = i + 1
+      }
     }
   }
   return {
@@ -270,69 +177,23 @@ export function createBossAiState(spawnOrigin: Vector, now = 0): BossAiState {
 }
 
 /**
- * Computes Source 2 view `Angles` (`pitch`, `yaw`, `roll = 0`) looking from `from` to `to`.
- * In Source 2: `+X` = `0°`, `+Y` = `90°`, `-Y` = `-90°`; looking up is negative pitch, looking down is positive pitch.
- */
-export function computeAimAngles(from: Vector, to: Vector): Angles {
-  const dx = to.x - from.x
-  const dy = to.y - from.y
-  const dz = to.z - from.z
-  const horiz = Math.hypot(dx, dy)
-  if (horiz < 1e-4 && Math.abs(dz) < 1e-4) {
-    return { pitch: 0, yaw: -90, roll: 0 }
-  }
-  const yaw = (Math.atan2(dy, dx) * 180) / Math.PI
-  const pitch = clamp((-Math.atan2(dz, horiz) * 180) / Math.PI, -85, 85)
-  return { pitch, yaw, roll: 0 }
-}
-
-/**
- * Converts a desired horizontal world-space movement vector `(moveX, moveY)` into
- * `DriveCommand` `(forward, left)` axes (`[-1, 1]`) relative to `facingYawDeg`.
- *
- * Allows a Boss to walk/strafe in any direction (e.g. marching South `-Y`) while
- * simultaneously aiming & firing in any 360° direction!
- */
-export function worldMoveToDriveAxes(
-  moveX: number,
-  moveY: number,
-  facingYawDeg: number,
-): { readonly forward: number; readonly left: number } {
-  const mag = Math.hypot(moveX, moveY)
-  if (mag < 1e-4) {
-    return { forward: 0, left: 0 }
-  }
-  const scale = mag > 1 ? 1 / mag : 1
-  const wx = moveX * scale
-  const wy = moveY * scale
-
-  const rad = (facingYawDeg * Math.PI) / 180
-  const fx = Math.cos(rad)
-  const fy = Math.sin(rad)
-  // +90° CCW in right-handed Z-up is Left: (-sin(yaw), cos(yaw))
-  const lx = -fy
-  const ly = fx
-
-  return {
-    forward: clamp(wx * fx + wy * fy, -1, 1),
-    left: clamp(wx * lx + wy * ly, -1, 1),
-  }
-}
-
-/**
- * Advances `currentIndex` along `waypoints` whenever the Boss reaches `165u` horizontally
- * (`220u` inside Amber Base Courtyard `y <= -6000` where Shrine approaches run East/West),
- * OR has progressed more than `80u` south past a North->South lane waypoint (`wp.y > -6000`).
+ * Advances `currentIndex` along `waypoints` whenever the Bot reaches `165u` horizontally
+ * (`220u` inside courtyard zones when `courtyardMaxY` is reached), OR has progressed more
+ * than `80u` south past a North->South lane waypoint outside the courtyard.
  */
 export function advanceBossWaypointIndex(
   pos: Vector,
   waypoints: readonly Vector[],
   currentIndex: number,
+  courtyardMaxY = -6000,
 ): number {
+  if (waypoints.length === 0) {
+    return 0
+  }
   let idx = clamp(currentIndex, 0, waypoints.length - 1)
   while (idx < waypoints.length - 1) {
     const wp = waypoints[idx]
-    const inBaseCourtyard = wp.y <= -6000
+    const inBaseCourtyard = wp.y <= courtyardMaxY
     const reachRadius = inBaseCourtyard ? 220 : 165
     if (
       flatDistance2D(pos, wp) <= reachRadius ||
@@ -358,7 +219,6 @@ function buildHeroCombatTarget(
     y: hero.position.y,
     z: hero.position.z + aimOffsetZ,
   })
-  // Light projectile lead (0..0.16s) for moving targets without overshooting strafes.
   const leadSec = clamp(d3 / 3200, 0, 0.16)
   const aimPoint: Vector = {
     x: hero.position.x + hero.velocity.x * leadSec,
@@ -399,12 +259,12 @@ function buildGuardianCombatTarget(
 }
 
 /**
- * Selects the highest-priority combat target for a Boss Hero:
- * 1. Close Defender Hero with LoS (`<= 780u`), even during structure siege.
- * 2. Provoked Defender Hero attacker with LoS (`<= 1850u` while marching, or `<= 1500u` during siege).
- * 3. Visible Defender Hero in lane (`<= 1450u`) before structure siege.
- * 4. Active vulnerable Team 2 structure (`Guardian`, `Walker`, `Base Guardian`, `Shrine`, or `Patron`) once within `siegeRange`.
- * 5. Long-range visible Defender Hero (`<= 1850u`) for opportunistic fire while marching.
+ * Selects the highest-priority combat target for a Hero Bot:
+ * 1. Close Hero with LoS (`<= 780u`), even during structure siege.
+ * 2. Provoked Hero attacker with LoS (`<= 1850u` marching, or `<= 1500u` during siege).
+ * 3. Visible Hero in lane (`<= 1450u`) before structure siege.
+ * 4. Active vulnerable structure objective once within `siegeRange`.
+ * 5. Long-range visible Hero (`<= 1850u`) for opportunistic fire while marching.
  */
 export function selectBossTarget(
   bossPos: Vector,
@@ -413,23 +273,22 @@ export function selectBossTarget(
   guardian: BossGuardianCandidate | undefined,
   state: Pick<BossAiState, 'provokedHeroEntity' | 'provokedUntil'>,
   now: number,
+  defaultSiegeRange = DEFAULT_SIEGE_RANGE,
 ): BossCombatTarget | undefined {
   const visibleHeroes = heroes
     .filter((h) => h.health > 0 && h.hasLineOfSight)
     .sort((a, b) => flatDistance2D(bossPos, a.position) - flatDistance2D(bossPos, b.position))
 
-  const siegeRange = guardian?.siegeRange ?? BOSS_GUARDIAN_SIEGE_RANGE
+  const siegeRange = guardian?.siegeRange ?? defaultSiegeRange
   const distToGuardian =
     guardian && guardian.alive ? flatDistance2D(bossPos, guardian.position) : Infinity
   const inGuardianSiegeZone = distToGuardian <= siegeRange
 
-  // 1. Immediate close-quarters Hero threat (`<= 780u`), even when sieging Guardian.
   const closest = visibleHeroes[0]
   if (closest && flatDistance2D(bossPos, closest.position) <= 780) {
     return buildHeroCombatTarget(bossPos, bossEyePos, closest)
   }
 
-  // 2. Provoked Hero who recently damaged this Boss (including behind Blue Guardian up to 1500u).
   if (state.provokedHeroEntity > 0 && now < state.provokedUntil) {
     const provoked = visibleHeroes.find((h) => h.entity === state.provokedHeroEntity)
     if (provoked) {
@@ -441,17 +300,14 @@ export function selectBossTarget(
     }
   }
 
-  // 3. Mid-range Hero interception while marching down Center Lane.
   if (!inGuardianSiegeZone && closest && flatDistance2D(bossPos, closest.position) <= 1450) {
     return buildHeroCombatTarget(bossPos, bossEyePos, closest)
   }
 
-  // 4. Objective Siege: Friendly Blue T1 Guardian (`<= 880u`).
   if (guardian && guardian.alive && inGuardianSiegeZone) {
     return buildGuardianCombatTarget(bossPos, bossEyePos, guardian)
   }
 
-  // 5. Long-range opportunistic fire while continuing lane march.
   if (closest && flatDistance2D(bossPos, closest.position) <= 1850) {
     return buildHeroCombatTarget(bossPos, bossEyePos, closest)
   }
@@ -504,20 +360,10 @@ function slotToButton(slot: number, buttons: BossButtonMask): bigint {
   }
 }
 
-export interface AbilityDecision {
-  readonly slot: number
-  readonly pressed: bigint
-  readonly channelDuration: number
-  readonly slamDelay?: number
-  readonly needsConfirmClick?: boolean
-  readonly groundAim?: boolean
-}
-
 /**
- * Chooses responsive, combo-chaining hero abilities for all 6 `BOSS_HERO_POOL` archetypes.
- * Supports 2-tick Confirm-Cast rising edges (`needsConfirmClick`), ground-pitched turret/specter
- * deployment (`groundAim`), and per-slot backoff (`slotBackoffUntil`) so if a unit-targeted
- * ability cannot lock on, the Boss immediately fires its next ready ability 200ms later!
+ * Chooses responsive, combo-chaining hero abilities for all 6 Hero archetypes
+ * (`hero_atlas`, `hero_warden`, `hero_bebop`, `hero_shiv`, `hero_chrono`, `hero_forge`),
+ * with 2-tick Confirm-Cast rising edges and per-slot backoff recovery.
  */
 export function chooseBossAbilityPress(
   hero: string,
@@ -540,7 +386,6 @@ export function chooseBossAbilityPress(
 
   switch (hero) {
     case 'hero_atlas': {
-      // Slot 3: Seismic Impact (leap + meteor slam onto Hero or Guardian plaza)
       if (dist >= 150 && dist <= 950 && ready(s3)) {
         return {
           slot: 3,
@@ -549,24 +394,19 @@ export function chooseBossAbilityPress(
           slamDelay: 0.6,
         }
       }
-      // Slot 1: Shoulder Charge (bull rush into Defender Hero or down lane)
       if (dist >= 130 && dist <= 850 && ready(s1)) {
         return { slot: 1, pressed: buttons.ability2, channelDuration: 1.35 }
       }
-      // Slot 0: Siphon Life aura drain (active throughout close/mid combat)
       if (dist <= 580 && ready(s0)) {
         return { slot: 0, pressed: buttons.ability1, channelDuration: 0 }
       }
-      // Slot 2 is passive (Infernal Resilience)
       return undefined
     }
 
     case 'hero_warden': {
-      // Slot 1: Willpower barrier + sprint speed surge immediately on contact!
       if (dist <= 1550 && ready(s1)) {
         return { slot: 1, pressed: buttons.ability2, channelDuration: 0 }
       }
-      // Slot 0: Alchemical Flask grenade (damages & weakens Heroes & Guardian)
       if (dist <= 1350 && ready(s0)) {
         return {
           slot: 0,
@@ -575,7 +415,6 @@ export function chooseBossAbilityPress(
           needsConfirmClick: true,
         }
       }
-      // Slot 2: Binding Word root curse (Hero-targeted; falls back via slotBackoffUntil if out of cone)
       if (isHero && dist <= 760 && ready(s2)) {
         return {
           slot: 2,
@@ -584,7 +423,6 @@ export function chooseBossAbilityPress(
           needsConfirmClick: true,
         }
       }
-      // Slot 3: Last Stand massive AoE pulse aura
       if (dist <= 650 && ready(s3)) {
         return { slot: 3, pressed: buttons.ultimate, channelDuration: 2.35 }
       }
@@ -592,11 +430,9 @@ export function chooseBossAbilityPress(
     }
 
     case 'hero_bebop': {
-      // Slot 2: Hook skillshot (pulls Defender right into Sticky Bomb + Uppercut combo!)
       if (isHero && dist >= 220 && dist <= 1450 && ready(s2)) {
         return { slot: 2, pressed: buttons.ability3, channelDuration: 0.35 }
       }
-      // Slot 1: Sticky Bomb attach at close range
       if (isHero && dist <= 250 && ready(s1)) {
         return {
           slot: 1,
@@ -605,11 +441,9 @@ export function chooseBossAbilityPress(
           needsConfirmClick: true,
         }
       }
-      // Slot 0: Exploding Uppercut melee launch
       if (isHero && dist <= 240 && ready(s0)) {
         return { slot: 0, pressed: buttons.ability1, channelDuration: 0 }
       }
-      // Slot 3: Hyper Beam giant orbital laser (shreds Heroes & Guardian!)
       if (dist >= 260 && dist <= 1450 && ready(s3)) {
         return { slot: 3, pressed: buttons.ultimate, channelDuration: 5.8 }
       }
@@ -617,7 +451,6 @@ export function chooseBossAbilityPress(
     }
 
     case 'hero_shiv': {
-      // Slot 3: Killing Blow execute leap on damaged Defender Hero
       if (isHero && target.healthRatio <= 0.55 && dist <= 600 && ready(s3)) {
         return {
           slot: 3,
@@ -626,15 +459,12 @@ export function chooseBossAbilityPress(
           needsConfirmClick: true,
         }
       }
-      // Slot 1: Slice and Dice dash-slash
       if (dist >= 120 && dist <= 720 && ready(s1)) {
         return { slot: 1, pressed: buttons.ability2, channelDuration: 0.4 }
       }
-      // Slot 0: Serrated Knives bleeding projectile
       if (dist <= 1400 && ready(s0)) {
         return { slot: 0, pressed: buttons.ability1, channelDuration: 0 }
       }
-      // Slot 2: Bloodletting active damage shrug
       if (bossHealthRatio < 0.92 && ready(s2)) {
         return { slot: 2, pressed: buttons.ability3, channelDuration: 0 }
       }
@@ -642,7 +472,6 @@ export function chooseBossAbilityPress(
     }
 
     case 'hero_chrono': {
-      // Slot 0: Pulse Grenade AoE (checked first so Paradox immediately throws grenades!)
       if (dist <= 1300 && ready(s0)) {
         return {
           slot: 0,
@@ -651,7 +480,6 @@ export function chooseBossAbilityPress(
           needsConfirmClick: true,
         }
       }
-      // Slot 1: Time Wall barrier
       if (dist <= 1100 && ready(s1)) {
         return {
           slot: 1,
@@ -660,7 +488,6 @@ export function chooseBossAbilityPress(
           needsConfirmClick: true,
         }
       }
-      // Slot 2: Kinetic Carbine empowered shot
       if (dist <= 1450 && ready(s2)) {
         return {
           slot: 2,
@@ -669,7 +496,6 @@ export function chooseBossAbilityPress(
           needsConfirmClick: true,
         }
       }
-      // Slot 3: Paradoxical Swap (only when Hero is south/even so Boss never swaps backward)
       if (
         isHero &&
         dist >= 260 &&
@@ -683,11 +509,9 @@ export function chooseBossAbilityPress(
     }
 
     case 'hero_forge': {
-      // Slot 3: Heavy Barrage rocket volley (~5.5s channel vs Hero or Guardian)
       if (dist >= 280 && dist <= 1500 && ready(s3)) {
         return { slot: 3, pressed: buttons.ultimate, channelDuration: 5.4 }
       }
-      // Slot 0: Mini Turret — ground-aimed + 2-tick LMB confirm + Tick 3 altFire cancel safety!
       if (dist <= 1250 && ready(s0)) {
         return {
           slot: 0,
@@ -697,7 +521,6 @@ export function chooseBossAbilityPress(
           groundAim: true,
         }
       }
-      // Slot 1: Medicinal Specter AoE heal — ground-aimed when injured
       if (bossHealthRatio < 0.92 && dist <= 1150 && ready(s1)) {
         return {
           slot: 1,
@@ -724,25 +547,11 @@ export function chooseBossAbilityPress(
   }
 }
 
-export interface BossStepInput {
-  readonly hero: string
-  readonly bossPos: Vector
-  readonly bossEyePos: Vector
-  readonly bossHealth: number
-  readonly bossMaxHealth: number
-  readonly abilities: readonly Ability[]
-  readonly heroes: readonly BossHeroCandidate[]
-  readonly guardian?: BossGuardianCandidate
-  readonly state: BossAiState
-  readonly now: number
-  readonly buttons: BossButtonMask
-}
-
 /**
  * Computes one 10 Hz AI step (`DriveCommand` + updated state + anti-stuck recovery)
- * for an active Enemy Hero Boss in Center Lane.
+ * for an active Hero Bot following caller-provided `waypoints` and optional `corridor` bounds.
  */
-export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
+export function planBotDriveStep(input: BotStepInput): BossDrivePlan {
   const {
     hero,
     bossPos,
@@ -755,14 +564,16 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
     state,
     now,
     buttons,
+    corridor,
   } = input
 
-  const objectiveKind: BossObjectiveKind = guardian?.objectiveKind ?? 'guardian'
-  const minStandoff = guardian?.minStandoff ?? BOSS_GUARDIAN_MIN_STANDOFF
-  const waypoints = getBossWaypointsForObjective(state.routeIndex, objectiveKind)
+  const objectiveKind = guardian?.objectiveKind ?? 'guardian'
+  const minStandoff =
+    guardian?.minStandoff ?? corridor?.defaultMinStandoff ?? DEFAULT_MIN_STANDOFF
+  const defaultSiegeRange = corridor?.defaultSiegeRange ?? DEFAULT_SIEGE_RANGE
+  const waypoints = input.waypoints.length > 0 ? input.waypoints : [bossPos]
+  const courtyardMaxY = corridor?.courtyardMaxY ?? -Infinity
 
-  // When the active objective advances (e.g. Guardian -> Walker, or East Shrine -> West Shrine -> Patron),
-  // re-anchor `waypointIndex` to the closest waypoint in the new route so Courtyard transitions never skip ramps.
   if (state.lastObjectiveKind !== undefined && state.lastObjectiveKind !== objectiveKind) {
     let bestIdx = 0
     let bestDist = Infinity
@@ -776,11 +587,24 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
     state.waypointIndex = bestIdx
   }
   state.lastObjectiveKind = objectiveKind
-  state.waypointIndex = advanceBossWaypointIndex(bossPos, waypoints, state.waypointIndex)
+  state.waypointIndex = advanceBossWaypointIndex(
+    bossPos,
+    waypoints,
+    state.waypointIndex,
+    courtyardMaxY,
+  )
   const wp = waypoints[state.waypointIndex]
   const siegeAnchor = waypoints[waypoints.length - 1]
 
-  const target = selectBossTarget(bossPos, bossEyePos, heroes, guardian, state, now)
+  const target = selectBossTarget(
+    bossPos,
+    bossEyePos,
+    heroes,
+    guardian,
+    state,
+    now,
+    defaultSiegeRange,
+  )
   const inChannelLock = now < state.channelLockUntil
 
   let mode: BossBehaviorMode = 'march'
@@ -790,7 +614,6 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
     mode = 'hero_combat'
   }
 
-  // 1. Compute desired world-space horizontal movement vector (moveX, moveY)
   let moveX = 0
   let moveY = 0
   const strafeSign = Math.sin(now * 1.9 + state.routeIndex * Math.PI) >= 0 ? 1 : -1
@@ -804,7 +627,6 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
       moveY = dy / d
     }
   } else if (mode === 'guardian_siege' && target) {
-    // Hold standoff around the active objective's siegeAnchor and strafe laterally.
     const anchorDx = siegeAnchor.x + strafeSign * 95 - bossPos.x
     const anchorDy = siegeAnchor.y - bossPos.y
     const anchorDist = Math.hypot(anchorDx, anchorDy)
@@ -813,8 +635,12 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
       moveX = (anchorDx / anchorDist) * weight
       moveY = (anchorDy / anchorDist) * weight
     }
-    if (objectiveKind === 'guardian' && bossPos.y < -1300) {
-      // Never step south onto the solid Guardian pedestal (`y < -1300`) while Guardian lives.
+    if (
+      corridor?.pedestalGuardObjectiveKind !== undefined &&
+      corridor.pedestalGuardMaxY !== undefined &&
+      objectiveKind === corridor.pedestalGuardObjectiveKind &&
+      bossPos.y < corridor.pedestalGuardMaxY
+    ) {
       moveY = Math.max(moveY, 0.75)
     } else if (target.distance2D < minStandoff) {
       const awayX = bossPos.x - target.position.x
@@ -824,10 +650,10 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
       moveY += (awayY / awayLen) * 0.85
     }
   } else if (mode === 'hero_combat' && target) {
-    const heroBehindNorth = target.position.y > bossPos.y + 80 && bossPos.y > -1050
-    if (heroBehindNorth) {
-      // Anti-kite rule: never let a Defender behind the Boss lure it back north toward spawn!
-      // Keep marching south down the staircase while aiming 180° backward and shooting!
+    const antiKiteMinY = corridor?.antiKiteMinY ?? -Infinity
+    const heroBehindNorth =
+      target.position.y > bossPos.y + 80 && bossPos.y > antiKiteMinY
+    if (heroBehindNorth && corridor?.antiKiteMinY !== undefined) {
       const dx = wp.x - bossPos.x
       const dy = wp.y - bossPos.y
       const d = Math.hypot(dx, dy)
@@ -842,7 +668,6 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
       const toHeroLen = Math.max(1, Math.hypot(toHeroX, toHeroY))
       const dirX = toHeroX / toHeroLen
       const dirY = toHeroY / toHeroLen
-      // Perpendicular vector for combat strafing
       const perpX = -dirY * strafeSign
       const perpY = dirX * strafeSign
 
@@ -856,9 +681,11 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
       moveX = dirX * radial + perpX * 0.65
       moveY = dirY * radial + perpY * 0.65
 
-      // Blend 35% of staircase waypoint direction while in upper/pit lane (`y > -950`)
-      // so chasing a Hero never steers into the central `(0, 0)` block.
-      if (bossPos.y > -950 && radial > 0) {
+      if (
+        corridor?.upperPitBiasMinY !== undefined &&
+        bossPos.y > corridor.upperPitBiasMinY &&
+        radial > 0
+      ) {
         const wpDx = wp.x - bossPos.x
         const wpDy = wp.y - bossPos.y
         const wpLen = Math.max(1, Math.hypot(wpDx, wpDy))
@@ -866,18 +693,23 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
         moveY = moveY * 0.65 + (wpDy / wpLen) * 0.35
       }
 
-      // Clamp northward retreat when north of the Guardian plaza.
-      if (bossPos.y > -950 && moveY > 0.15) {
+      if (
+        corridor?.upperPitBiasMinY !== undefined &&
+        bossPos.y > corridor.upperPitBiasMinY &&
+        moveY > 0.15
+      ) {
         moveY = 0.15
       }
     }
   }
 
-  // Keep inside upper Center Lane outer side walls (`|x| <= 400` north of `y = -2200`)
-  // while allowing full Broadway / Amber Base lateral navigation south of Guardian (`y <= -2200`).
-  if (bossPos.y > -2200) {
-    if (bossPos.x < -380) moveX = Math.max(moveX, 0.55)
-    if (bossPos.x > 380) moveX = Math.min(moveX, -0.55)
+  if (
+    corridor?.northCorridorMinY !== undefined &&
+    corridor.northCorridorMaxAbsX !== undefined &&
+    bossPos.y > corridor.northCorridorMinY
+  ) {
+    if (bossPos.x < -corridor.northCorridorMaxAbsX) moveX = Math.max(moveX, 0.55)
+    if (bossPos.x > corridor.northCorridorMaxAbsX) moveX = Math.min(moveX, -0.55)
   }
   if (guardian && guardian.alive) {
     const gDx = bossPos.x - guardian.position.x
@@ -889,7 +721,6 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
     }
   }
 
-  // 2. Compute 360° Aiming Angles (pitching down briefly when ground-deploying Mini Turret / Specter)
   let lookPoint: Vector
   if (now < state.groundAimUntil && target) {
     const dirX = target.position.x - bossPos.x
@@ -902,7 +733,6 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
     }
   } else if (target) {
     if (hero === 'hero_forge' && inChannelLock) {
-      // Aim McGinnis Heavy Barrage rockets at the ground around the target's base.
       lookPoint = {
         x: target.position.x,
         y: target.position.y,
@@ -916,7 +746,6 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
   }
   const facing = computeAimAngles(bossEyePos, lookPoint)
 
-  // 3. Anti-stuck check (every 1.2s when actively trying to move)
   let held = 0n
   let pressed = 0n
   let unstuckTeleport: Vector | undefined
@@ -930,7 +759,6 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
       state.stuckCount += 1
       if (state.stuckCount === 1) {
         pressed |= buttons.jump
-        // Sidestep toward the lane staircase center
         moveX += bossPos.x <= 0 ? 0.8 : -0.8
       } else if (state.stuckCount === 2) {
         pressed |= buttons.dash | buttons.jump
@@ -945,9 +773,6 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
     state.lastCheckAt = now
   }
 
-  // 4. Handle pending 2-tick Confirm-Cast rising edge & subsequent-tick verification / backoff
-  // Using `else if` guarantees Confirm (`Buttons.attack`) is always sent on its own tick
-  // BEFORE Verify checks whether the engine accepted the cast and started cooldown!
   if (state.pendingConfirmAt > 0 && now >= state.pendingConfirmAt) {
     pressed |= buttons.attack
     state.pendingConfirmAt = 0
@@ -967,8 +792,6 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
           checked.charges < state.pendingVerifyChargesBefore),
     )
     if (!didFire) {
-      // Cancel any leftover preview with altFire and back off this slot so the
-      // Boss immediately casts its NEXT ready ability and keeps shooting!
       pressed |= buttons.altFire
       if (slot >= 0 && slot <= 3) {
         state.slotBackoffUntil[slot] = now + 2.5
@@ -979,14 +802,12 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
     state.pendingVerifyAt = 0
   }
 
-  // Trigger Abrams Seismic Impact ground-slam tap once airborne!
   if (state.slamTapAt > 0 && now >= state.slamTapAt) {
     pressed |= buttons.attack | buttons.ultimate
     state.slamTapAt = 0
   }
 
   if (!inChannelLock) {
-    // Close-quarters light melee punch against Defender Heroes
     if (
       target &&
       target.kind === 'hero' &&
@@ -997,7 +818,6 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
       state.nextMeleeAt = now + 2.4
     }
 
-    // Aggressive lane dash while marching or closing gap
     if (
       now >= state.nextDashAt &&
       desiredMoveMag >= 0.75 &&
@@ -1008,7 +828,6 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
       state.nextDashAt = now + 4.0
     }
 
-    // Hero-specific ability / ultimate cast (fast 0.65s combo chaining!)
     if (target && now >= state.nextAbilityAt && state.pendingConfirmAt === 0) {
       const hpRatio = bossMaxHealth > 0 ? bossHealth / bossMaxHealth : 1
       const decision = chooseBossAbilityPress(
@@ -1024,8 +843,6 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
       if (decision) {
         const castAbil = abilities.find((a) => a.slot === decision.slot)
         pressed |= decision.pressed
-        // Release primary fire briefly for 100ms so firing/reload never blocks cast activation
-        // and so Tick 2's Buttons.attack confirm produces a true rising edge!
         state.releasePrimaryUntil = now + 0.1
         state.nextAbilityAt =
           decision.channelDuration > 0
@@ -1050,7 +867,6 @@ export function planBossDriveStep(input: BossStepInput): BossDrivePlan {
     }
   }
 
-  // 5. Primary Weapon Attack (held whenever not in a 100ms cast-initiation release or channel ultimate)
   if (target && target.distance3D <= 1900 && now >= state.releasePrimaryUntil) {
     const suppressPrimaryForChannel =
       inChannelLock && (hero === 'hero_forge' || hero === 'hero_bebop')

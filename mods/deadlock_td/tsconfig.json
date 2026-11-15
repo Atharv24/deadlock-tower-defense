@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "modlock": ["./node_modules/modlock/index.d.ts"],
+      "modlock/*": ["./node_modules/modlock/*"],
+      "@base": ["../../base/index.ts"],
+      "@base/*": ["../../base/*"],
+      "@engine": ["../../engine/index.ts"],
+      "@engine/*": ["../../engine/*"],
+      "@ui": ["../../ui/index.ts"],
+      "@ui/*": ["../../ui/*"],
+      "@components/*": ["../../components/*"]
+    }
+  },
+  "exclude": ["build", "node_modules", "**/*_test.ts", "**/*.test.ts"]
+}

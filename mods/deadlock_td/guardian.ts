@@ -63,7 +63,8 @@ import {
   WALKER_UPGRADE_HP_BONUS,
   WEST_SHRINE_ORIGIN,
   WEST_SHRINE_TARGETNAMES,
-} from './config'
+} from './td_config'
+import { hasNativeLaneGuardianSpawner } from '@engine/maps/dl_midtown'
 
 export type MatchState = 'waiting' | 'active' | 'defeat' | 'victory'
 
@@ -223,15 +224,7 @@ export class GuardianManager {
 
   /** Returns true if stock `dl_midtown`'s Team 2 Center Lane T1 spawner (`14019`) is present. */
   hasNativeCenterGuardianSpawner(): boolean {
-    for (const sp of findEntities('info_super_trooper_spawn')) {
-      const team = readField(sp, 'CBaseEntity', 'm_iTeamNum', 'uint8')
-      const lane = readField(sp, 'CInfoTrooperBossSpawn', 'm_iLane', 'int32')
-      const reinf = readField(sp, 'CInfoTrooperBossSpawn', 'm_bReinforcementsOnly', 'bool')
-      if (team === DEFENDER_TEAM && lane === 4 && reinf !== true) {
-        return true
-      }
-    }
-    return false
+    return hasNativeLaneGuardianSpawner(DEFENDER_TEAM, 4)
   }
 
   /** Ensures a live Team 2 Center Lane T1 Guardian (`npc_boss_tier1`) stands at `GUARDIAN_ORIGIN`. */

@@ -30,7 +30,7 @@ import {
   getStructureFortifyEntityModifiers,
   PLAYER_SPAWN_ANGLES,
   PLAYER_SPAWN_ORIGIN,
-} from './config'
+} from './td_config'
 
 function hasActiveEntityModifier(entity: number, expected: string): boolean {
   if (entity <= 0) {
@@ -42,7 +42,7 @@ function hasActiveEntityModifier(entity: number, expected: string): boolean {
   )
 }
 import type { GuardianManager } from './guardian'
-import type { TomeManager } from './tomes'
+import type { TomeManager } from '@components/roguelite'
 import type { WaveManager } from './wave'
 
 type ProbeStep =

@@ -1,0 +1,37 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "modlock": ["./mods/deadlock_td/node_modules/modlock/index.d.ts"],
+      "modlock/*": ["./mods/deadlock_td/node_modules/modlock/*"],
+      "@base": ["./base/index.ts"],
+      "@base/*": ["./base/*"],
+      "@engine": ["./engine/index.ts"],
+      "@engine/*": ["./engine/*"],
+      "@ui": ["./ui/index.ts"],
+      "@ui/*": ["./ui/*"],
+      "@components/*": ["./components/*"],
+      "@testing/*": ["./testing/*"]
+    }
+  },
+  "include": [
+    "testing/node_shims.d.ts",
+    "base/**/*.ts",
+    "engine/**/*.ts",
+    "ui/**/*.ts",
+    "ui/**/*.tsx",
+    "components/**/*.ts",
+    "components/**/*.tsx",
+    "mods/**/*.ts",
+    "mods/**/*.tsx",
+    "testing/**/*.ts",
+    "tools/**/*.ts"
+  ],
+  "exclude": [
+    "build",
+    "mods/*/build",
+    "node_modules",
+    "mods/*/node_modules"
+  ]
+}
